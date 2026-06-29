@@ -1,0 +1,28 @@
+fastapi>=0.110
+uvicorn[standard]>=0.27
+pydantic>=2.5
+pydantic-settings>=2.1
+motor>=3.6
+redis>=5.0
+pyjwt>=2.8
+httpx>=0.26
+openai>=1.10
+python-multipart>=0.0.6
+# CV / Image processing
+opencv-python>=4.8.0
+numpy>=1.24.0
+Pillow>=10.0.0
+# Report generation
+python-docx>=1.1.0
+# RAG / Repository
+langchain-core>=0.3.0
+langchain-openai>=0.2.0
+langchain-text-splitters>=0.3.0
+pymilvus>=2.4.0
+pypdf>=3.0.0
+docx2txt>=0.7
+openpyxl>=3.1.0
+pandas>=2.0.0
+jieba>=0.42
+edge-tts>=6.1
+python-pptx>=0.6.21
