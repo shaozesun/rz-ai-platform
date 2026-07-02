@@ -74,6 +74,7 @@ export default function KnowledgePage() {
   const [showCreateDialog, setShowCreateDialog] = useState(false);
   const [newGroupName, setNewGroupName] = useState('');
   const [totalDocs, setTotalDocs] = useState(0);
+  const [totalChunksAll, setTotalChunksAll] = useState(0);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const { hasPermission } = useAuthStore();
 
@@ -95,6 +96,7 @@ export default function KnowledgePage() {
         }
         // Count total docs across all groups
         let total = 0;
+        let totalChunks = 0;
         const results = await Promise.allSettled(
           res.groups.map((g) => getVectorStoreInfo(g.group_id)),
         );
@@ -103,9 +105,11 @@ export default function KnowledgePage() {
             const d = r.value.data as Record<string, unknown>;
             const sources = d?.sources as Record<string, number> | undefined;
             if (sources) total += Object.keys(sources).length;
+            totalChunks += (d?.total_chunks as number) || 0;
           }
         }
         setTotalDocs(total);
+        setTotalChunksAll(totalChunks);
       }
     } catch { /* ignore */ }
   }, []);
@@ -118,12 +122,12 @@ export default function KnowledgePage() {
       if (res.ok) {
         const d = res.data as Record<string, unknown>;
         if (d) {
-          const sources = d.sources as Record<string, number> | undefined;
+          const sources = d.sources as Record<string, { chunks: number; size: number }> | undefined;
           if (sources && typeof sources === 'object') {
-            const files: DocItem[] = Object.entries(sources).map(([path, chunks]) => ({
+            const files: DocItem[] = Object.entries(sources).map(([path, info]) => ({
               name: path.split('/').pop() || path,
-              size: 0,
-              chunks,
+              size: info.size || 0,
+              chunks: info.chunks || 0,
               updatedAt: '',
             }));
             setDocs(files);
@@ -305,7 +309,7 @@ export default function KnowledgePage() {
         {[
           { label: '知识库总数', value: String(groups.length), icon: Database, tone: 'text-primary bg-primary/10' },
           { label: '文档总数', value: String(totalDocs), icon: FileText, tone: 'text-chart-1 bg-chart-1/12' },
-          { label: '切片总数', value: String(totalChunks || '—'), icon: FileCode2, tone: 'text-chart-2 bg-chart-2/12' },
+          { label: '切片总数', value: String(totalChunksAll || '—'), icon: FileCode2, tone: 'text-chart-2 bg-chart-2/12' },
           { label: '支持格式', value: '7 种', icon: Search, tone: 'text-chart-3 bg-chart-3/12' },
         ].map((s) => {
           const Icon = s.icon;

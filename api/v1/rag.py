@@ -89,6 +89,25 @@ async def upload_file(
         count = rag_service.add_file(str(filepath), group_id=group_id, open_id=user_id)
         logger.info("[Upload] 向量入库成功: group_id=%s, chunks=%d", group_id, count)
 
+        # 写入 MongoDB 文件索引（加速后续查询，避免扫 Milvus）
+        try:
+          db = mongodb_manager.db
+          await db.kb_files.update_one(
+            {'group_id': group_id, 'source': str(filepath)},
+            {'$set': {
+              'group_id': group_id,
+              'source': str(filepath),
+              'file_name': safe_name,
+              'size': filepath.stat().st_size,
+              'chunks': count,
+              'uploaded_by': user_id,
+              'uploaded_at': datetime.utcnow(),
+            }},
+            upsert=True,
+          )
+        except Exception:
+          logger.exception("[Upload] kb_files 写入失败（不影响主体流程）")
+
         try:
             embedded_dir = _resolve_group_embedded_dir(group_id)
             rag_service.export_chunks(str(filepath), output_dir=str(embedded_dir))
@@ -127,6 +146,16 @@ async def delete_file(
             filepath = _resolve_group_upload_path(group_id, name)
 
         vectors_deleted, file_deleted = rag_service.delete_file(str(filepath), group_id=group_id)
+
+        # 同步删除 MongoDB 文件索引
+        try:
+          await mongodb_manager.db.kb_files.delete_one({
+            'group_id': group_id,
+            'source': str(filepath),
+          })
+        except Exception:
+          logger.exception("[Delete] kb_files 清理失败（不影响主体流程）")
+
         log_delete(user_id, group_id, Path(name).name, vectors_deleted, get_trace_id())
 
         return DeleteResponse(
@@ -150,17 +179,33 @@ async def get_vector_store_info(
     source: str = Query(None, description="文件来源过滤"),
 ):
     try:
+        db = mongodb_manager.db
+        gid = group_id.strip() or "default"
+        query: dict = {"group_id": gid}
+        if source:
+            query["source"] = source
+        records = await db.kb_files.find(query).to_list(None)
+
+        if records:
+            sources: dict[str, dict] = {}
+            total_chunks = 0
+            for r in records:
+                sources[r["source"]] = {"size": r.get("size", 0), "chunks": r.get("chunks", 0)}
+                total_chunks += r.get("chunks", 0)
+            return {"ok": True, "data": {"total_chunks": total_chunks, "sources": sources}}
+
+        # MongoDB 无记录（旧数据），降级扫描 Milvus
         expr = None
         if source:
             escaped = source.replace('"', '\\"')
             expr = f'source == "{escaped}"'
-
         info = rag_service.get_vector_store_info(
-            group_id=group_id.strip() or "default",
-            expr=expr,
-            open_id=request.state.user_id,
+            group_id=gid, expr=expr, open_id=request.state.user_id,
         )
-        return {"ok": True, "data": info}
+        sources = {}
+        for path, count in info.get("sources", {}).items():
+            sources[path] = {"size": 0, "chunks": count}
+        return {"ok": True, "data": {"total_chunks": info.get("total_chunks", 0), "sources": sources}}
     except Exception as e:
         return JSONResponse(
             status_code=500,

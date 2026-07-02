@@ -184,7 +184,6 @@ class RagService:
         return False
 
     @staticmethod
-    @staticmethod
     def _needs_rewrite(question: str) -> bool:
         """仅当问题包含指代词/省略模式时才触发改写，避免短查询被错误扩写。"""
         q = (question or "").strip()
@@ -986,11 +985,56 @@ JSON 输出："""
             api_key=final_api_key,
             temperature=temperature,
             timeout=20.0,
-            model_kwargs={
-                "extra_body": {
-                    "chat_template_kwargs": {"enable_thinking": False},
-                }
+            extra_body={
+                "chat_template_kwargs": {"enable_thinking": False},
             },
+        )
+
+    @staticmethod
+    def _html_details_to_markdown(text: str) -> str:
+        """将 HTML <details> 标签转换为 Markdown，保留内部 mermaid 代码块。"""
+        def _convert(match: re.Match) -> str:
+            block = match.group(0)
+            summary_match = re.search(r'<summary[^>]*>(.*?)</summary>', block, re.DOTALL | re.IGNORECASE)
+            title = summary_match.group(1).strip() if summary_match else ''
+            inner = re.sub(r'<summary[^>]*>.*?</summary>', '', block, flags=re.DOTALL | re.IGNORECASE)
+            inner = re.sub(r'^</?details[^>]*>', '', inner, flags=re.IGNORECASE | re.MULTILINE)
+            inner = inner.strip()
+            if title:
+                return f'\n**{title}**\n\n{inner}\n'
+            return f'\n{inner}\n'
+
+        return re.sub(
+            r'<details[^>]*>.*?</details>', _convert, text, flags=re.DOTALL | re.IGNORECASE
+        )
+
+    @staticmethod
+    def _html_table_to_markdown(text: str) -> str:
+        """将 HTML <table> 标签转换为 Markdown 表格，使 LLM 能正确理解并输出。"""
+        def _strip_tags(s: str) -> str:
+            return re.sub(r'<[^>]+>', '', s).strip()
+
+        def _convert(match: re.Match) -> str:
+            table_html = match.group(0)
+            rows = re.findall(r'<tr[^>]*>(.*?)</tr>', table_html, re.DOTALL | re.IGNORECASE)
+            md_rows: list[str] = []
+            for row_html in rows:
+                cells = re.findall(
+                    r'<(?:th|td)[^>]*>(.*?)</(?:th|td)>', row_html, re.DOTALL | re.IGNORECASE
+                )
+                if cells:
+                    md_rows.append('| ' + ' | '.join(_strip_tags(c) for c in cells) + ' |')
+            if len(md_rows) < 2:
+                return '\n'.join(md_rows) if md_rows else table_html
+            num_cols = md_rows[0].count('|') - 1
+            if num_cols < 1:
+                return '\n'.join(md_rows)
+            sep = '|' + '|'.join([' --- '] * num_cols) + '|'
+            md_rows.insert(1, sep)
+            return '\n'.join(md_rows)
+
+        return re.sub(
+            r'<table[^>]*>.*?</table>', _convert, text, flags=re.DOTALL | re.IGNORECASE
         )
 
     def _format_docs_for_context(self, docs: list[Document]) -> str:
@@ -1000,8 +1044,11 @@ JSON 输出："""
             source = str(md.get("source", "unknown"))
             file_name = str(md.get("file_name", Path(source).name if source else "unknown"))
             chunk_label = self._embedded_chunk_label(md)
+            text = self._html_details_to_markdown(
+                self._html_table_to_markdown(doc.page_content)
+            )
             chunks.append(
-                f"[片段{idx}] 文件: {file_name} | source: {source} | chunk: {chunk_label}\n{doc.page_content}"
+                f"[片段{idx}] 文件: {file_name} | source: {source} | chunk: {chunk_label}\n{text}"
             )
         return "\n\n---\n\n".join(chunks)
 
@@ -1208,7 +1255,7 @@ JSON 输出："""
         dense_limit = getattr(settings, "RAG_DENSE_RECALL_LIMIT", 150)
         sparse_limit = getattr(settings, "RAG_SPARSE_RECALL_LIMIT", 150)
 
-        # 构建 Milvus 过滤表达式：合并 source 过滤 + 意图分类过滤
+        # 构建 Milvus 过滤表达式：source 过滤 + 意图分类过滤（聊天跨组检索，不限制 group_id）
         filter_parts: list[str] = []
         if selected_source:
             normalized = self._normalize_path(selected_source)
@@ -1241,14 +1288,18 @@ JSON 输出："""
                     # 仅保留 source 过滤（如果有），移除 intent 部分
                     if selected_source:
                         normalized = self._normalize_path(selected_source)
-                        selected_expr = f'source == "{self._escape_expr_value(normalized)}"'
+                        selected_expr = (
+                            f'source == "{self._escape_expr_value(normalized)}"'
+                        )
                     else:
                         selected_expr = None
             except Exception:
                 logger.exception("[RAG] 意图过滤预检失败，降级全库检索")
                 if selected_source:
                     normalized = self._normalize_path(selected_source)
-                    selected_expr = f'source == "{self._escape_expr_value(normalized)}"'
+                    selected_expr = (
+                        f'source == "{self._escape_expr_value(normalized)}"'
+                    )
                 else:
                     selected_expr = None
 
@@ -1490,8 +1541,8 @@ JSON 输出："""
 5. 步骤类内容必须使用 1. 2. 3. 编号列表，每条单独一行。
 6. 并列要点必须使用 - 无序列表，每条单独一行。
 7. 每段文字控制在 2-3 句以内，超过必须分段或改用列表。
-8. 如果参考内容中包含 Mermaid 流程图代码（```mermaid 开头 ``` 结尾的完整围栏代码块），必须先用文字清晰解释流程，然后原样输出该完整围栏代码块（包含 ```mermaid 和结尾 ```，前后各一个空行），禁止只描述不输出代码块，禁止把 Mermaid 代码转写成文字。
-9. 如果参考内容中包含 Markdown 表格，应保留表格格式输出，表格前后必须有空行。
+8. 如果参考内容中包含流程/步骤类信息（如"XX 分钟内通报""随后进行 XX""完成后通知 XX"等含先后顺序和数量约束的描述），必须将流程用 ```mermaid 围栏代码块绘制流程图（graph LR 方向），每个步骤作为一个节点，流程节点的标签中必须严格保留参考内容中的具体数值（时间、数量、频率、百分比等）。例如参考内容写"2 分钟快速通报"，节点必须标注 `"2分钟快速通报"` 而不是 `"快速通报"`。流程图前后各空一行，禁止编造或简化节点文字。
+9. 对于结构化数据（参数对比、分类说明、流程步骤、数值列表、配置参数等），必须优先使用 Markdown 表格呈现。参考内容中已有的表格必须原样保留，表格前后各空一行。使用表格时确保列对齐，表头加粗自动识别。
 
 第三部分：格式约束
 10. 严格使用 Markdown 格式，正确使用 ##、###、**粗体**（仅用于关键术语）、列表等。
@@ -1684,12 +1735,22 @@ JSON 输出："""
             raise ValueError("group_id 不能为空")
         try:
             vector_store = store.get_vector_store(group_id=group_id)
-            all_docs = vector_store.get(expr=expr)
+            escaped_group = self._escape_expr_value(group_id)
+            group_filter = f'group_id == "{escaped_group}"'
+            combined = f"{group_filter} && ({expr})" if expr else group_filter
+            all_docs = vector_store.get(expr=combined)
             sources = all_docs.get("metadatas", [])
-            source_counts: dict[str, int] = {}
+            source_counts: dict[str, dict] = {}
             for source in sources:
                 source_path = str(source.get("source", "unknown"))
-                source_counts[source_path] = source_counts.get(source_path, 0) + 1
+                if source_path not in source_counts:
+                    file_size = 0
+                    try:
+                        file_size = Path(source_path).stat().st_size
+                    except OSError:
+                        pass
+                    source_counts[source_path] = {"chunks": 0, "size": file_size}
+                source_counts[source_path]["chunks"] += 1
             return {"total_chunks": len(sources), "sources": source_counts}
         except Exception as e:
             logger.error("[RAG] 获取向量库信息失败: %s", str(e))

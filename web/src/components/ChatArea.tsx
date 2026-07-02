@@ -3,6 +3,9 @@ import {
   Bot, User, Sparkles, Trash2, Search, Menu, Plus,
 } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
+import TableActions from './TableActions';
+import MermaidRenderer from './MermaidRenderer';
 import { useChatStore } from '../stores/chatStore';
 import { useAuthStore } from '../stores/authStore';
 import ChatInput from './ChatInput';
@@ -11,7 +14,7 @@ import { cn } from '@/lib/utils';
 import type { Message } from '../types';
 
 const SUGGESTIONS = [
-  '润泽平台有哪些功能？',
+  '智能运维平台有哪些功能？',
   '如何配置消防设施？',
   '安全隐患检测怎么做？',
 ];
@@ -140,7 +143,7 @@ export default function ChatArea() {
                 <Bot className="size-7 text-primary" />
               </div>
               <div>
-                <p className="text-sm font-semibold">润泽 AI 助手</p>
+                <p className="text-sm font-semibold">智能运维助手</p>
                 <p className="mt-1 text-xs text-muted-foreground max-w-xs">
                   基于企业知识库的智能问答与办公助理，可以帮您查询文档、分析数据
                 </p>
@@ -178,8 +181,37 @@ export default function ChatArea() {
                     )}
                   >
                     {msg.role === 'assistant' ? (
-                      <div className="prose prose-sm max-w-none">
-                        <ReactMarkdown>
+                      <div className="assistant-msg max-w-none">
+                        <ReactMarkdown
+                          remarkPlugins={[remarkGfm]}
+                          components={{
+                            table: ({ children }) => {
+                              return (
+                                <TableActions>
+                                  <table className="assistant-table">{children}</table>
+                                </TableActions>
+                              );
+                            },
+                            code: ({ className, children, inline: _inline, ...props }) => {
+                              const codeText = String(children).replace(/\n$/, '');
+                              if (className === 'language-mermaid') {
+                                return <MermaidRenderer code={codeText} />;
+                              }
+                              if (!className) {
+                                return (
+                                  <code className="rounded bg-muted px-1 py-0.5 text-xs font-mono" {...props}>
+                                    {children}
+                                  </code>
+                                );
+                              }
+                              return (
+                                <pre className="overflow-x-auto rounded-lg bg-muted p-3 my-3">
+                                  <code className="text-xs font-mono">{codeText}</code>
+                                </pre>
+                              );
+                            },
+                          }}
+                        >
                           {msg.content || (isStreaming ? '...' : '')}
                         </ReactMarkdown>
                       </div>

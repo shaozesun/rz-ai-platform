@@ -5,12 +5,14 @@ from config.settings import settings
 
 
 def _build_uri() -> str:
+  auth = ''
   if settings.MONGO_USER and settings.MONGO_PASSWORD:
-    return (
-      f'mongodb://{settings.MONGO_USER}:{settings.MONGO_PASSWORD}'
-      f'@{settings.MONGO_HOST}:{settings.MONGO_PORT}/?authSource=admin'
-    )
-  return f'mongodb://{settings.MONGO_HOST}:{settings.MONGO_PORT}'
+    auth = f'{settings.MONGO_USER}:{settings.MONGO_PASSWORD}@'
+  hosts = settings.MONGO_HOST  # 可能是 "host1,host2" 多节点
+  uri = f'mongodb://{auth}{hosts}:{settings.MONGO_PORT}/?authSource=admin'
+  if settings.MONGO_REPLICA_SET:
+    uri += f'&replicaSet={settings.MONGO_REPLICA_SET}'
+  return uri
 
 
 class MongoDBManager:
@@ -79,61 +81,75 @@ class MongoDBManager:
     return self.sync_db[name]
 
   async def init_indexes(self):
-    """初始化所有集合的索引"""
+    """初始化所有集合的索引（每个集合独立容错，单表失败不影响其他表）"""
     db = self.db
+    errors: list[str] = []
+
+    async def _safe_index(collection_name: str, fn):
+      try:
+        await fn()
+      except Exception as e:
+        errors.append(f'{collection_name}: {e}')
 
     # users
-    await db.users.create_index('phone', unique=True, sparse=True)
-    await db.users.create_index('user_id', unique=True)
+    await _safe_index('users', lambda: db.users.create_index('phone', unique=True, sparse=True))
+    await _safe_index('users', lambda: db.users.create_index('user_id', unique=True))
 
     # roles
-    await db.roles.create_index('role_id', unique=True)
+    await _safe_index('roles', lambda: db.roles.create_index('role_id', unique=True))
 
     # applications
-    await db.applications.create_index('application_id', unique=True)
-    await db.applications.create_index('user_id')
-    await db.applications.create_index('status')
-    await db.applications.create_index(
+    await _safe_index('applications', lambda: db.applications.create_index('application_id', unique=True))
+    await _safe_index('applications', lambda: db.applications.create_index('user_id'))
+    await _safe_index('applications', lambda: db.applications.create_index('status'))
+    await _safe_index('applications', lambda: db.applications.create_index(
       [('user_id', ASCENDING), ('requested_roles', ASCENDING), ('status', ASCENDING)],
-      unique=True, sparse=True,
-    )
+      unique=True,
+      partialFilterExpression={
+        'requested_roles': {'$type': 'array', '$ne': []},
+        'status': 'pending',
+      },
+    ))
 
     # audit_logs
-    await db.audit_logs.create_index('log_id', unique=True)
-    await db.audit_logs.create_index('user_id')
-    await db.audit_logs.create_index([('created_at', ASCENDING)])
+    await _safe_index('audit_logs', lambda: db.audit_logs.create_index('log_id', unique=True))
+    await _safe_index('audit_logs', lambda: db.audit_logs.create_index('user_id'))
+    await _safe_index('audit_logs', lambda: db.audit_logs.create_index([('created_at', ASCENDING)]))
 
     # sessions
-    await db.sessions.create_index('session_id', unique=True)
-    await db.sessions.create_index('user_id')
-    await db.sessions.create_index([('user_id', ASCENDING), ('created_at', DESCENDING)])
+    await _safe_index('sessions', lambda: db.sessions.create_index('session_id', unique=True))
+    await _safe_index('sessions', lambda: db.sessions.create_index('user_id'))
+    await _safe_index('sessions', lambda: db.sessions.create_index([('user_id', ASCENDING), ('created_at', DESCENDING)]))
 
     # messages
-    await db.messages.create_index('message_id', unique=True)
-    await db.messages.create_index('session_id')
-    await db.messages.create_index([('session_id', ASCENDING), ('created_at', ASCENDING)])
+    await _safe_index('messages', lambda: db.messages.create_index('message_id', unique=True))
+    await _safe_index('messages', lambda: db.messages.create_index('session_id'))
+    await _safe_index('messages', lambda: db.messages.create_index([('session_id', ASCENDING), ('created_at', ASCENDING)]))
 
     # video_tasks
-    await db.video_tasks.create_index('task_id', unique=True)
-    await db.video_tasks.create_index('user_id')
+    await _safe_index('video_tasks', lambda: db.video_tasks.create_index('task_id', unique=True))
+    await _safe_index('video_tasks', lambda: db.video_tasks.create_index('user_id'))
 
     # feedbacks
-    await db.feedbacks.create_index('feedback_id', unique=True)
-    await db.feedbacks.create_index('user_id')
-    await db.feedbacks.create_index([('created_at', ASCENDING)])
+    await _safe_index('feedbacks', lambda: db.feedbacks.create_index('feedback_id', unique=True))
+    await _safe_index('feedbacks', lambda: db.feedbacks.create_index('user_id'))
+    await _safe_index('feedbacks', lambda: db.feedbacks.create_index([('created_at', ASCENDING)]))
 
     # risk_checks
-    await db.risk_checks.create_index('check_id', unique=True)
-    await db.risk_checks.create_index('user_id')
-    await db.risk_checks.create_index([('checked_at', ASCENDING)])
+    await _safe_index('risk_checks', lambda: db.risk_checks.create_index('check_id', unique=True))
+    await _safe_index('risk_checks', lambda: db.risk_checks.create_index('user_id'))
+    await _safe_index('risk_checks', lambda: db.risk_checks.create_index([('checked_at', ASCENDING)]))
 
     # llm_usage
-    await db.llm_usage.create_index([('created_at', ASCENDING)])
+    await _safe_index('llm_usage', lambda: db.llm_usage.create_index([('created_at', ASCENDING)]))
 
     # knowledge_groups
-    await db.knowledge_groups.create_index(
+    await _safe_index('knowledge_groups', lambda: db.knowledge_groups.create_index(
       [('user_id', ASCENDING), ('group_id', ASCENDING)], unique=True
-    )
+    ))
+
+    if errors:
+      raise RuntimeError(f'部分索引创建失败: {"; ".join(errors)}')
 
   def close(self):
     if self._client:

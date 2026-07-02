@@ -139,3 +139,67 @@
     @apply font-sans;
   }
 }
+
+/* ========== 表格样式 ========== */
+.assistant-table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 0.8125rem;
+  line-height: 1.5;
+  border: 1px solid var(--border);
+}
+.assistant-table thead {
+  border-bottom: 2px solid var(--border);
+}
+.assistant-table th {
+  padding: 0.5rem 0.75rem;
+  text-align: left;
+  font-weight: 600;
+  color: var(--foreground);
+  background: oklch(0.967 0.005 247);
+  white-space: nowrap;
+  border-right: 1px solid var(--border);
+}
+.assistant-table th:last-child {
+  border-right: none;
+}
+.assistant-table td {
+  padding: 0.5rem 0.75rem;
+  border-bottom: 1px solid var(--border);
+  border-right: 1px solid var(--border);
+  color: var(--foreground);
+}
+.assistant-table td:last-child {
+  border-right: none;
+}
+.assistant-table tbody tr:last-child td {
+  border-bottom: none;
+}
+.assistant-table tbody tr:hover td {
+  background: oklch(0.985 0.003 247);
+}
+
+.dark .assistant-table th {
+  background: oklch(0.27 0.02 257);
+}
+.dark .assistant-table tbody tr:hover td {
+  background: oklch(0.22 0.02 257);
+}
+
+/* ========== 流程图样式 ========== */
+.mermaid-wrapper svg {
+  max-width: 100%;
+  height: auto;
+}
+
+/* ========== 代码块 ========== */
+.assistant-msg pre {
+  overflow-x: auto;
+  border-radius: 0.5rem;
+  background: oklch(0.967 0.005 247);
+  padding: 0.75rem 1rem;
+  margin: 0.75rem 0;
+}
+.dark .assistant-msg pre {
+  background: oklch(0.27 0.02 257);
+}

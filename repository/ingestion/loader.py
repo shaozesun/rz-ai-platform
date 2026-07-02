@@ -459,6 +459,7 @@ def _load_pdf_mineru_api(file_path: str) -> list[Document]:
             "model_version": "vlm",
             "return_images": "true",
             "image_extract": "true",
+            "no_cache": "true",
         },
         headers=headers,
         timeout=30,
@@ -540,9 +541,18 @@ def _load_pdf_mineru_api(file_path: str) -> list[Document]:
             raise RuntimeError("v4 ZIP 中未找到 .md 文件")
         markdown_text = md_files[0].read_text(encoding="utf-8")
 
+        # DEBUG: 保存 MinerU 原始输出
+        _debug_dir = Path(settings.UPLOAD_DIR).parent / 'debug_mineru_output'
+        _debug_dir.mkdir(exist_ok=True)
+        _debug_stem = Path(file_path).stem
+        (_debug_dir / f'{_debug_stem}_01_raw.md').write_text(markdown_text, encoding='utf-8')
+
         # 处理图片：用 markdown 内置的 Mermaid 流程图替换图片引用
         processed_md = _process_markdown_images(markdown_text)
+        (_debug_dir / f'{_debug_stem}_02_processed.md').write_text(processed_md, encoding='utf-8')
+
         cleaned = clean_text(processed_md)
+        (_debug_dir / f'{_debug_stem}_03_cleaned.md').write_text(cleaned, encoding='utf-8')
         docs = [Document(
             page_content=cleaned,
             metadata={"source": file_path, "parser": "mineru_api_v4"},
@@ -616,9 +626,19 @@ def _load_pdf_mineru(file_path: str) -> list[Document]:
 
         markdown_text = md_path.read_text(encoding="utf-8")
 
+        # DEBUG: 保存 MinerU CLI 原始输出
+        _debug_dir = Path(settings.UPLOAD_DIR).parent / 'debug_mineru_output'
+        _debug_dir.mkdir(exist_ok=True)
+        _debug_stem = Path(file_path).stem
+        (_debug_dir / f'{_debug_stem}_01_raw.md').write_text(markdown_text, encoding='utf-8')
+
         # 处理图片：用 markdown 内置的 Mermaid 流程图替换图片引用
         processed_md = _process_markdown_images(markdown_text)
+        (_debug_dir / f'{_debug_stem}_02_processed.md').write_text(processed_md, encoding='utf-8')
+
         cleaned = clean_text(processed_md)
+        (_debug_dir / f'{_debug_stem}_03_cleaned.md').write_text(cleaned, encoding='utf-8')
+
         docs = [Document(
             page_content=cleaned,
             metadata={"source": file_path, "parser": "mineru"},

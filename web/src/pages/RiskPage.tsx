@@ -31,6 +31,7 @@ export default function RiskPage() {
   const [restoringId, setRestoringId] = useState<string | null>(null);
   const [previewUrls, setPreviewUrls] = useState<string[]>([]);
   const [pendingFiles, setPendingFiles] = useState<File[]>([]);
+  const [resultImages, setResultImages] = useState<string[]>([]);
   const [expandedHazards, setExpandedHazards] = useState<Set<string>>(new Set());
 
   const [camOpen, setCamOpen] = useState(false);
@@ -62,7 +63,7 @@ export default function RiskPage() {
           if (cancelled) return;
           const r = detail.result;
           setResults([r]);
-          setPreviewUrls(detail.thumbnail ? [`data:image/jpeg;base64,${detail.thumbnail}`] : []);
+          setResultImages(detail.thumbnail ? [`data:image/jpeg;base64,${detail.thumbnail}`] : []);
         }
       } catch { /* 静默失败 */ }
     })();
@@ -107,6 +108,7 @@ export default function RiskPage() {
   const startDetection = async () => {
     if (pendingFiles.length === 0) return;
     const files = pendingFiles;
+    const urls = previewUrls;
     setPendingFiles([]);
     setLoading(true);
     setResults([]);
@@ -121,6 +123,7 @@ export default function RiskPage() {
         allResults = batchRes.results;
       }
       setResults(allResults);
+      setResultImages(urls);
       try {
         const records = await getRiskHistory(MAX_HISTORY, 0);
         setHistory(records);
@@ -137,10 +140,17 @@ export default function RiskPage() {
 
   const handleFiles = (files: File[]) => {
     if (files.length === 0) return;
+    const fresh = pendingFiles.length === 0;
     setResults([]);
+    setResultImages([]);
     setExpandedHazards(new Set());
-    setPreviewUrls(files.map((f) => URL.createObjectURL(f)));
-    setPendingFiles(files);
+    if (fresh) {
+      setPreviewUrls(files.map((f) => URL.createObjectURL(f)));
+      setPendingFiles(files);
+    } else {
+      setPreviewUrls((prev) => [...prev, ...files.map((f) => URL.createObjectURL(f))]);
+      setPendingFiles((prev) => [...prev, ...files]);
+    }
   };
 
   const removePendingFile = (i: number) => {
@@ -159,7 +169,8 @@ export default function RiskPage() {
       const r = detail.result;
       setResults([r]);
       setPendingFiles([]);
-      setPreviewUrls(detail.thumbnail ? [`data:image/jpeg;base64,${detail.thumbnail}`] : []);
+      setPreviewUrls([]);
+      setResultImages(detail.thumbnail ? [`data:image/jpeg;base64,${detail.thumbnail}`] : []);
       setExpandedHazards(new Set());
     } catch { /* 静默失败 */ }
     finally { setRestoringId(null); }
@@ -424,9 +435,9 @@ export default function RiskPage() {
                   <div className="gap-5 lg:grid lg:grid-cols-5">
                     {/* Image */}
                     <div className="lg:col-span-2 mb-4 lg:mb-0">
-                      {previewUrls[ri] ? (
+                      {resultImages[ri] || previewUrls[ri] ? (
                         <img
-                          src={previewUrls[ri]}
+                          src={resultImages[ri] || previewUrls[ri]}
                           alt={result.image_name}
                           className="w-full rounded-xl border border-border object-contain max-h-80 bg-muted/20"
                         />

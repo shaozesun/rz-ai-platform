@@ -145,7 +145,7 @@ export default function VideoPage() {
   const [uploading, setUploading] = useState(false);
   const [aspectRatio, setAspectRatio] = useState('16:9');
   const [resolution, setResolution] = useState('1080p');
-  const [voice, setVoice] = useState('neutral');
+  const [voice, setVoice] = useState('male');
   const [logMsg, setLogMsg] = useState('');
   const fileRef = useRef<HTMLInputElement>(null);
 
@@ -256,7 +256,7 @@ export default function VideoPage() {
             <label className="mb-1 block text-xs text-muted-foreground">画面比例</label>
             <Select value={aspectRatio} onChange={(e) => setAspectRatio(e.target.value)}>
               <option value="16:9">16:9</option>
-              <option value="4:3">4:3</option>
+              <option value="9:16">9:16</option>
             </Select>
           </div>
           <div>
@@ -269,9 +269,7 @@ export default function VideoPage() {
           <div>
             <label className="mb-1 block text-xs text-muted-foreground">语音</label>
             <Select value={voice} onChange={(e) => setVoice(e.target.value)}>
-              <option value="neutral">通用女声</option>
               <option value="male">通用男声</option>
-              <option value="female">温柔女声</option>
             </Select>
           </div>
         </div>

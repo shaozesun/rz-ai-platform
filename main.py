@@ -52,7 +52,7 @@ async def lifespan(app: FastAPI):
     await user_service.init_builtin_roles()
     logger.info('数据库连接成功，预置数据已初始化')
   except Exception as e:
-    logger.critical('数据库连接失败, 部分功能不可用: %s', e)
+    logger.critical('数据库初始化失败: %s', e)
 
   logger.info('初始化完成, 开始接收请求')
   yield

@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Building2, Shield, Flame, HardHat, ClipboardList, BookOpen, AlertTriangle, CheckCircle, FileText, Download, Home, ShoppingCart, Car, Wrench, Banknote, GraduationCap, Zap, Bell, Sprout } from 'lucide-react';
 import { PlatformShell } from '@/components/platform-shell';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
@@ -451,10 +451,19 @@ export default function FireSafetyPage() {
     } as FireSafetyResult);
   };
 
-  // Auto-open compartment
-  if (areaWarn && !compOpen && !loading) {
-    // Use setTimeout to avoid setState during render
-  }
+  // Auto-fill fire compartment area
+  useEffect(() => {
+    if (showComp) {
+      if (!aboveGroundFireArea && suggestedMaxFireArea > 0) {
+        setAboveGroundFireArea(String(suggestedMaxFireArea));
+      }
+      if (fb > 0 && !belowGroundFireArea && suggestedBasementMax > 0) {
+        setBelowGroundFireArea(String(suggestedBasementMax));
+      }
+      if (!compOpen) setCompOpen(true);
+    }
+  }, [showComp, suggestedMaxFireArea, suggestedBasementMax, fb, compOpen,
+      aboveGroundFireArea, belowGroundFireArea]);
 
   return (
     <PlatformShell title="消防配置" description="输入建筑参数，AI 智能生成消防设施、建材和安全管理方案">
@@ -551,7 +560,7 @@ export default function FireSafetyPage() {
                     <div className="mt-3 grid grid-cols-1 gap-4 sm:grid-cols-2">
                       <div>
                         <label className="mb-1 block text-xs text-muted-foreground">地上单个防火分区设计面积 (m²)</label>
-                        <Input type="number" min={1} step={100} placeholder={`建议 ≤ ${suggestedMaxFireArea}`}
+                        <Input type="number" min={0} step={100} placeholder={`建议 ≤ ${suggestedMaxFireArea}`}
                           value={aboveGroundFireArea}
                           onChange={(e) => setAboveGroundFireArea(e.target.value)} />
                         <p className="mt-1 text-xs text-muted-foreground">按《建筑设计防火规范》GB 50016 第 5.3.1 条，当前限值 {suggestedMaxFireArea.toLocaleString()} m²</p>
@@ -559,7 +568,7 @@ export default function FireSafetyPage() {
                       {fb > 0 && (
                         <div>
                           <label className="mb-1 block text-xs text-muted-foreground">地下单个防火分区设计面积 (m²)</label>
-                          <Input type="number" min={1} step={100} placeholder={`建议 ≤ ${suggestedBasementMax}`}
+                          <Input type="number" min={0} step={100} placeholder={`建议 ≤ ${suggestedBasementMax}`}
                             value={belowGroundFireArea}
                             onChange={(e) => setBelowGroundFireArea(e.target.value)} />
                           <p className="mt-1 text-xs text-muted-foreground">地下室防火分区限值 {suggestedBasementMax} m²（《建筑设计防火规范》GB 50016 第 5.3.1 条）</p>

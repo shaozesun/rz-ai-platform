@@ -8,7 +8,7 @@ class Settings(BaseSettings):
   HOST: str = '0.0.0.0'
   PORT: int = 8000
   WORKERS: int = 4
-  PROJECT_NAME: str = '润泽AI平台'
+  PROJECT_NAME: str = '智能运维平台'
   VERSION: str = '1.0.0'
 
   # ==================== JWT ====================
@@ -33,6 +33,7 @@ class Settings(BaseSettings):
   MONGO_DB_NAME: str = 'rz_ai_platform'
   MONGO_MAX_POOL_SIZE: int = 50
   MONGO_MIN_POOL_SIZE: int = 5
+  MONGO_REPLICA_SET: str = ''     # 副本集名称，空则不启用
 
   # ==================== Redis ====================
   REDIS_HOST: str = 'localhost'
@@ -62,42 +63,82 @@ class Settings(BaseSettings):
   LLM_MAX_RETRIES: int = 2
   LLM_TEMPERATURE: float = 0.7
 
+  # ==================== 日志 ====================
+  LOG_LEVEL: str = 'INFO'
+  LOG_DIR: str = 'logs'
+  LOG_FILE_ENABLED: bool = True
+  LOG_FILE_RETENTION: int = 30
+  LOG_AUDIT_ENABLED: bool = True
+
   # ==================== RAG ====================
   CHUNK_SIZE: int = 1200
   CHUNK_OVERLAP: int = 150
-  RAG_TOP_K: int = 10
-  RAG_FETCH_K_GLOBAL: int = 150
-  RAG_FILE_TOP_K: int = 5
-  RAG_FUSION_TOP_K: int = 20
+  RAG_TOP_K: int = 6
+  RAG_FETCH_K_GLOBAL: int = 300
+  RAG_FETCH_K_PER_FILE: int = 12
+  RAG_FILE_TOP_K: int = 10
+  RAG_FUSION_TOP_K: int = 30
   RAG_FINAL_TOP_K: int = 6
+  RAG_FILE_SCAN_LIMIT: int = 10000
+  RAG_DENSE_RECALL_LIMIT: int = 150
+  RAG_SPARSE_RECALL_LIMIT: int = 150
 
-  # RAG 融合权重
-  RAG_FUSION_A: float = 0.3
-  RAG_FUSION_B: float = 0.3
-  RAG_FUSION_C: float = 0.2
-  RAG_FUSION_D: float = 0.1
-  RAG_FUSION_E: float = 0.1
+  # RAG 融合权重 (v2)
+  RAG_FUSION_A: float = 0.20
+  RAG_FUSION_B: float = 0.10
+  RAG_FUSION_C: float = 0.50
+  RAG_FUSION_D: float = 0.20
+  RAG_FUSION_E: float = 0.0
+
+  # RAG 融合权重 (v1 兼容)
+  RAG_FUSION_ALPHA: float = 0.20
+  RAG_FUSION_BETA: float = 0.40
+  RAG_FUSION_GAMMA: float = 0.40
 
   # BM25
-  RAG_SPARSE_NORM: str = 'z_score'
-  RAG_SIGMOID_SCALE: float = 8.0
-  RAG_DENSE_WEIGHT: float = 0.6
-  RAG_SPARSE_WEIGHT: float = 0.4
+  RAG_SPARSE_NORM: str = 'max'
+  RAG_SIGMOID_SCALE: float = 1.5
+  RAG_SPARSE_SIGMOID_SCALE: float = 0.5
+  RAG_BM25_SIGMOID_SCALE: float = 2.0
+  RAG_DENSE_WEIGHT: float = 0.65
+  RAG_SPARSE_WEIGHT: float = 0.35
 
   # 重排序
   RAG_CROSS_ENCODER_ENABLED: bool = False
-  RAG_INTENT_CLASSIFY_ENABLED: bool = False
+  RAG_CROSS_ENCODER_PRE_FILTER: int = 15
+  RAG_CROSS_ENCODER_WEIGHT: float = 0.6
+  RAG_INTENT_CLASSIFY_ENABLED: bool = True
   RAG_QUERY_REWRITE_ENABLED: bool = True
 
   # 检索缓存
-  RAG_CACHE_ENABLED: bool = True
+  RAG_CACHE_ENABLED: bool = False
   RAG_CACHE_TTL: int = 3600
+
   # Parent-Child 切分
-  RAG_A_PARENT_ENABLED: bool = False
-  RAG_A_PARENT_CHUNK_SIZE: int = 2000
+  RAG_A_PARENT_ENABLED: bool = True
+  RAG_A_PARENT_CHUNK_SIZE: int = 1500
   RAG_A_PARENT_CHUNK_OVERLAP: int = 200
-  RAG_A_CHILD_CHUNK_SIZE: int = 500
-  RAG_A_CHILD_CHUNK_OVERLAP: int = 50
+  RAG_A_CHILD_CHUNK_SIZE: int = 600
+  RAG_A_CHILD_CHUNK_OVERLAP: int = 100
+  RAG_A_FETCH_K_CHILD: int = 300
+
+  RAG_PER_SOURCE_CAP: int = 5
+  RAG_PER_FILE_CAP: int = 3
+  RAG_PRIMARY_FILE_CHUNKS: int = 3
+  RAG_PRIMARY_MIN_SCORE: float = 0.40
+  RAG_PRIMARY_GAP_THRESHOLD: float = 0.075
+  RAG_RERANK_LOG_TOP_N: int = 30
+  RAG_MERGED_LOG_TOP_N: int = 20
+  RAG_BM25_K1: float = 1.2
+  RAG_BM25_B: float = 0.75
+  RAG_RRF_K: int = 60
+  RAG_FILE_SIM_THRESHOLD: float = 0.40
+  RAG_SPARSE_GATE_THRESHOLD: float = 0.05
+  RAG_SPARSE_GATE_DECAY: float = 0.35
+  RAG_RERANK_LEXICAL_WEIGHT: float = 0.55
+
+  # RAG 服务 URL (远程检索用)
+  RAG_SERVICE_URL: str = 'http://localhost:8000'
 
   RAG_DEBUG: bool = False
 
@@ -110,10 +151,6 @@ class Settings(BaseSettings):
   UPLOAD_DIR: str = str(Path(__file__).parent.parent / 'uploads')
   EMBEDDED_DIR: str = str(Path(__file__).parent.parent / 'embedded')
   SUPPORTED_EXTENSIONS: str = 'pdf,docx,xlsx,xls,csv,txt,md,png,jpg,jpeg'
-
-  # ==================== Coze Studio ====================
-  COZE_API_BASE: str = 'http://localhost:8888'
-  COZE_PAT_TOKEN: str = ''
 
   # ==================== Video Generation Plugins ====================
   PLUGIN_API_TOKEN: str = ''
@@ -148,6 +185,7 @@ class Settings(BaseSettings):
     'env_file': '.env',
     'env_file_encoding': 'utf-8',
     'case_sensitive': True,
+    'extra': 'ignore',
   }
 
 

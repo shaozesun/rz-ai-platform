@@ -102,7 +102,7 @@ def generate_markdown_report(
     lines.append('')
 
   lines.append('---')
-  lines.append(f'*报告由润泽AI平台自动生成 | {now}*')
+  lines.append(f'*报告由智能运维平台自动生成 | {now}*')
 
   return '\n'.join(lines)
 

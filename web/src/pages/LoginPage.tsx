@@ -111,7 +111,7 @@ export default function LoginPage() {
       <Card className="w-full max-w-[400px] shadow-2xl">
         <CardContent className="p-10">
           <div className="mb-6 text-center">
-            <h1 className="text-2xl font-bold text-foreground">润泽 AI 平台</h1>
+            <h1 className="text-2xl font-bold text-foreground">智能运维平台</h1>
           </div>
 
           {/* ===== 忘记密码 ===== */}

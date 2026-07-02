@@ -114,7 +114,7 @@ export default function InnovationPage() {
             </button>
             {appExpanded && (
               <div className="px-4 pb-4 text-sm text-muted-foreground leading-relaxed space-y-4">
-                <p>润泽智能化平台整合六大 AI 能力模块，覆盖企业智能化核心场景：</p>
+                <p>智能运维平台整合六大 AI 能力模块，覆盖企业智能化核心场景：</p>
 
                 <div>
                   <p className="font-medium text-foreground mb-1">对话助手</p>

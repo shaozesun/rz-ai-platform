@@ -84,10 +84,10 @@ export function PlatformShell({
         )}
       >
         <div className="flex h-16 items-center gap-2.5 border-b border-sidebar-border px-5">
-          <img src="/favicon.svg" alt="润泽" className="size-8 rounded-lg" />
+          <img src="/logo.jpg" alt="润泽科技" className="size-8 rounded-lg" />
           <div className="flex flex-col leading-none">
-            <span className="text-sm font-semibold text-sidebar-foreground">润泽智能化平台</span>
-            <span className="mt-0.5 text-xs text-muted-foreground">企业 AI 能力中心</span>
+            <span className="text-sm font-semibold text-sidebar-foreground">智能运维平台</span>
+            <span className="mt-0.5 text-xs text-muted-foreground">润泽 AI 能力中心</span>
           </div>
           <button
             onClick={() => setMobileOpen(false)}

@@ -11,6 +11,7 @@ Orchestrates PPT-to-video conversion across local and remote services:
 import os
 import json
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from typing import Optional
 
@@ -25,6 +26,8 @@ from service.video.tts import synthesize_speech, make_audio_url
 
 logger = logging.getLogger(__name__)
 
+_ppt_executor = ThreadPoolExecutor(max_workers=1)
+
 
 async def run_video_pipeline(task_id: str):
   """Execute the full PPT-to-video pipeline for a given task."""
@@ -37,6 +40,7 @@ async def run_video_pipeline(task_id: str):
   file_path = task.get('file_path', '')
   params = VideoTaskParams(**task.get('params', {}))
   public_base = settings.PUBLIC_BASE_URL.rstrip('/')
+  audio_results = []  # 存原始路径，用于 finally 清理
 
   try:
     # ── Step 1: Extract text ──
@@ -56,6 +60,7 @@ async def run_video_pipeline(task_id: str):
     audio_future = _synthesize_all(scripts, params.voice, public_base)
     images_result, audio_result = await asyncio.gather(images_future, audio_future)
     images = images_result
+    audio_results = audio_result  # 存下来供 finally 清理
     logger.info(f'[{task_id}] Images: {len(images)}, Audio: {len(audio_result)}')
     durations = [a.get('duration', 0) for a in audio_result]
     logger.info(f'[{task_id}] Audio durations: {durations}')
@@ -64,7 +69,8 @@ async def run_video_pipeline(task_id: str):
 
     # ── Step 4: Render video ──
     await _update_status(db, task_id, VideoTaskStatus.RENDERING, 70, '合成视频...')
-    video_url = await _render_video(images, audio_result, scripts, task_id)
+    video_url = await _render_video(images, audio_result, scripts,
+                                    params.aspect_ratio, params.resolution)
     logger.info(f'[{task_id}] Video rendered: {video_url}')
 
     # ── Success ──
@@ -89,6 +95,29 @@ async def run_video_pipeline(task_id: str):
         'updated_at': datetime.utcnow(),
       }}
     )
+  finally:
+    _cleanup_files(file_path, audio_results)
+
+
+def _cleanup_files(file_path: str, audio_results: list[dict]):
+  """删除 PPT 原文件和本地 TTS 音频（不论成功失败都清理）。"""
+  # 删 PPT
+  if file_path and os.path.isfile(file_path):
+    try:
+      os.remove(file_path)
+      logger.info(f'Cleaned up PPT: {file_path}')
+    except OSError:
+      pass
+
+  # 删本地 TTS 文件（Qwen TTS 返回远程 URL，跳过）
+  for a in audio_results:
+    path = a.get('audio_path', '')
+    if path and not path.startswith('http') and os.path.isfile(path):
+      try:
+        os.remove(path)
+        logger.info(f'Cleaned up TTS audio: {path}')
+      except OSError:
+        pass
 
 
 async def _update_status(db, task_id: str, status: VideoTaskStatus,
@@ -141,8 +170,8 @@ def _collect_shape_text(shape) -> list[str]:
   return parts
 
 
-async def _extract_text(file_path: str) -> list[str]:
-  """Extract visible text from each slide using local python-pptx."""
+def _extract_text_sync(file_path: str) -> list[str]:
+  """Synchronous text extraction from PPTX (runs in thread pool)."""
   try:
     prs = Presentation(file_path)
   except Exception as e:
@@ -160,12 +189,17 @@ async def _extract_text(file_path: str) -> list[str]:
   return texts
 
 
+async def _extract_text(file_path: str) -> list[str]:
+  """Extract visible text from each slide (offloaded to thread pool)."""
+  loop = asyncio.get_running_loop()
+  return await loop.run_in_executor(_ppt_executor, _extract_text_sync, file_path)
+
+
 # ── Step 2 ──
 
 async def _generate_scripts(texts: list[str]) -> list[str]:
-  """Generate narration script for each slide via LLM plugin."""
-  scripts: list[str] = []
-  for i, text in enumerate(texts):
+  """Generate narration script for each slide via LLM plugin (parallel)."""
+  async def _gen_one(i: int, text: str) -> tuple[int, str]:
     data = await _call_plugin(
       f'{settings.PLUGIN_LLM_GENERATOR_URL}/generate',
       json={
@@ -179,9 +213,13 @@ async def _generate_scripts(texts: list[str]) -> list[str]:
         'max_tokens': 2048,
       },
     )
-    script = data.get('output', '')
-    scripts.append(script)
-  return scripts
+    return i, data.get('output', '')
+
+  tasks = [_gen_one(i, text) for i, text in enumerate(texts)]
+  results = await asyncio.gather(*tasks)
+  # 按原始页序排列
+  results.sort(key=lambda x: x[0])
+  return [script for _, script in results]
 
 
 # ── Step 3 ──
@@ -201,30 +239,40 @@ async def _convert_images(file_path: str) -> list[str]:
 
 async def _synthesize_all(scripts: list[str], voice: str,
                           base_url: str) -> list[dict]:
-  """Synthesize audio for all scripts sequentially (Qwen TTS limit: 2 concurrent).
+  """Synthesize audio for all scripts (2 concurrent, Qwen TTS limit).
 
   Returns list of {audio_url, duration}.
   """
-  results: list[dict] = []
-  for i, script in enumerate(scripts):
-    logger.info(f'Synthesizing audio {i+1}/{len(scripts)}...')
-    path_or_url, duration = await synthesize_speech(script, voice)
-    results.append({
-      'audio_url': make_audio_url(path_or_url, base_url),
-      'duration': duration,
-    })
-  return results
+  sem = asyncio.Semaphore(1)
+
+  async def _synth_one(i: int, script: str) -> tuple[int, dict]:
+    async with sem:
+      logger.info(f'Synthesizing audio {i+1}/{len(scripts)}...')
+      path_or_url, duration = await synthesize_speech(script, voice)
+      return i, {
+        'audio_url': make_audio_url(path_or_url, base_url),
+        'duration': duration,
+        'audio_path': path_or_url,  # 原始路径，用于清理本地文件
+      }
+
+  tasks = [_synth_one(i, s) for i, s in enumerate(scripts)]
+  results = await asyncio.gather(*tasks)
+  results.sort(key=lambda x: x[0])
+  return [r for _, r in results]
 
 
 # ── Step 4 ──
 
 async def _render_video(images: list[str], audios: list[dict],
-                        scripts: list[str], task_id: str) -> str:
+                        scripts: list[str],
+                        aspect_ratio: str = '16:9',
+                        quality: str = '1080p') -> str:
   """Compose images + audio + subtitles into final MP4 video."""
   slides = []
   for i in range(len(images)):
     audio = audios[i] if i < len(audios) else {}
     slides.append({
+      'index': i + 1,
       'image_url': images[i] if i < len(images) else '',
       'audio_url': audio.get('audio_url', ''),
       'subtitle': scripts[i] if i < len(scripts) else '',
@@ -233,8 +281,12 @@ async def _render_video(images: list[str], audios: list[dict],
 
   data = await _call_plugin(
     f'{settings.PLUGIN_VIDEO_RENDERER_URL}/render_video',
-    json={'output': json.dumps({'slides': slides, 'task_id': task_id})},
+    json={
+      'aspect_ratio': aspect_ratio,
+      'quality': quality,
+      'slides': slides,
+    },
     timeout=1200,
   )
-  logger.info(f'[{task_id}] Renderer response: {json.dumps(data, ensure_ascii=False)[:500]}')
+  logger.info(f'Renderer response: {json.dumps(data, ensure_ascii=False)[:500]}')
   return data.get('video_url', '')

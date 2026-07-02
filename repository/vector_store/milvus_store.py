@@ -49,6 +49,8 @@ def _safe_group_dir(group_id: str) -> str:
 _project_root = Path(__file__).resolve().parent.parent
 EXPORT_CHUNKS_DIR = str(_project_root / "embedded")
 
+COLLECTION_NAME = "rag_docs"
+
 
 class FileMetadataExtractor:
     """文件元数据提取器，用于从文件名中提取元数据信息"""
@@ -189,6 +191,7 @@ class MilvusVectorStore:
             "doc_type",
             "subsystem",
             "section_type",
+            "group_id",
         )
         return {key: item.get(key) for key in dynamic_keys if item.get(key) is not None}
 
@@ -572,30 +575,30 @@ class MilvusRetriever:
 
 
 class VectorStoreManager:
-    """向量存储管理器，用于管理多个组的向量存储实例"""
+    """向量存储管理器，单 collection (rag_docs) 多 group_id 通过 metadata 过滤"""
 
     SPARSE_VOCAB_DIR: str = str(_project_root / "data")
 
     def __init__(self):
-        self._vector_store_states: dict[str, MilvusVectorStore] = {}
-        self._sparse_embedders: dict[str, object] = {}
+        self._vector_store: MilvusVectorStore | None = None
+        self._sparse_embedder: object | None = None
 
-    def _get_sparse_embedder(self, store_key: str):
+    def _get_sparse_embedder(self):
         """获取或创建 SparseEmbedder，优先从文件加载。"""
-        if store_key in self._sparse_embedders:
-            return self._sparse_embedders[store_key]
+        if self._sparse_embedder is not None:
+            return self._sparse_embedder
 
         from repository.vector_store.sparse_embedder import SparseEmbedder
 
         se = SparseEmbedder()
-        vocab_path = Path(self.SPARSE_VOCAB_DIR) / f"sparse_vocab_{store_key}.pkl"
+        vocab_path = Path(self.SPARSE_VOCAB_DIR) / "sparse_vocab.pkl"
 
         if not se.load(str(vocab_path)):
             logger.debug("[VectorStore] SparseEmbedder 词汇表不存在，待入库时构建: %s", vocab_path)
         else:
             logger.info("[VectorStore] SparseEmbedder 已加载: %s", vocab_path)
 
-        self._sparse_embedders[store_key] = se
+        self._sparse_embedder = se
         return se
 
     def _get_embeddings_from_config(self):
@@ -613,35 +616,26 @@ class VectorStoreManager:
             show_progress_bar=False,
         )
 
-    def get_vector_store(self, group_id: str) -> MilvusVectorStore:
-        if not group_id or not group_id.strip():
-            raise ValueError("group_id 不能为空")
-
-        safe_dir = _safe_group_dir(group_id)
-        store_key = f"group_{safe_dir}"
-        logger.debug(
-            "[VectorStore] 获取向量库，group_id=%s, store_key=%s", group_id, store_key
-        )
-
-        if store_key in self._vector_store_states:
-            logger.debug("[VectorStore] 返回已存在的向量库: %s", store_key)
-            return self._vector_store_states[store_key]
+    def get_vector_store(self, group_id: str = "") -> MilvusVectorStore:
+        """获取单例向量存储（所有 group 共用 rag_docs collection，通过 metadata.group_id 区分）。"""
+        if self._vector_store is not None:
+            return self._vector_store
 
         logger.debug("[VectorStore] 创建新的嵌入模型...")
         embeddings = self._get_embeddings_from_config()
         logger.debug("[VectorStore] 嵌入模型创建成功")
 
-        collection_name = f"rag_docs_{store_key}"
-        logger.debug("[VectorStore] 创建新的向量库: collection_name=%s", collection_name)
-
-        self._vector_store_states[store_key] = MilvusVectorStore(
-            collection_name=collection_name,
+        self._vector_store = MilvusVectorStore(
+            collection_name=COLLECTION_NAME,
             embedding_function=embeddings,
-            sparse_embedder=self._get_sparse_embedder(store_key),
+            sparse_embedder=self._get_sparse_embedder(),
         )
-        logger.debug("[VectorStore] 向量库创建成功: %s", store_key)
+        logger.debug("[VectorStore] 向量库创建成功: %s", COLLECTION_NAME)
+        return self._vector_store
 
-        return self._vector_store_states[store_key]
+    @staticmethod
+    def _escape_expr_value(value: str) -> str:
+        return re.sub(r'(["\\])', r"\\\1", value or "")
 
     def add_file(self, file_path: str, group_id: str, open_id: str = "") -> int:
         logger.info("[AddFile] 开始添加文件: path=%s, group_id=%s, open_id=%s", file_path, group_id, open_id)
@@ -664,6 +658,7 @@ class VectorStoreManager:
             if key and key not in seen:
                 seen.add(key)
                 doc.metadata["file_name"] = file_name
+                doc.metadata["group_id"] = group_id
                 if open_id:
                     doc.metadata["uploaded_by"] = open_id
                 unique_splits.append(doc)
@@ -676,10 +671,9 @@ class VectorStoreManager:
         store = self.get_vector_store(group_id=group_id)
         logger.debug("[AddFile] 向量库获取成功，开始添加文档...")
 
-        store_key = f"group_{_safe_group_dir(group_id)}"
-        se = self._sparse_embedders.get(store_key)
+        se = self._sparse_embedder
         Path(self.SPARSE_VOCAB_DIR).mkdir(parents=True, exist_ok=True)
-        vocab_path = str(Path(self.SPARSE_VOCAB_DIR) / f"sparse_vocab_{store_key}.pkl")
+        vocab_path = str(Path(self.SPARSE_VOCAB_DIR) / "sparse_vocab.pkl")
         was_empty = se is not None and se.vocab_size == 0
         if was_empty:
             texts = [d.page_content for d in unique_splits]
@@ -711,7 +705,19 @@ class VectorStoreManager:
 
         store = self.get_vector_store(group_id=group_id)
 
-        delete_count = store.delete_by_metadata({"source": path_str_normalized})
+        escaped_source = self._escape_expr_value(path_str_normalized)
+        escaped_group = self._escape_expr_value(group_id)
+        filter_expr = f'source == "{escaped_source}" && group_id == "{escaped_group}"'
+
+        try:
+            result = store.client.delete(
+                collection_name=store.collection_name,
+                filter=filter_expr,
+            )
+            delete_count = result.get("delete_count", 0) if isinstance(result, dict) else 0
+        except Exception as e:
+            logger.warning("[DeleteFile] 按 source+group_id 删除失败: %s", e)
+            delete_count = 0
 
         n = delete_count
         file_deleted = False
@@ -759,9 +765,12 @@ class VectorStoreManager:
     def get_vector_store_info(self, group_id: str, expr: str | None = None) -> dict:
         try:
             vector_store = self.get_vector_store(group_id=group_id)
-            all_docs = vector_store.get(expr=expr)
+            escaped_group = self._escape_expr_value(group_id)
+            group_filter = f'group_id == "{escaped_group}"'
+            combined = f"{group_filter} && ({expr})" if expr else group_filter
+            all_docs = vector_store.get(expr=combined)
             sources = all_docs.get("metadatas", [])
-            source_counts = {}
+            source_counts: dict[str, int] = {}
             for source in sources:
                 source_path = source.get("source", "unknown")
                 source_path_normalized = FileMetadataExtractor.normalize_path(source_path)
@@ -778,22 +787,32 @@ class VectorStoreManager:
         if not group_id or not group_id.strip():
             raise ValueError("group_id 不能为空")
 
-        store_key = f"group_{_safe_group_dir(group_id)}"
-
-        if store_key in self._vector_store_states:
-            vector_store = self._vector_store_states[store_key]
-            vector_store.drop_collection()
-            del self._vector_store_states[store_key]
-            logger.debug("[VectorStore] 向量存储已清除: %s", store_key)
+        store = self.get_vector_store(group_id=group_id)
+        escaped_group = self._escape_expr_value(group_id)
+        filter_expr = f'group_id == "{escaped_group}"'
+        try:
+            result = store.client.delete(
+                collection_name=store.collection_name,
+                filter=filter_expr,
+            )
+            logger.info(
+                "[VectorStore] 已清除 group_id=%s 的向量, delete_count=%s",
+                group_id,
+                result.get("delete_count", "?") if isinstance(result, dict) else "?",
+            )
+        except Exception as e:
+            logger.error("[VectorStore] 清除向量失败: %s", e)
 
     def get_all_vector_stores(self) -> dict[str, MilvusVectorStore]:
-        """获取所有向量存储实例"""
-        return self._vector_store_states.copy()
+        """获取所有向量存储实例（单 collection 模式始终返回同一个）"""
+        if self._vector_store is None:
+            return {}
+        return {COLLECTION_NAME: self._vector_store}
 
     def reset_for_child(self):
         """fork 后子进程重置：清空缓存的 vector store 和 sparse embedder，下次使用自动重建"""
-        self._vector_store_states.clear()
-        self._sparse_embedders.clear()
+        self._vector_store = None
+        self._sparse_embedder = None
 
 
 def export_chunks_to_folder(file_path: str, output_dir: str = EXPORT_CHUNKS_DIR) -> int:

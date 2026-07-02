@@ -34,17 +34,36 @@ DEFAULT_SEPARATORS = [
     "",
 ]
 
+# MinerU/Markdown 文档专用：优先在标题边界切分，保持章节语义完整
+MARKDOWN_SEPARATORS = [
+    "\n## ",
+    "\n### ",
+    "\n#### ",
+    "\n# ",
+    *DEFAULT_SEPARATORS,
+]
+
+
+def _doc_is_markdown(documents: list[Document]) -> bool:
+    """判断文档是否为 MinerU/Markdown 产物。"""
+    if not documents:
+        return False
+    parser = str((documents[0].metadata or {}).get("parser", ""))
+    return parser.startswith("mineru")
+
 
 def get_splitter(
     chunk_size: int,
     chunk_overlap: int,
+    *,
+    is_markdown: bool = False,
 ) -> RecursiveCharacterTextSplitter:
     return RecursiveCharacterTextSplitter(
         chunk_size=chunk_size,
         chunk_overlap=chunk_overlap,
         length_function=len,
         add_start_index=True,
-        separators=DEFAULT_SEPARATORS,
+        separators=MARKDOWN_SEPARATORS if is_markdown else DEFAULT_SEPARATORS,
     )
 
 
@@ -112,6 +131,7 @@ def split_documents_smart(
     text_splitter = get_splitter(
         chunk_size=chunk_size,
         chunk_overlap=chunk_overlap,
+        is_markdown=_doc_is_markdown(documents),
     )
     splits = text_splitter.split_documents(documents)
     return merge_small_chunks(
@@ -142,8 +162,9 @@ def split_documents_parent_child(
     if not documents:
         return [], []
 
-    parent_splitter = get_splitter(parent_chunk_size, parent_chunk_overlap)
-    child_splitter = get_splitter(child_chunk_size, child_chunk_overlap)
+    doc_is_md = _doc_is_markdown(documents)
+    parent_splitter = get_splitter(parent_chunk_size, parent_chunk_overlap, is_markdown=doc_is_md)
+    child_splitter = get_splitter(child_chunk_size, child_chunk_overlap, is_markdown=doc_is_md)
     parents: list[Document] = []
     children: list[Document] = []
     parent_global_idx = 0
