@@ -15,12 +15,26 @@ import {
   Menu,
   X,
   LogOut,
+  type LucideIcon,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useAuthStore } from '@/stores/authStore';
 import { Button } from '@/components/ui/button';
 
-const navGroups = [
+interface NavItem {
+  href: string;
+  label: string;
+  icon: LucideIcon;
+  perm?: string;
+  role?: string;
+}
+
+interface NavGroup {
+  label: string;
+  items: NavItem[];
+}
+
+const navGroups: NavGroup[] = [
   {
     label: '工作台',
     items: [

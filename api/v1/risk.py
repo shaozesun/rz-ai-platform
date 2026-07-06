@@ -22,6 +22,10 @@ from service.risk.history_service import (
   get_user_history,
   get_check_detail,
   delete_check_record,
+  save_fire_safety_result,
+  get_fire_safety_history,
+  get_fire_safety_detail,
+  delete_fire_safety_record,
 )
 from service.risk.fire_safety_service import recommend
 from service.risk.report_service import (
@@ -161,6 +165,12 @@ async def fire_safety_recommend(
               body.building_area or body.area)
   result = await recommend(body)
   result.trace_id = get_trace_id()
+  # 持久化到数据库
+  if result.ok:
+    try:
+      await save_fire_safety_result(user_id, body, result)
+    except Exception:
+      logger.warning('[FireSafety] 保存结果失败', exc_info=True)
   return result
 
 
@@ -269,6 +279,47 @@ async def risk_history_delete(
   """删除检测记录"""
   user_id = request.state.user_id
   deleted = await delete_check_record(user_id, check_id)
+  if not deleted:
+    return JSONResponse(status_code=404, content={'ok': False, 'msg': '记录不存在或已删除'})
+  return {'ok': True}
+
+
+@router.get('/fire-safety/history')
+@require_permission('ai:fire_safety')
+async def fire_safety_history(
+  request: Request,
+  limit: int = Query(10, ge=1, le=50),
+  offset: int = Query(0, ge=0),
+):
+  """获取用户消防推荐历史列表"""
+  user_id = request.state.user_id
+  records = await get_fire_safety_history(user_id, limit=limit, offset=offset)
+  return {'ok': True, 'records': records}
+
+
+@router.get('/fire-safety/history/{record_id}')
+@require_permission('ai:fire_safety')
+async def fire_safety_history_detail(
+  request: Request,
+  record_id: str,
+):
+  """获取单条消防推荐详情"""
+  user_id = request.state.user_id
+  detail = await get_fire_safety_detail(user_id, record_id)
+  if not detail:
+    return JSONResponse(status_code=404, content={'ok': False, 'msg': '记录不存在'})
+  return {'ok': True, 'detail': detail}
+
+
+@router.delete('/fire-safety/history/{record_id}')
+@require_permission('ai:fire_safety')
+async def fire_safety_history_delete(
+  request: Request,
+  record_id: str,
+):
+  """删除消防推荐记录"""
+  user_id = request.state.user_id
+  deleted = await delete_fire_safety_record(user_id, record_id)
   if not deleted:
     return JSONResponse(status_code=404, content={'ok': False, 'msg': '记录不存在或已删除'})
   return {'ok': True}

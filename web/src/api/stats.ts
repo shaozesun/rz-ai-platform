@@ -2,13 +2,19 @@ import client from './client';
 
 export interface OverviewData {
   api_call_count: number;
+  api_call_change: number | null;
   compute_usage: number;
+  compute_usage_change: number | null;
   user_count: number;
   session_count: number;
+  session_change: number | null;
   video_count: number;
-  group_count: number;
+  video_change: number | null;
   risk_check_count: number;
+  risk_check_change: number | null;
   fire_safety_count: number;
+  fire_safety_change: number | null;
+  doc_count: number;
 }
 
 export interface ActivityItem {
@@ -19,13 +25,19 @@ export interface ActivityItem {
 
 const OVERVIEW_DEFAULTS: OverviewData = {
   api_call_count: 0,
+  api_call_change: null,
   compute_usage: 0,
+  compute_usage_change: null,
   user_count: 0,
   session_count: 0,
+  session_change: null,
   video_count: 0,
-  group_count: 0,
+  video_change: null,
   risk_check_count: 0,
+  risk_check_change: null,
   fire_safety_count: 0,
+  fire_safety_change: null,
+  doc_count: 0,
 };
 
 export interface TrendItem {

@@ -10,48 +10,99 @@ from config.mongodb_conn import mongodb_manager
 router = APIRouter()
 
 
+def _week_range(offset_weeks: int = 0) -> tuple[datetime, datetime]:
+  """返回指定周的时间范围。
+
+  offset_weeks=0: 本周（周一 00:00 至当前时刻）
+  offset_weeks=-1: 上周（周一 00:00 至周日 23:59）
+  """
+  now = datetime.utcnow()
+  monday = (now - timedelta(days=now.weekday())).replace(
+    hour=0, minute=0, second=0, microsecond=0,
+  )
+  start = monday + timedelta(weeks=offset_weeks)
+  if offset_weeks == 0:
+    end = now
+  else:
+    end = (start + timedelta(days=6)).replace(hour=23, minute=59, second=59, microsecond=0)
+  return start, end
+
+
+def _pct_change(this: int, last: int) -> float | None:
+  """计算环比百分比，上周为 0 时返回 None"""
+  if last <= 0:
+    return None
+  return round(((this - last) / last) * 100, 1)
+
+
 @router.get('/stats/overview')
 async def get_overview(request: Request):
-    """返回仪表盘概览统计（全局聚合）。"""
-    db = mongodb_manager.db
-    user_count = await db.users.count_documents({})
-    session_count = await db.sessions.count_documents({})
-    video_count = await db.video_tasks.count_documents({})
-    group_count = await db.knowledge_groups.count_documents({})
-    risk_check_count = await db.risk_checks.count_documents({})
-    fire_safety_count = await db.llm_usage.count_documents({'caller': 'fire_safety'})
+  """返回仪表盘概览统计（本周数据 + 较上周变化）。"""
+  db = mongodb_manager.db
+  this_start, this_end = _week_range(0)
+  last_start, last_end = _week_range(-1)
 
-    # API 调用总量（messages + video_tasks + risk_checks + fire_safety）
-    api_call_count = (
-        await db.messages.count_documents({})
-        + video_count
-        + risk_check_count
-        + fire_safety_count
-    )
+  async def _count(collection: str, date_field: str = 'created_at',
+                   extra: dict | None = None) -> tuple[int, int]:
+    """返回 (本周, 上周) 计数"""
+    base = {date_field: {}}
+    if extra:
+      base.update(extra)
+    this_filt = {**base}
+    this_filt[date_field] = {'$gte': this_start, '$lte': this_end}
+    last_filt = {**base}
+    last_filt[date_field] = {'$gte': last_start, '$lte': last_end}
+    this_cnt = await db[collection].count_documents(this_filt)
+    last_cnt = await db[collection].count_documents(last_filt)
+    return this_cnt, last_cnt
 
-    # 算力消耗（累计 Token 消耗量）
-    pipeline = [
-        {'$group': {
-            '_id': None,
-            'total': {'$sum': {'$add': ['$tokens_in', '$tokens_out']}},
-        }}
-    ]
-    result = await db.llm_usage.aggregate(pipeline).to_list(1)
-    compute_usage = result[0]['total'] if result else 0
+  async def _token_sum(start: datetime, end: datetime) -> int:
+    """指定范围内 tokens_in + tokens_out 总和"""
+    result = await db.llm_usage.aggregate([
+      {'$match': {'created_at': {'$gte': start, '$lte': end}}},
+      {'$group': {
+        '_id': None,
+        'total': {'$sum': {'$add': ['$tokens_in', '$tokens_out']}},
+      }},
+    ]).to_list(1)
+    return result[0]['total'] if result else 0
 
-    return {
-        'ok': True,
-        'data': {
-            'api_call_count': api_call_count,
-            'compute_usage': compute_usage,
-            'user_count': user_count,
-            'session_count': session_count,
-            'video_count': video_count,
-            'group_count': group_count,
-            'risk_check_count': risk_check_count,
-            'fire_safety_count': fire_safety_count,
-        },
-    }
+  # 全量统计（不按周）
+  user_count = await db.users.count_documents({})
+  doc_count = await db.kb_files.count_documents({})
+
+  # 本周 + 上周统计
+  msg_t, msg_l = await _count('messages')
+  session_t, session_l = await _count('sessions')
+  video_t, video_l = await _count('video_tasks')
+  risk_t, risk_l = await _count('risk_checks', 'checked_at')
+  fire_t, fire_l = await _count('llm_usage', extra={'caller': 'fire_safety'})
+
+  api_call_t = msg_t + video_t + risk_t + fire_t
+  api_call_l = msg_l + video_l + risk_l + fire_l
+
+  compute_t = await _token_sum(this_start, this_end)
+  compute_l = await _token_sum(last_start, last_end)
+
+  return {
+    'ok': True,
+    'data': {
+      'api_call_count': api_call_t,
+      'api_call_change': _pct_change(api_call_t, api_call_l),
+      'compute_usage': compute_t,
+      'compute_usage_change': _pct_change(compute_t, compute_l),
+      'user_count': user_count,
+      'session_count': session_t,
+      'session_change': _pct_change(session_t, session_l),
+      'video_count': video_t,
+      'video_change': _pct_change(video_t, video_l),
+      'risk_check_count': risk_t,
+      'risk_check_change': _pct_change(risk_t, risk_l),
+      'fire_safety_count': fire_t,
+      'fire_safety_change': _pct_change(fire_t, fire_l),
+      'doc_count': doc_count,
+    },
+  }
 
 
 @router.get('/stats/activity')

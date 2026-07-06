@@ -6,8 +6,8 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Select } from '@/components/ui/select';
-import { fireSafetyRecommend, downloadFireSafetyReport } from '@/api/risk';
-import type { FireSafetyResult } from '@/types';
+import { fireSafetyRecommend, downloadFireSafetyReport, getFireSafetyHistory, getFireSafetyDetail, deleteFireSafetyRecord } from '@/api/risk';
+import type { FireSafetyResult, FireSafetyHistoryItem } from '@/types';
 
 const BUILDING_TYPES = [
   '住宅建筑', '办公建筑', '商业建筑', '旅馆建筑', '餐饮建筑',
@@ -78,23 +78,6 @@ const OCCUPANCY_RELEVANT = new Set([
   '体育场馆', '交通枢纽', '博物馆/展览馆', '图书馆/档案馆', '娱乐场所',
 ]);
 
-interface FireHistoryItem {
-  id: number;
-  request: Record<string, unknown>;
-  response: FireSafetyResult;
-  created_at: string;
-}
-
-const HISTORY_KEY = 'fire_safety_history';
-const MAX_HISTORY = 20;
-
-function loadHistory(): FireHistoryItem[] {
-  try {
-    const raw = localStorage.getItem(HISTORY_KEY);
-    return raw ? JSON.parse(raw) : [];
-  } catch { return []; }
-}
-
 function pad(n: number) { return String(n).padStart(2, '0'); }
 function fmtTime(iso: string) {
   const d = new Date(iso);
@@ -154,7 +137,7 @@ export default function FireSafetyPage() {
   const [aboveGroundFireArea, setAboveGroundFireArea] = useState('');
   const [belowGroundFireArea, setBelowGroundFireArea] = useState('');
   const [previewOpen, setPreviewOpen] = useState(false);
-  const [history, setHistory] = useState<FireHistoryItem[]>(loadHistory());
+  const [history, setHistory] = useState<FireSafetyHistoryItem[]>([]);
   const [compOpen, setCompOpen] = useState(false);
 
   const update = (key: string, value: string | boolean) => {
@@ -346,41 +329,43 @@ export default function FireSafetyPage() {
     return errs.length === 0;
   };
 
-  // History
-  const saveHist = (items: FireHistoryItem[]) => {
-    setHistory(items);
-    localStorage.setItem(HISTORY_KEY, JSON.stringify(items));
+  // History — load from API
+  const loadHistoryFromApi = async () => {
+    try {
+      const records = await getFireSafetyHistory(20, 0);
+      setHistory(records);
+    } catch { /* 静默失败，不影响主流程 */ }
   };
 
-  const addToHistory = (req: Record<string, unknown>, resp: FireSafetyResult) => {
-    const item: FireHistoryItem = { id: Date.now(), request: { ...req }, response: { ...resp }, created_at: new Date().toISOString() };
-    saveHist([item, ...history].slice(0, MAX_HISTORY));
-  };
+  useEffect(() => { loadHistoryFromApi(); }, []);
 
-  const selectHist = (item: FireHistoryItem) => {
-    setResult(item.response);
-    const r = item.request as Record<string, unknown>;
-    const btype = String(r.building_type || '');
-    setForm({
-      ...defaultForm,
-      building_type: BUILDING_TYPES.includes(btype) ? btype : '其他',
-      custom_building_type: BUILDING_TYPES.includes(btype) ? '' : btype,
-      building_height: String(r.building_height || ''),
-      floor_count_above: String(r.floor_count_above || ''),
-      floor_count_below: String(r.floor_count_below || ''),
-      building_area: String(r.building_area || ''),
-      fire_resistance_rating: String(r.fire_resistance_rating || '二级'),
-      structural_form: String(r.structural_form || ''),
-      fire_hazard_category: String(r.fire_hazard_category || ''),
-      occupancy_count: String(r.occupancy_count || ''),
-      has_sprinkler_system: Boolean(r.has_sprinkler_system),
-      has_alarm_system: Boolean(r.has_alarm_system),
-      has_hydrant_system: Boolean(r.has_hydrant_system),
-      construction_status: String(r.construction_status || '新建'),
-      additional_notes: String(r.additional_notes || ''),
-    });
-    setAboveGroundFireArea('');
-    setBelowGroundFireArea('');
+  const selectHist = async (item: FireSafetyHistoryItem) => {
+    try {
+      const detail = await getFireSafetyDetail(item.record_id);
+      setResult(detail.result);
+      const r = detail.request;
+      const btype = String(r.building_type || '');
+      setForm({
+        ...defaultForm,
+        building_type: BUILDING_TYPES.includes(btype) ? btype : '其他',
+        custom_building_type: BUILDING_TYPES.includes(btype) ? '' : btype,
+        building_height: String(r.building_height || ''),
+        floor_count_above: String(r.floor_count_above || ''),
+        floor_count_below: String(r.floor_count_below || ''),
+        building_area: String(r.building_area || ''),
+        fire_resistance_rating: String(r.fire_resistance_rating || '二级'),
+        structural_form: String(r.structural_form || ''),
+        fire_hazard_category: String(r.fire_hazard_category || ''),
+        occupancy_count: String(r.occupancy_count || ''),
+        has_sprinkler_system: Boolean(r.has_sprinkler_system),
+        has_alarm_system: Boolean(r.has_alarm_system),
+        has_hydrant_system: Boolean(r.has_hydrant_system),
+        construction_status: String(r.construction_status || '新建'),
+        additional_notes: String(r.additional_notes || ''),
+      });
+      setAboveGroundFireArea('');
+      setBelowGroundFireArea('');
+    } catch { /* 静默失败 */ }
   };
 
   // Submit
@@ -413,16 +398,7 @@ export default function FireSafetyPage() {
         additional_notes: notes,
       });
       setResult(res);
-      if (!res.error) addToHistory({
-        building_type: form.building_type === '其他' ? form.custom_building_type : form.building_type,
-        building_height: h, floor_count_above: fa, floor_count_below: fb, building_area: area,
-        fire_resistance_rating: form.fire_resistance_rating, structural_form: form.structural_form,
-        fire_hazard_category: form.fire_hazard_category,
-        occupancy_count: Number(form.occupancy_count),
-        has_sprinkler_system: form.has_sprinkler_system, has_alarm_system: form.has_alarm_system,
-        has_hydrant_system: form.has_hydrant_system, construction_status: form.construction_status,
-        additional_notes: notes,
-      }, res);
+      if (!res.error) loadHistoryFromApi();
     } catch {
       setResult({
         ok: false, building_type: '', building_height: 0, building_area: 0,
@@ -718,23 +694,30 @@ export default function FireSafetyPage() {
                 <CardTitle>历史记录</CardTitle>
                 <CardDescription>点击可查看过往方案详情</CardDescription>
               </div>
-              <Button variant="outline" size="xs" onClick={() => saveHist([])}>清空记录</Button>
+              <Button variant="outline" size="xs" onClick={async () => {
+                await Promise.all(history.map((h) => deleteFireSafetyRecord(h.record_id).catch(() => {})));
+                setHistory([]);
+              }}>清空记录</Button>
             </CardHeader>
             <CardContent>
               <div className="space-y-2">
                 {history.map((item) => (
-                  <div key={item.id}
+                  <div key={item.record_id}
                     className="group relative cursor-pointer rounded-lg border border-border p-3 hover:shadow-sm transition-shadow"
-                    style={{ borderTopWidth: '3px', borderTopColor: item.response.risk_level === 'critical' || item.response.risk_level === 'high' ? '#ef4444' : item.response.risk_level === 'medium' ? '#f97316' : item.response.risk_level === 'low' ? '#3b82f6' : '#9ca3af' }}
+                    style={{ borderTopWidth: '3px', borderTopColor: item.risk_level === 'critical' || item.risk_level === 'high' ? '#ef4444' : item.risk_level === 'medium' ? '#f97316' : item.risk_level === 'low' ? '#3b82f6' : '#9ca3af' }}
                     onClick={() => selectHist(item)}>
                     <button className="absolute right-2 top-2 rounded p-0.5 text-muted-foreground opacity-0 hover:bg-destructive/10 hover:text-destructive group-hover:opacity-100 transition-opacity"
-                      onClick={(e) => { e.stopPropagation(); saveHist(history.filter((h) => h.id !== item.id)); }}>
+                      onClick={async (e) => {
+                        e.stopPropagation();
+                        await deleteFireSafetyRecord(item.record_id);
+                        setHistory((prev) => prev.filter((h) => h.record_id !== item.record_id));
+                      }}>
                       &times;
                     </button>
-                    <p className="text-sm font-medium text-foreground pr-6 truncate">{String(item.request.building_type || '')}</p>
+                    <p className="text-sm font-medium text-foreground pr-6 truncate">{item.building_type || '未知建筑类型'}</p>
                     <div className="mt-1 flex items-center gap-2 text-xs text-muted-foreground">
-                      <Badge variant={item.response.risk_level === 'high' || item.response.risk_level === 'critical' ? 'destructive' : item.response.risk_level === 'medium' ? 'warning' : 'success'} className="text-xs">
-                        {RISK_LABELS[item.response.risk_level] || '未知'}
+                      <Badge variant={item.risk_level === 'high' || item.risk_level === 'critical' ? 'destructive' : item.risk_level === 'medium' ? 'warning' : 'success'} className="text-xs">
+                        {RISK_LABELS[item.risk_level] || '未知'}
                       </Badge>
                       <span>{fmtTime(item.created_at)}</span>
                     </div>

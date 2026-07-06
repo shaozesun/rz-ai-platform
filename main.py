@@ -49,11 +49,20 @@ async def lifespan(app: FastAPI):
     mongodb_manager.connect()
     redis_manager.connect()
     await mongodb_manager.init_indexes()
-    await user_service.init_builtin_permissions()
-    await user_service.init_builtin_roles()
-    logger.info('数据库连接成功，预置数据已初始化')
+    logger.info('数据库连接成功')
   except Exception as e:
     logger.critical('数据库初始化失败: %s', e)
+
+  try:
+    await user_service.init_builtin_permissions()
+  except Exception as e:
+    logger.critical('权限初始化失败: %s', e)
+
+  try:
+    await user_service.init_builtin_roles()
+    logger.info('预置数据已初始化')
+  except Exception as e:
+    logger.critical('角色初始化失败: %s', e)
 
   logger.info('初始化完成, 开始接收请求')
   yield

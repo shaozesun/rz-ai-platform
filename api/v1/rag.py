@@ -186,29 +186,12 @@ async def get_vector_store_info(
             query["source"] = source
         records = await db.kb_files.find(query).to_list(None)
 
-        if records:
-            sources: dict[str, dict] = {}
-            total_chunks = 0
-            for r in records:
-                sources[r["source"]] = {"size": r.get("size", 0), "chunks": r.get("chunks", 0)}
-                total_chunks += r.get("chunks", 0)
-            return {"ok": True, "data": {"total_chunks": total_chunks, "sources": sources}}
-
-        # MongoDB 无记录（旧数据），降级扫描 Milvus
-        expr = None
-        if source:
-            escaped = source.replace('"', '\\"')
-            expr = f'source == "{escaped}"'
-        info = rag_service.get_vector_store_info(
-            group_id=gid, expr=expr, open_id=request.state.user_id,
-        )
-        sources = {}
-        for path, val in info.get("sources", {}).items():
-            if isinstance(val, dict):
-                sources[path] = {"size": val.get("size", 0), "chunks": val.get("chunks", 0)}
-            else:
-                sources[path] = {"size": 0, "chunks": val}
-        return {"ok": True, "data": {"total_chunks": info.get("total_chunks", 0), "sources": sources}}
+        sources: dict[str, dict] = {}
+        total_chunks = 0
+        for r in records:
+            sources[r["source"]] = {"size": r.get("size", 0), "chunks": r.get("chunks", 0)}
+            total_chunks += r.get("chunks", 0)
+        return {"ok": True, "data": {"total_chunks": total_chunks, "sources": sources}}
     except Exception as e:
         return JSONResponse(
             status_code=500,
@@ -246,6 +229,26 @@ async def retrieve_documents(
         return JSONResponse(
             status_code=500,
             content={"ok": False, "msg": "检索失败", "detail": str(e)},
+        )
+
+
+@router.get("/stats")
+@require_permission("ai:chat")
+async def get_overall_stats(request: Request):
+    """获取所有知识库的文档总数和切片总数"""
+    db = mongodb_manager.db
+    try:
+        pipeline = [
+            {"$group": {"_id": None, "total_docs": {"$sum": 1}, "total_chunks": {"$sum": "$chunks"}}}
+        ]
+        result = await db.kb_files.aggregate(pipeline).to_list(1)
+        if result:
+            return {"ok": True, "total_docs": result[0]["total_docs"], "total_chunks": result[0]["total_chunks"]}
+        return {"ok": True, "total_docs": 0, "total_chunks": 0}
+    except Exception as e:
+        return JSONResponse(
+            status_code=500,
+            content={"ok": False, "msg": "获取统计信息失败", "detail": str(e)},
         )
 
 

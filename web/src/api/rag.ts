@@ -49,6 +49,11 @@ export async function createGroup(name: string): Promise<{ ok: boolean; group: {
   return data;
 }
 
+export async function getStats(): Promise<{ ok: boolean; total_docs: number; total_chunks: number }> {
+  const { data } = await client.get('/stats');
+  return data;
+}
+
 export async function deleteGroupApi(groupId: string): Promise<{ ok: boolean }> {
   const { data } = await client.delete(`/groups/${groupId}`);
   return data;

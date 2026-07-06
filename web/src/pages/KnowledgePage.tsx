@@ -8,7 +8,7 @@ import { PlatformShell } from '@/components/platform-shell';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { uploadFile, deleteFile, getVectorStoreInfo, getGroups, createGroup as createGroupApi, deleteGroupApi } from '@/api/rag';
+import { uploadFile, deleteFile, getVectorStoreInfo, getGroups, createGroup as createGroupApi, deleteGroupApi, getStats } from '@/api/rag';
 import { useAuthStore } from '@/stores/authStore';
 
 interface DocItem {
@@ -76,6 +76,7 @@ export default function KnowledgePage() {
   const [totalDocs, setTotalDocs] = useState(0);
   const [totalChunksAll, setTotalChunksAll] = useState(0);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const groupInfoCache = useRef<Map<string, DocItem[]>>(new Map());
   const { hasPermission } = useAuthStore();
 
   const canUpload = hasPermission('ai:knowledge');
@@ -86,6 +87,16 @@ export default function KnowledgePage() {
     setTimeout(() => setLogMsg(''), 4000);
   }, []);
 
+  const loadStats = useCallback(async () => {
+    try {
+      const res = await getStats();
+      if (res.ok) {
+        setTotalDocs(res.total_docs);
+        setTotalChunksAll(res.total_chunks);
+      }
+    } catch { /* ignore */ }
+  }, []);
+
   const loadGroups = useCallback(async () => {
     try {
       const res = await getGroups();
@@ -94,27 +105,18 @@ export default function KnowledgePage() {
         if (!res.groups.find((g) => g.group_id === activeGroup)) {
           setActiveGroup(res.groups[0].group_id);
         }
-        // Count total docs across all groups
-        let total = 0;
-        let totalChunks = 0;
-        const results = await Promise.allSettled(
-          res.groups.map((g) => getVectorStoreInfo(g.group_id)),
-        );
-        for (const r of results) {
-          if (r.status === 'fulfilled' && r.value.ok) {
-            const d = r.value.data as Record<string, unknown>;
-            const sources = d?.sources as Record<string, number> | undefined;
-            if (sources) total += Object.keys(sources).length;
-            totalChunks += (d?.total_chunks as number) || 0;
-          }
-        }
-        setTotalDocs(total);
-        setTotalChunksAll(totalChunks);
       }
     } catch { /* ignore */ }
-  }, []);
+    loadStats();
+  }, [loadStats]);
 
   const loadFiles = useCallback(async (groupId: string) => {
+    const cached = groupInfoCache.current.get(groupId);
+    if (cached) {
+      setDocs(cached);
+      setLoadInfo(true);
+      return;
+    }
     setLoadInfo(false);
     setDocs([]);
     try {
@@ -130,6 +132,7 @@ export default function KnowledgePage() {
               chunks: info.chunks || 0,
               updatedAt: '',
             }));
+            groupInfoCache.current.set(groupId, files);
             setDocs(files);
           }
         }
@@ -171,6 +174,8 @@ export default function KnowledgePage() {
       }
     }
     setUploading(null);
+    groupInfoCache.current.delete(activeGroup);
+    loadStats();
     if (fail === 0) {
       showMsg(`全部上传成功: ${success} 个文件`);
     } else if (success === 0) {
@@ -185,7 +190,9 @@ export default function KnowledgePage() {
       const res = await deleteFile(name, activeGroup);
       if (res.ok) {
         showMsg(`已删除: ${name}`);
+        groupInfoCache.current.delete(activeGroup);
         setDocs((prev) => prev.filter((f) => f.name !== name));
+        loadStats();
       }
     } catch {
       showMsg('删除失败');

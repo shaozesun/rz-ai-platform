@@ -73,30 +73,39 @@ class MilvusVectorStore:
         self._sparse_embedder = sparse_embedder
         self.client = self._get_milvus_client()
         self._embedding_dim = None
+        self._collection_loaded = False
 
         try:
-            logger.debug(
-                f"[Milvus] 开始初始化 Milvus 向量存储，collection_name={collection_name}"
+            logger.info(
+                "[Milvus] 开始初始化 Milvus 向量存储，collection_name=%s", collection_name
             )
 
             if self.client.has_collection(collection_name=self.collection_name):
-                logger.debug(
-                    f"[Milvus] 集合已存在: {self.collection_name}，将使用现有集合"
+                logger.info(
+                    "[Milvus] 集合已存在: %s，将使用现有集合", self.collection_name
                 )
             else:
-                logger.debug(f"[Milvus] 集合不存在，开始创建: {self.collection_name}")
+                logger.info("[Milvus] 集合不存在，开始创建: %s", self.collection_name)
                 self._create_collection()
-                logger.debug(f"[Milvus] 集合创建成功: {self.collection_name}")
+                logger.info("[Milvus] 集合创建成功: %s", self.collection_name)
 
-            logger.debug("[Milvus] Milvus 向量存储初始化成功")
+            logger.info("[Milvus] Milvus 向量存储初始化成功（未加载，首次搜索/查询时懒加载）")
         except Exception as e:
             logger.exception("[Milvus] 初始化 Milvus 向量存储失败")
             raise
 
+    def _ensure_loaded(self):
+        """确保 collection 已加载到内存，仅在首次 search/query 时触发。"""
+        if not self._collection_loaded:
+            logger.info("[Milvus] 加载 collection 到内存: %s", self.collection_name)
+            self.client.load_collection(collection_name=self.collection_name)
+            self._collection_loaded = True
+            logger.info("[Milvus] collection 加载完成: %s", self.collection_name)
+
     def _get_milvus_client(self):
         """获取 Milvus 客户端实例（单例）"""
         if not hasattr(self, '_milvus_client') or self._milvus_client is None:
-            self._milvus_client = MilvusClient(uri=settings.MILVUS_URI, token=settings.MILVUS_TOKEN, db_name=settings.MILVUS_DB_NAME)
+            self._milvus_client = MilvusClient(uri=settings.MILVUS_URI, token=settings.MILVUS_TOKEN, db_name=settings.MILVUS_DB_NAME, timeout=30)
             logger.debug("[Milvus] Milvus 客户端创建成功")
         return self._milvus_client
 
@@ -240,15 +249,18 @@ class MilvusVectorStore:
             logger.exception("[Milvus] 添加文档到向量库失败")
             raise
 
-    def get(self, expr: str | None = None, limit: int | None = None) -> dict[str, Any]:
+    def get(self, expr: str | None = None, limit: int | None = None,
+            output_fields: list[str] | None = None) -> dict[str, Any]:
+        self._ensure_loaded()
         try:
             filter_expr = expr if expr else ""
             if not filter_expr and not limit:
                 limit = 1000
+            fields = output_fields or ["*", "id", "text", "source", "chunk_index"]
             query_kwargs = {
                 "collection_name": self.collection_name,
                 "filter": filter_expr,
-                "output_fields": ["*", "id", "text", "source", "chunk_index"],
+                "output_fields": fields,
             }
             if limit:
                 query_kwargs["limit"] = limit
@@ -322,6 +334,7 @@ class MilvusVectorStore:
 
     def _search_raw_hits(self, query: str, k: int, expr: str | None) -> list[dict[str, Any]]:
         """执行向量检索并返回原始 hit（child 粒度）。"""
+        self._ensure_loaded()
         try:
             logger.debug("[Milvus] similarity_search - expr: %s", expr)
             query_embedding = self.embedding_function.embed_documents([query])[0]
@@ -768,7 +781,7 @@ class VectorStoreManager:
             escaped_group = self._escape_expr_value(group_id)
             group_filter = f'group_id == "{escaped_group}"'
             combined = f"{group_filter} && ({expr})" if expr else group_filter
-            all_docs = vector_store.get(expr=combined)
+            all_docs = vector_store.get(expr=combined, output_fields=["source", "file_name"])
             sources = all_docs.get("metadatas", [])
             source_counts: dict[str, int] = {}
             for source in sources:

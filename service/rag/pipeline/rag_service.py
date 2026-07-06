@@ -1061,7 +1061,7 @@ JSON 输出："""
             logger.debug("[RAG] 指定 source，跳过扫描: %s", Path(normalized).name)
             return source_to_file
         try:
-            all_docs = vector_store.get(limit=scan_limit)
+            all_docs = vector_store.get(limit=scan_limit, output_fields=["source", "file_name"])
             metadatas = all_docs.get("metadatas", [])
             for md in metadatas:
                 source = self._normalize_path(str(md.get("source", "")).strip())
@@ -1738,7 +1738,7 @@ JSON 输出："""
             escaped_group = self._escape_expr_value(group_id)
             group_filter = f'group_id == "{escaped_group}"'
             combined = f"{group_filter} && ({expr})" if expr else group_filter
-            all_docs = vector_store.get(expr=combined)
+            all_docs = vector_store.get(expr=combined, output_fields=["source", "file_name"])
             sources = all_docs.get("metadatas", [])
             source_counts: dict[str, dict] = {}
             for source in sources:

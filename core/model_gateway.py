@@ -147,6 +147,7 @@ class ModelGateway:
     model: str = '',
     temperature: float = 0.7,
     max_tokens: int = 4096,
+    caller: str = 'rag',
   ) -> AsyncIterator[str]:
     """流式对话 — 异步生成器"""
     client = self._chat_client
@@ -156,7 +157,6 @@ class ModelGateway:
     model_name = model or settings.LLM_MODEL
     trace_id = get_trace_id()
     start = time.time()
-    total_tokens = 0
 
     try:
       stream = await client.chat.completions.create(
@@ -165,20 +165,32 @@ class ModelGateway:
         temperature=temperature,
         max_tokens=max_tokens,
         stream=True,
+        stream_options={'include_usage': True},
       )
+      usage = None
       async for chunk in stream:
+        if chunk.usage:
+          usage = chunk.usage
         delta = chunk.choices[0].delta
         if delta.content:
-          total_tokens += 1
           yield delta.content
     except Exception as e:
       logger.error(f'stream error: {e}')
       raise
 
     elapsed = time.time() - start
+    if usage:
+      asyncio.ensure_future(_log_usage(
+        user_id=None, model=model_name,
+        tokens_in=usage.prompt_tokens,
+        tokens_out=usage.completion_tokens,
+        caller=caller,
+      ))
     logger.info(
       f'model={model_name} stream '
-      f'elapsed={elapsed:.2f}s tokens_out~={total_tokens}'
+      f'elapsed={elapsed:.2f}s '
+      f'tokens_in={usage.prompt_tokens if usage else "?"} '
+      f'tokens_out={usage.completion_tokens if usage else "?"}'
     )
 
   async def vision(
@@ -244,7 +256,7 @@ class ModelGateway:
     if usage:
       asyncio.ensure_future(_log_usage(
         user_id=None, model=model_name,
-        tokens_in=usage.prompt_tokens, tokens_out=0,
+        tokens_in=usage.prompt_tokens, tokens_out=usage.completion_tokens or 0,
         caller='vision',
       ))
 

@@ -1,6 +1,6 @@
 import threading
 from motor.motor_asyncio import AsyncIOMotorClient
-from pymongo import MongoClient, ASCENDING, IndexModel
+from pymongo import MongoClient, ASCENDING, DESCENDING, IndexModel
 from config.settings import settings
 
 
@@ -105,14 +105,6 @@ class MongoDBManager:
     await _safe_index('applications', lambda: db.applications.create_index('application_id', unique=True))
     await _safe_index('applications', lambda: db.applications.create_index('user_id'))
     await _safe_index('applications', lambda: db.applications.create_index('status'))
-    await _safe_index('applications', lambda: db.applications.create_index(
-      [('user_id', ASCENDING), ('requested_roles', ASCENDING), ('status', ASCENDING)],
-      unique=True,
-      partialFilterExpression={
-        'requested_roles': {'$type': 'array', '$ne': []},
-        'status': 'pending',
-      },
-    ))
 
     # audit_logs
     await _safe_index('audit_logs', lambda: db.audit_logs.create_index('log_id', unique=True))
@@ -143,8 +135,18 @@ class MongoDBManager:
     await _safe_index('risk_checks', lambda: db.risk_checks.create_index('user_id'))
     await _safe_index('risk_checks', lambda: db.risk_checks.create_index([('checked_at', ASCENDING)]))
 
+    # fire_safety_history
+    await _safe_index('fire_safety_history', lambda: db.fire_safety_history.create_index('record_id', unique=True))
+    await _safe_index('fire_safety_history', lambda: db.fire_safety_history.create_index('user_id'))
+    await _safe_index('fire_safety_history', lambda: db.fire_safety_history.create_index([('created_at', ASCENDING)]))
+
     # llm_usage
-    await _safe_index('llm_usage', lambda: db.llm_usage.create_index([('created_at', ASCENDING)]))
+    await _safe_index('llm_usage', lambda: db.llm_usage.create_index([('caller', ASCENDING), ('created_at', ASCENDING)]))
+
+    # kb_files 文件索引
+    await _safe_index('kb_files', lambda: db.kb_files.create_index(
+      [('group_id', ASCENDING), ('source', ASCENDING)]
+    ))
 
     # knowledge_groups
     await _safe_index('knowledge_groups', lambda: db.knowledge_groups.create_index(
@@ -152,7 +154,8 @@ class MongoDBManager:
     ))
 
     if errors:
-      raise RuntimeError(f'部分索引创建失败: {"; ".join(errors)}')
+      import logging
+      logging.getLogger(__name__).warning('部分索引创建跳过: %s', '; '.join(errors))
 
   def close(self):
     if self._client:

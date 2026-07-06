@@ -55,7 +55,7 @@ const dotColor = (type: string) => {
 export default function OverviewPage() {
   const user = useAuthStore((s) => s.user);
   const userName = user?.name || user?.phone || '用户';
-  const [overview, setOverview] = useState<OverviewData>({ api_call_count: 0, compute_usage: 0, user_count: 0, session_count: 0, video_count: 0, group_count: 0, risk_check_count: 0, fire_safety_count: 0 });
+  const [overview, setOverview] = useState<OverviewData>({ api_call_count: 0, api_call_change: null, compute_usage: 0, compute_usage_change: null, user_count: 0, session_count: 0, session_change: null, video_count: 0, video_change: null, risk_check_count: 0, risk_check_change: null, fire_safety_count: 0, fire_safety_change: null, doc_count: 0 });
   const [activities, setActivities] = useState<ActivityItem[]>([]);
   const [trend, setTrend] = useState<TrendItem[]>([]);
 
@@ -68,19 +68,19 @@ export default function OverviewPage() {
   return (
     <PlatformShell
       title="总览"
-      description={`欢迎回来，${userName}。这是您企业 AI 平台的整体运行情况。`}
+      description={`欢迎回来，${userName}。这是智能运维平台的整体运行情况。`}
     >
-      {/* Stat cards — flat, mobile-first */}
+      {/* Stat cards */}
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-4">
         {[
-          { label: 'API 调用总量', value: overview.api_call_count.toLocaleString(), icon: Activity, sub: '累计请求', tone: 'bg-chart-5/15 text-chart-5' },
-          { label: '算力消耗', value: overview.compute_usage.toLocaleString(), icon: Zap, sub: 'Token 消耗', tone: 'bg-chart-6/15 text-chart-6' },
-          { label: '活跃用户', value: overview.user_count.toLocaleString(), icon: Users, sub: '注册用户', tone: 'bg-chart-1/15 text-chart-1' },
-          { label: '对话会话', value: overview.session_count.toLocaleString(), icon: MessageSquareText, sub: '累计会话', tone: 'bg-chart-2/15 text-chart-2' },
-          { label: '视频生成', value: overview.video_count.toLocaleString(), icon: Clapperboard, sub: '生成任务', tone: 'bg-chart-3/15 text-chart-3' },
-          { label: '隐患识别', value: overview.risk_check_count.toLocaleString(), icon: ShieldAlert, sub: '检测次数', tone: 'bg-chart-4/15 text-chart-4' },
-          { label: '消防配置', value: overview.fire_safety_count.toLocaleString(), icon: Flame, sub: '推荐次数', tone: 'bg-amber-100 text-amber-600' },
-          { label: '知识库', value: overview.group_count.toLocaleString(), icon: BookOpen, sub: '分组数', tone: 'bg-primary/10 text-primary' },
+          { label: 'API 调用总量', value: overview.api_call_count, icon: Activity, sub: '本周请求', tone: 'bg-chart-5/15 text-chart-5' },
+          { label: '算力消耗', value: overview.compute_usage, icon: Zap, sub: 'Token 消耗', tone: 'bg-chart-6/15 text-chart-6' },
+          { label: '活跃用户', value: overview.user_count, icon: Users, sub: '注册用户', tone: 'bg-chart-1/15 text-chart-1' },
+          { label: '对话会话', value: overview.session_count, icon: MessageSquareText, sub: '本周会话', tone: 'bg-chart-2/15 text-chart-2' },
+          { label: '视频生成', value: overview.video_count, icon: Clapperboard, sub: '本周任务', tone: 'bg-chart-3/15 text-chart-3' },
+          { label: '隐患识别', value: overview.risk_check_count, icon: ShieldAlert, sub: '本周检测', tone: 'bg-chart-4/15 text-chart-4' },
+          { label: '消防配置', value: overview.fire_safety_count, icon: Flame, sub: '本周推荐', tone: 'bg-amber-100 text-amber-600' },
+          { label: '知识库', value: overview.doc_count, icon: BookOpen, sub: '文档总数', tone: 'bg-primary/10 text-primary' },
         ].map((s) => {
           const Icon = s.icon;
           return (
@@ -93,7 +93,7 @@ export default function OverviewPage() {
               </div>
               <div className="min-w-0 flex-1">
                 <p className="truncate text-xs text-muted-foreground">{s.label}</p>
-                <p className="text-lg font-semibold tracking-tight tabular-nums">{s.value}</p>
+                <p className="text-lg font-semibold tracking-tight tabular-nums">{s.value.toLocaleString()}</p>
                 <p className="text-[11px] text-muted-foreground/70">{s.sub}</p>
               </div>
             </div>

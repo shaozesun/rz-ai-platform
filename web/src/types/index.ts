@@ -145,6 +145,25 @@ export interface FireSafetyItem {
   reason: string;
 }
 
+export interface FireSafetyHistoryItem {
+  record_id: string;
+  building_type: string;
+  risk_level: string;
+  summary: string;
+  building_height: number;
+  building_area: number;
+  created_at: string;
+}
+
+export interface FireSafetyHistoryDetail {
+  record_id: string;
+  building_type: string;
+  risk_level: string;
+  created_at: string;
+  request: FireSafetyRequest;
+  result: FireSafetyResult;
+}
+
 export interface FireSafetyResult {
   ok: boolean;
   building_type: string;

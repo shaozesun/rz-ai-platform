@@ -6,6 +6,8 @@ import type {
   FireSafetyResult,
   RiskHistoryItem,
   RiskHistoryDetail,
+  FireSafetyHistoryItem,
+  FireSafetyHistoryDetail,
 } from '../types';
 
 export async function checkImage(
@@ -122,5 +124,25 @@ export async function getRiskCheckDetail(checkId: string): Promise<RiskHistoryDe
 
 export async function deleteRiskCheck(checkId: string): Promise<boolean> {
   const { data } = await client.delete(`/risk/history/${checkId}`);
+  return data.ok === true;
+}
+
+export async function getFireSafetyHistory(
+  limit: number = 10,
+  offset: number = 0,
+): Promise<FireSafetyHistoryItem[]> {
+  const { data } = await client.get('/risk/fire-safety/history', { params: { limit, offset } });
+  return data.records ?? [];
+}
+
+export async function getFireSafetyDetail(
+  recordId: string,
+): Promise<FireSafetyHistoryDetail> {
+  const { data } = await client.get(`/risk/fire-safety/history/${recordId}`);
+  return data.detail;
+}
+
+export async function deleteFireSafetyRecord(recordId: string): Promise<boolean> {
+  const { data } = await client.delete(`/risk/fire-safety/history/${recordId}`);
   return data.ok === true;
 }
