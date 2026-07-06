@@ -1,7 +1,6 @@
 import { useState } from 'react';
 import { Send, StopCircle, Paperclip } from 'lucide-react';
 import { useChatStore } from '../stores/chatStore';
-import { Button } from '@/components/ui/button';
 
 interface ChatInputProps {
   suggestions?: string[];

@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import {
   Upload, Camera, CheckCircle, ChevronDown,
-  X, RotateCcw, ShieldAlert, ImageIcon, Loader2, Trash2,
+  X, RotateCcw, ShieldAlert, ImageIcon, Loader2,
   AlertTriangle, GripHorizontal, Search, Download,
 } from 'lucide-react';
 import { PlatformShell } from '@/components/platform-shell';
@@ -131,7 +131,7 @@ export default function RiskPage() {
     } catch {
       setResults([{
         ok: false, check_id: '', image_name: files.map(f => f.name).join(', '),
-        hazards: [], summary: '检测失败', error: '检测失败，请稍后重试', checked_at: '',
+        hazards: [], summary: '检测失败', description: '', error: '检测失败，请稍后重试', checked_at: '',
       } as CheckResult]);
     } finally {
       setLoading(false);

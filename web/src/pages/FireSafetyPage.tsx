@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Building2, Shield, Flame, HardHat, ClipboardList, BookOpen, AlertTriangle, CheckCircle, FileText, Download, Home, ShoppingCart, Car, Wrench, Banknote, GraduationCap, Zap, Bell, Sprout } from 'lucide-react';
+import { Building2, Shield, Flame, HardHat, ClipboardList, BookOpen, AlertTriangle, CheckCircle, FileText, Download, Home, ShoppingCart, Car, Wrench, Banknote, GraduationCap, Zap, Bell } from 'lucide-react';
 import { PlatformShell } from '@/components/platform-shell';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';

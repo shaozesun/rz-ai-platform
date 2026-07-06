@@ -66,13 +66,24 @@ export function PlatformShell({
   const clearAuth = useAuthStore((s) => s.clearAuth);
   const [mobileOpen, setMobileOpen] = useState(false);
 
+  const hasPermission = useAuthStore((s) => s.hasPermission);
+
   const userInitials = user?.name
     ? user.name.slice(0, 2).toUpperCase()
     : user?.phone
       ? user.phone.slice(-2)
       : 'U';
 
-  const filteredGroups = navGroups;
+  const filteredGroups = navGroups
+    .map(group => ({
+      ...group,
+      items: group.items.filter(item => {
+        if (item.role) return (user?.roles || []).includes(item.role);
+        if (item.perm) return hasPermission(item.perm);
+        return true;
+      }),
+    }))
+    .filter(group => group.items.length > 0);
 
   return (
     <div className="flex h-screen overflow-hidden bg-background">

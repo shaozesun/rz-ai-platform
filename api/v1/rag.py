@@ -203,8 +203,11 @@ async def get_vector_store_info(
             group_id=gid, expr=expr, open_id=request.state.user_id,
         )
         sources = {}
-        for path, count in info.get("sources", {}).items():
-            sources[path] = {"size": 0, "chunks": count}
+        for path, val in info.get("sources", {}).items():
+            if isinstance(val, dict):
+                sources[path] = {"size": val.get("size", 0), "chunks": val.get("chunks", 0)}
+            else:
+                sources[path] = {"size": 0, "chunks": val}
         return {"ok": True, "data": {"total_chunks": info.get("total_chunks", 0), "sources": sources}}
     except Exception as e:
         return JSONResponse(

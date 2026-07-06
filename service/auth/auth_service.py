@@ -34,38 +34,55 @@ class AuthService:
 
   async def login(self, phone: str, password: str, ip: str = '') -> dict:
     """手机号 + 密码登录"""
-    # 1. 查找用户
     user = await user_service.get_by_phone(phone)
-    is_new = False
     if not user:
-      user = await user_service.create_user(phone, password)
-      is_new = True
-    else:
-      # 验证密码
-      if not _verify_password(password, user.get('password_salt', ''), user.get('password_hash', '')):
-        raise ValueError('密码错误')
+      raise ValueError('该手机号未注册，请先注册')
 
-    # 2. 检查状态
+    if not _verify_password(password, user.get('password_salt', ''), user.get('password_hash', '')):
+      raise ValueError('密码错误')
+
     if user.get('status') != 'ACTIVE':
       raise ValueError('账号已被禁用, 请联系管理员')
 
-    # 3. 更新登录信息
     await user_service.update_login_info(user['user_id'], ip)
 
-    # 4. 签发 token
     access_token = create_access_token(
       user['user_id'], user['phone'], user.get('roles', [])
     )
     refresh_token = create_refresh_token(user['user_id'])
 
-    # 5. 获取用户公开信息
     user_info = await user_service.get_user_public(user)
 
     return {
       'access_token': access_token,
       'refresh_token': refresh_token,
       'user': user_info,
-      'is_new': is_new,
+    }
+
+  async def register(self, phone: str, password: str, ip: str = '') -> dict:
+    """手机号 + 密码注册"""
+    existing = await user_service.get_by_phone(phone)
+    if existing:
+      raise ValueError('该手机号已注册，请直接登录')
+
+    if len(password) < 6:
+      raise ValueError('密码不能少于6位')
+
+    user = await user_service.create_user(phone, password)
+
+    await user_service.update_login_info(user['user_id'], ip)
+
+    access_token = create_access_token(
+      user['user_id'], user['phone'], user.get('roles', [])
+    )
+    refresh_token = create_refresh_token(user['user_id'])
+
+    user_info = await user_service.get_user_public(user)
+
+    return {
+      'access_token': access_token,
+      'refresh_token': refresh_token,
+      'user': user_info,
     }
 
   async def refresh_token(self, refresh_token: str) -> dict:

@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { Lock, Phone, UserPlus, ArrowLeft } from 'lucide-react';
 import { useAuthStore } from '../stores/authStore';
-import { login, resetPassword } from '../api/auth';
+import { login, register, resetPassword } from '../api/auth';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Card, CardContent } from '@/components/ui/card';
@@ -53,20 +53,25 @@ export default function LoginPage() {
     if (!phone.trim()) { setErrorMsg('请输入手机号'); return; }
     if (!PHONE_RE.test(phone)) { setErrorMsg('请输入正确的 11 位手机号'); return; }
     if (!password) { setErrorMsg('请输入密码'); return; }
-    if (activeTab === 'register' && password !== confirmPassword) {
-      setErrorMsg('两次密码不一致'); return;
+
+    if (activeTab === 'register') {
+      if (password.length < 6) { setErrorMsg('密码不能少于6位'); return; }
+      if (password !== confirmPassword) { setErrorMsg('两次密码不一致'); return; }
     }
+
     setLogging(true);
     try {
-      const res = await login(phone, password);
+      const res = activeTab === 'login'
+        ? await login(phone, password)
+        : await register(phone, password);
       if (res.ok) {
         const d = res.data;
         setAuth(d.access_token, d.refresh_token, d.user, d.user.permissions);
       } else {
-        setErrorMsg(res.msg || '登录失败');
+        setErrorMsg(res.msg || (activeTab === 'login' ? '登录失败' : '注册失败'));
       }
     } catch (err: unknown) {
-      setErrorMsg(extractError(err, '登录失败，请检查手机号或密码'));
+      setErrorMsg(extractError(err, activeTab === 'login' ? '登录失败，请检查手机号或密码' : '注册失败'));
     } finally {
       setLogging(false);
     }

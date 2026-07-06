@@ -38,26 +38,35 @@ def invalidate_role_cache(role_id: Optional[str] = None):
     _role_permissions_cache.clear()
 
 
+def match_permission(user_perms: set[str], required: str) -> bool:
+  """通配符权限匹配. 用户持有 ai:* 可匹配 ai:chat、ai:knowledge 等"""
+  if required in user_perms:
+    return True
+  for p in user_perms:
+    if p.endswith(':*') and required.startswith(p[:-2]):
+      return True
+  return False
+
+
+def _get_request(*args, **kwargs) -> Optional[Request]:
+  for arg in args:
+    if isinstance(arg, Request):
+      return arg
+  for val in kwargs.values():
+    if isinstance(val, Request):
+      return val
+  return None
+
+
 def require_permission(permission: str):
-  """权限校验装饰器"""
+  """权限校验装饰器 (支持通配符)"""
   def decorator(func: Callable):
     @wraps(func)
     async def wrapper(*args, **kwargs):
-      # 权限全开模式跳过检查
       if settings.PERMISSION_OPEN_MODE:
         return await func(*args, **kwargs)
 
-      # Find the Request object from args or kwargs
-      request: Optional[Request] = None
-      for arg in args:
-        if isinstance(arg, Request):
-          request = arg
-          break
-      if request is None:
-        for val in kwargs.values():
-          if isinstance(val, Request):
-            request = val
-            break
+      request = _get_request(*args, **kwargs)
       if request is None:
         raise HTTPException(500, 'Request object not found')
 
@@ -65,8 +74,8 @@ def require_permission(permission: str):
       if not user:
         raise HTTPException(401, '未登录')
 
-      permissions: set = getattr(request.state, 'user_permissions', set())
-      if permission not in permissions:
+      user_perms: set = getattr(request.state, 'user_permissions', set())
+      if not match_permission(user_perms, permission):
         raise HTTPException(403, f'没有权限: {permission}')
 
       return await func(*args, **kwargs)
@@ -75,28 +84,19 @@ def require_permission(permission: str):
 
 
 def require_any_permission(*permissions: str):
-  """需要拥有任意一个权限"""
+  """需要拥有任意一个权限 (支持通配符)"""
   def decorator(func: Callable):
     @wraps(func)
     async def wrapper(*args, **kwargs):
       if settings.PERMISSION_OPEN_MODE:
         return await func(*args, **kwargs)
 
-      request: Optional[Request] = None
-      for arg in args:
-        if isinstance(arg, Request):
-          request = arg
-          break
-      if request is None:
-        for val in kwargs.values():
-          if isinstance(val, Request):
-            request = val
-            break
+      request = _get_request(*args, **kwargs)
       if request is None:
         raise HTTPException(500, 'Request object not found')
 
-      user_perms: set = getattr(request.state, 'user_permissions', set())
-      if not user_perms.intersection(permissions):
+      user_perms = getattr(request.state, 'user_permissions', set())
+      if not any(match_permission(user_perms, p) for p in permissions):
         raise HTTPException(403, f'没有所需权限, 需要: {permissions}')
 
       return await func(*args, **kwargs)

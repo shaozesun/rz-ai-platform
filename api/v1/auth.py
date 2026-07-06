@@ -14,6 +14,11 @@ class LoginRequest(BaseModel):
   password: str = Field(..., min_length=1)
 
 
+class RegisterRequest(BaseModel):
+  phone: str = Field(..., pattern=r'^1[3-9]\d{9}$')
+  password: str = Field(..., min_length=6)
+
+
 class RefreshRequest(BaseModel):
   refresh_token: str
 
@@ -44,6 +49,19 @@ async def login(body: LoginRequest, request: Request):
   ip = request.client.host if request.client else ''
   try:
     result = await auth_service.login(body.phone, body.password, ip)
+    return {
+      'ok': True,
+      'data': result,
+    }
+  except ValueError as e:
+    raise HTTPException(400, str(e))
+
+
+@router.post('/register')
+async def register(body: RegisterRequest, request: Request):
+  ip = request.client.host if request.client else ''
+  try:
+    result = await auth_service.register(body.phone, body.password, ip)
     return {
       'ok': True,
       'data': result,

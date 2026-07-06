@@ -11,6 +11,7 @@ class MessageBase(BaseModel):
     message_id: str = Field(..., description="消息 ID")
     role: str = Field(..., description="消息角色 (user/assistant)")
     content: str = Field(..., description="消息内容")
+    user_id: Optional[str] = Field(None, description="用户 ID")
     created_at: datetime = Field(..., description="消息创建时间")
 
 

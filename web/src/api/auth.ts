@@ -5,9 +5,14 @@ export async function login(phone: string, password: string) {
   return data;
 }
 
+export async function register(phone: string, password: string) {
+  const { data } = await client.post('/auth/register', { phone, password });
+  return data;
+}
+
 export async function refreshToken() {
   const { data } = await client.post('/auth/refresh', {
-    refresh_token: localStorage.getItem('refresh_token'),
+    refresh_token: sessionStorage.getItem('refresh_token'),
   });
   if (data.data) {
     const d = data.data;
@@ -17,7 +22,7 @@ export async function refreshToken() {
 }
 
 export async function logout(): Promise<void> {
-  const refreshToken = localStorage.getItem('refresh_token');
+  const refreshToken = sessionStorage.getItem('refresh_token');
   if (refreshToken) {
     try {
       await client.post('/auth/logout', { refresh_token: refreshToken });

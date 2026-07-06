@@ -4,19 +4,8 @@ from fastapi import APIRouter, Request, HTTPException, Query
 from pydantic import BaseModel, Field
 from core.rbac import require_permission
 from service.auth import user_service
-from config.settings import settings
 
 router = APIRouter(prefix='/admin')
-
-
-# ==================== 辅助: 检查 admin 角色 ====================
-
-def _check_admin(request: Request):
-  if settings.PERMISSION_OPEN_MODE:
-    return
-  user = request.state.current_user
-  if 'admin' not in user.get('roles', []):
-    raise HTTPException(403, '仅管理员可操作')
 
 
 async def _audit(request: Request, action: str, resource: str, detail: str, ip: str = ''):
@@ -32,6 +21,7 @@ async def _audit(request: Request, action: str, resource: str, detail: str, ip: 
 # ==================== 用户管理 ====================
 
 @router.get('/users')
+@require_permission('system:admin')
 async def list_users(
   request: Request,
   page: int = Query(1, ge=1),
@@ -39,7 +29,6 @@ async def list_users(
   keyword: str = '',
   status: str = '',
 ):
-  _check_admin(request)
   items, total = await user_service.list_users(page, page_size, keyword, status)
   # 脱敏: 只返回公开字段
   public_items = []
@@ -49,8 +38,8 @@ async def list_users(
 
 
 @router.get('/users/{user_id}')
+@require_permission('system:admin')
 async def get_user(user_id: str, request: Request):
-  _check_admin(request)
   user = await user_service.get_by_id(user_id)
   if not user:
     raise HTTPException(404, '用户不存在')
@@ -58,11 +47,11 @@ async def get_user(user_id: str, request: Request):
 
 
 @router.put('/users/{user_id}/status')
+@require_permission('system:admin')
 async def update_user_status(
   user_id: str, request: Request,
   status: str = Query(..., pattern='^(ACTIVE|DISABLED)$'),
 ):
-  _check_admin(request)
   await user_service.update_user(user_id, {'status': status})
   await _audit(request, 'admin.update_status', 'user', f'用户 {user_id} 状态 → {status}')
   user = await user_service.get_by_id(user_id)
@@ -70,9 +59,9 @@ async def update_user_status(
 
 
 @router.put('/users/{user_id}/roles')
+@require_permission('system:admin')
 async def update_user_roles(user_id: str, request: Request):
   """直接修改用户角色"""
-  _check_admin(request)
   body = await request.json()
   roles = body.get('roles', [])
   await user_service.update_user(user_id, {'roles': roles})
@@ -82,9 +71,9 @@ async def update_user_roles(user_id: str, request: Request):
 
 
 @router.put('/users/{user_id}/permissions')
+@require_permission('system:admin')
 async def update_user_permissions(user_id: str, request: Request):
   """直接修改用户权限"""
-  _check_admin(request)
   body = await request.json()
   permissions = body.get('permissions', [])
   await user_service.update_user(user_id, {'permissions': permissions})
@@ -94,9 +83,9 @@ async def update_user_permissions(user_id: str, request: Request):
 
 
 @router.post('/users/{user_id}/reset-password')
+@require_permission('system:admin')
 async def reset_user_password(user_id: str, request: Request):
   """管理员重置用户密码，返回新密码"""
-  _check_admin(request)
   import secrets
   new_pw = secrets.token_hex(8)
   await user_service.reset_password(user_id, new_pw)
@@ -108,8 +97,8 @@ async def reset_user_password(user_id: str, request: Request):
 # ==================== 角色管理 ====================
 
 @router.get('/roles')
+@require_permission('system:admin')
 async def list_roles(request: Request):
-  _check_admin(request)
   roles = await user_service.get_all_roles()
   return {'ok': True, 'data': roles}
 
@@ -122,8 +111,8 @@ class CreateRoleRequest(BaseModel):
 
 
 @router.post('/roles')
+@require_permission('system:admin')
 async def create_role(body: CreateRoleRequest, request: Request):
-  _check_admin(request)
   existing = await user_service.get_role(body.role_id)
   if existing:
     raise HTTPException(400, 'role_id 已存在')
@@ -141,8 +130,8 @@ class UpdateRoleRequest(BaseModel):
 
 
 @router.put('/roles/{role_id}')
+@require_permission('system:admin')
 async def update_role(role_id: str, body: UpdateRoleRequest, request: Request):
-  _check_admin(request)
   role = await user_service.get_role(role_id)
   if not role:
     raise HTTPException(404, '角色不存在')
@@ -193,6 +182,7 @@ def _app_detail(app: dict) -> str:
 # ==================== 审批管理 ====================
 
 @router.get('/applications')
+@require_permission('system:admin')
 async def list_applications(
   request: Request,
   status: str = '',
@@ -200,14 +190,13 @@ async def list_applications(
   page: int = Query(1, ge=1),
   page_size: int = Query(20, ge=1, le=100),
 ):
-  _check_admin(request)
   items, total = await user_service.list_applications(status, page, page_size, search)
   return {'ok': True, 'data': {'items': items, 'total': total, 'page': page}}
 
 
 @router.post('/applications/{application_id}/approve')
+@require_permission('system:admin')
 async def approve_application(application_id: str, request: Request):
-  _check_admin(request)
   try:
     app = await user_service.approve_application(
       application_id,
@@ -224,8 +213,8 @@ class BatchApproveRequest(BaseModel):
 
 
 @router.post('/applications/batch-approve')
+@require_permission('system:admin')
 async def batch_approve(body: BatchApproveRequest, request: Request):
-  _check_admin(request)
   ok = 0
   fail = 0
   for app_id in body.ids:
@@ -246,12 +235,12 @@ class RejectRequest(BaseModel):
 
 
 @router.post('/applications/{application_id}/reject')
+@require_permission('system:admin')
 async def reject_application(
   application_id: str,
   body: RejectRequest,
   request: Request,
 ):
-  _check_admin(request)
   try:
     app = await user_service.reject_application(
       application_id,
@@ -270,8 +259,8 @@ class BatchRejectRequest(BaseModel):
 
 
 @router.post('/applications/batch-reject')
+@require_permission('system:admin')
 async def batch_reject(body: BatchRejectRequest, request: Request):
-  _check_admin(request)
   ok = 0
   fail = 0
   for app_id in body.ids:
@@ -291,6 +280,7 @@ async def batch_reject(body: BatchRejectRequest, request: Request):
 # ==================== 审计日志 ====================
 
 @router.get('/audit-logs')
+@require_permission('system:admin')
 async def list_audit_logs(
   request: Request,
   page: int = Query(1, ge=1),
@@ -298,6 +288,5 @@ async def list_audit_logs(
   action: str = '',
   user_id: str = '',
 ):
-  _check_admin(request)
   items, total = await user_service.list_audit_logs(page, page_size, action, user_id)
   return {'ok': True, 'data': {'items': items, 'total': total, 'page': page}}

@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 # 无需认证的路径
 PUBLIC_PATHS = {
     '/', '/api/v1/health',
-    '/api/v1/auth/login', '/api/v1/auth/refresh',
+    '/api/v1/auth/login', '/api/v1/auth/register', '/api/v1/auth/refresh',
     '/api/v1/auth/reset-password',
     '/docs', '/openapi.json', '/redoc',
 }
@@ -83,6 +83,17 @@ class AuthMiddleware(BaseHTTPMiddleware):
         # 权限全开模式 (开发/调试) — 认证用户自动获得所有权限
         if settings.PERMISSION_OPEN_MODE:
             permissions = {p.perm_key for p in BUILTIN_PERMISSIONS}
+        else:
+            # 展开通配符 (ai:* → ai:chat, ai:knowledge, ...)
+            expanded = set()
+            all_perm_keys = {p.perm_key for p in BUILTIN_PERMISSIONS}
+            for p in permissions:
+                if p.endswith(':*'):
+                    prefix = p[:-2]
+                    expanded.update(k for k in all_perm_keys if k.startswith(prefix))
+                else:
+                    expanded.add(p)
+            permissions = expanded
 
         # 注入上下文
         request.state.current_user = user

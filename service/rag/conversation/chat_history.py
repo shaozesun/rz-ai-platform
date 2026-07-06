@@ -7,6 +7,7 @@ mongodb_manager.sync_db（PyMongo），不依赖异步 message_service。
 
 消息操作极快（<1ms 索引查询），对事件循环的阻塞可忽略。
 """
+import contextvars
 import logging
 import uuid
 from datetime import datetime
@@ -19,12 +20,20 @@ from config.mongodb_conn import mongodb_manager
 
 logger = logging.getLogger(__name__)
 
+# 当前请求用户 ID，由 chat API 在调用链前设置，解决 LangChain
+# RunnableWithMessageHistory 无法透传 user_id 的问题
+_current_user_id: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    'current_user_id', default=None
+)
+
 
 class MongoDBChatMessageHistory(BaseChatMessageHistory):
     """基于 MongoDB 的聊天消息历史"""
 
-    def __init__(self, session_id: str, max_messages: int = 6) -> None:
+    def __init__(self, session_id: str, max_messages: int = 6,
+                 user_id: str | None = None) -> None:
         self.session_id = session_id
+        self.user_id = user_id
         self._max_messages = max_messages
         self._messages: list[BaseMessage] = []
         self._load_messages()
@@ -33,13 +42,22 @@ class MongoDBChatMessageHistory(BaseChatMessageHistory):
     def _collection(self):
         return mongodb_manager.sync_db["messages"]
 
+    def _build_query(self) -> dict:
+        query: dict = {"session_id": self.session_id}
+        if self.user_id:
+            query["$or"] = [
+                {"user_id": self.user_id},
+                {"user_id": {"$exists": False}},
+            ]
+        return query
+
     def _load_messages(self) -> None:
         try:
             collection = self._collection
-            total = collection.count_documents({"session_id": self.session_id})
+            query = self._build_query()
+            total = collection.count_documents(query)
             skip = max(0, total - self._max_messages)
-            messages = collection.find(
-                {"session_id": self.session_id}
+            messages = collection.find(query
             ).sort("created_at", 1).skip(skip)
 
             self._messages: list[BaseMessage] = [
@@ -71,13 +89,16 @@ class MongoDBChatMessageHistory(BaseChatMessageHistory):
                 else str(message.content)
             )
 
-            self._collection.insert_one({
+            doc: dict = {
                 "message_id": uuid.uuid4().hex,
                 "session_id": self.session_id,
                 "role": role,
                 "content": content_str,
                 "created_at": datetime.now(),
-            })
+            }
+            if self.user_id:
+                doc["user_id"] = self.user_id
+            self._collection.insert_one(doc)
             self._messages.append(message)
         except Exception as e:
             logger.error(
@@ -91,6 +112,9 @@ class MongoDBChatMessageHistory(BaseChatMessageHistory):
 
 
 def get_session_history(
-    session_id: str, max_messages: int = 6
+    session_id: str, max_messages: int = 6, user_id: str | None = None,
 ) -> MongoDBChatMessageHistory:
-    return MongoDBChatMessageHistory(session_id, max_messages=max_messages)
+    effective_user_id = user_id or _current_user_id.get()
+    return MongoDBChatMessageHistory(
+        session_id, max_messages=max_messages, user_id=effective_user_id,
+    )

@@ -49,6 +49,7 @@ async def lifespan(app: FastAPI):
     mongodb_manager.connect()
     redis_manager.connect()
     await mongodb_manager.init_indexes()
+    await user_service.init_builtin_permissions()
     await user_service.init_builtin_roles()
     logger.info('数据库连接成功，预置数据已初始化')
   except Exception as e:

@@ -51,6 +51,7 @@ class MessageService:
             "session_id": message.session_id,
             "role": message.role,
             "content": message.content,
+            "user_id": message.user_id,
             "created_at": message.created_at,
         }
 
@@ -63,11 +64,17 @@ class MessageService:
         return self._doc_to_message(inserted_doc)
 
     async def get_messages(
-        self, session_id: str, skip: int = 0, limit: int = 100
+        self, session_id: str, skip: int = 0, limit: int = 100,
+        user_id: Optional[str] = None,
     ) -> list[MessageListItem]:
+        query: dict = {"session_id": session_id}
+        if user_id:
+            query["$or"] = [
+                {"user_id": user_id},
+                {"user_id": {"$exists": False}},
+            ]
         try:
-            cursor = self.messages.find(
-                {"session_id": session_id}
+            cursor = self.messages.find(query
             ).sort("created_at", 1).skip(skip).limit(limit)
 
             messages = []
@@ -86,8 +93,14 @@ class MessageService:
             )
             raise
 
-    async def delete_messages(self, session_id: str) -> int:
-        result = await self.messages.delete_many({"session_id": session_id})
+    async def delete_messages(self, session_id: str, user_id: Optional[str] = None) -> int:
+        query: dict = {"session_id": session_id}
+        if user_id:
+            query["$or"] = [
+                {"user_id": user_id},
+                {"user_id": {"$exists": False}},
+            ]
+        result = await self.messages.delete_many(query)
         return result.deleted_count
 
     def _doc_to_message(self, doc: dict) -> Message:
@@ -100,6 +113,7 @@ class MessageService:
             session_id=cast(str, doc.get("session_id")),
             role=cast(str, doc.get("role")),
             content=cast(str, doc.get("content")),
+            user_id=doc.get("user_id"),
             created_at=cast(datetime, created_at),
         )
 

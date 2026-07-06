@@ -59,7 +59,7 @@ export default function App() {
           <ProtectedRoute><SettingsPage /></ProtectedRoute>
         } />
         <Route path="/admin" element={
-          <ProtectedRoute requireRole="admin"><AdminLayout /></ProtectedRoute>
+          <ProtectedRoute requirePerm="system:admin"><AdminLayout /></ProtectedRoute>
         }>
           <Route index element={<UsersPage />} />
           <Route path="users" element={<UsersPage />} />

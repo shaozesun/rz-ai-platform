@@ -98,6 +98,9 @@ class MongoDBManager:
     # roles
     await _safe_index('roles', lambda: db.roles.create_index('role_id', unique=True))
 
+    # permissions
+    await _safe_index('permissions', lambda: db.permissions.create_index('perm_key', unique=True))
+
     # applications
     await _safe_index('applications', lambda: db.applications.create_index('application_id', unique=True))
     await _safe_index('applications', lambda: db.applications.create_index('user_id'))

@@ -192,7 +192,7 @@ export default function ChatArea() {
                                 </TableActions>
                               );
                             },
-                            code: ({ className, children, inline: _inline, ...props }) => {
+                            code: ({ className, children, ...props }) => {
                               const codeText = String(children).replace(/\n$/, '');
                               if (className === 'language-mermaid') {
                                 return <MermaidRenderer code={codeText} />;

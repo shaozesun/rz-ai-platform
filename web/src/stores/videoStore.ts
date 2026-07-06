@@ -5,18 +5,15 @@ import { createVideoTask, listVideoTasks, deleteVideoTask } from '../api/video';
 interface VideoState {
   tasks: VideoTask[];
   loading: boolean;
-  hasPermission: boolean;
 
   loadTasks: () => Promise<void>;
   submitTask: (file: File, params: VideoTaskParams) => Promise<string>;
   deleteTask: (taskId: string) => Promise<void>;
-  setHasPermission: (v: boolean) => void;
 }
 
 export const useVideoStore = create<VideoState>((set, get) => ({
   tasks: [],
   loading: false,
-  hasPermission: false,
 
   loadTasks: async () => {
     set({ loading: true });
@@ -40,6 +37,4 @@ export const useVideoStore = create<VideoState>((set, get) => ({
     await deleteVideoTask(taskId);
     set((state) => ({ tasks: state.tasks.filter((t) => t.task_id !== taskId) }));
   },
-
-  setHasPermission: (v) => set({ hasPermission: v }),
 }));

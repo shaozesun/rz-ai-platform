@@ -46,7 +46,30 @@ class UserService:
   def audit_logs(self):
     return mongodb_manager.db.audit_logs
 
+  @property
+  def permissions_coll(self):
+    return mongodb_manager.db.permissions
+
   # ==================== 初始化 ====================
+
+  async def init_builtin_permissions(self):
+    """初始化预置权限定义 (幂等)"""
+    for p in BUILTIN_PERMISSIONS:
+      existing = await self.permissions_coll.find_one({'perm_key': p.perm_key})
+      if existing:
+        await self.permissions_coll.update_one(
+          {'perm_key': p.perm_key},
+          {'$set': {'resource': p.resource, 'action': p.action, 'description': p.description}},
+        )
+      else:
+        await self.permissions_coll.insert_one({
+          'perm_key': p.perm_key,
+          'resource': p.resource,
+          'action': p.action,
+          'description': p.description,
+          'created_at': datetime.utcnow(),
+        })
+    logger.info('预置权限定义初始化完成')
 
   async def init_builtin_roles(self):
     """初始化预置角色 (幂等)"""

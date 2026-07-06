@@ -69,9 +69,12 @@ class SessionService:
             return None
         return self._doc_to_session(inserted_doc)
 
-    async def get_session(self, session_id: str) -> Session | None:
+    async def get_session(self, session_id: str, user_id: str | None = None) -> Session | None:
+        query: dict = {"session_id": session_id}
+        if user_id:
+            query["user_id"] = user_id
         try:
-            session_doc = await self.sessions.find_one({"session_id": session_id})
+            session_doc = await self.sessions.find_one(query)
         except Exception as e:
             logger.error(
                 "[SessionService] 数据库查询失败: session_id=%s, error=%s",
@@ -106,7 +109,7 @@ class SessionService:
         return sessions
 
     async def update_session(
-        self, session_id: str, session: SessionUpdate
+        self, session_id: str, session: SessionUpdate, user_id: str | None = None
     ) -> Session | None:
         update_fields = {}
         if session.session_name is not None:
@@ -115,28 +118,31 @@ class SessionService:
             update_fields["group_id"] = session.group_id
         update_fields["updated_at"] = datetime.now()
 
-        session_doc = await self.sessions.find_one({"session_id": session_id})
+        query: dict = {"session_id": session_id}
+        if user_id:
+            query["user_id"] = user_id
+        session_doc = await self.sessions.find_one(query)
         if not session_doc:
             return None
 
-        await self.sessions.update_one(
-            {"session_id": session_id},
-            {"$set": update_fields}
-        )
+        await self.sessions.update_one(query, {"$set": update_fields})
 
-        updated_doc = await self.sessions.find_one({"session_id": session_id})
+        updated_doc = await self.sessions.find_one(query)
         if updated_doc is None:
             return None
         return self._doc_to_session(updated_doc)
 
-    async def delete_session(self, session_id: str) -> bool:
+    async def delete_session(self, session_id: str, user_id: str | None = None) -> bool:
         """先删 session，再清理 messages。即使消息清理失败，session 也已删除。"""
-        result = await self.sessions.delete_one({"session_id": session_id})
+        query: dict = {"session_id": session_id}
+        if user_id:
+            query["user_id"] = user_id
+        result = await self.sessions.delete_one(query)
         if result.deleted_count == 0:
             return False
 
         try:
-            await message_service.delete_messages(session_id)
+            await message_service.delete_messages(session_id, user_id=user_id)
             logger.info(
                 "[SessionService] 已删除 Session 的相关消息: session_id=%s",
                 session_id,
@@ -150,15 +156,21 @@ class SessionService:
 
         return True
 
-    async def update_last_activity(self, session_id: str) -> bool:
+    async def update_last_activity(self, session_id: str, user_id: str | None = None) -> bool:
+        query: dict = {"session_id": session_id}
+        if user_id:
+            query["user_id"] = user_id
         result = await self.sessions.update_one(
-            {"session_id": session_id},
+            query,
             {"$set": {"last_activity_at": datetime.now()}}
         )
         return result.matched_count > 0
 
-    async def get_group_by_session(self, session_id: str) -> str | None:
-        session_doc = await self.sessions.find_one({"session_id": session_id})
+    async def get_group_by_session(self, session_id: str, user_id: str | None = None) -> str | None:
+        query: dict = {"session_id": session_id}
+        if user_id:
+            query["user_id"] = user_id
+        session_doc = await self.sessions.find_one(query)
         if session_doc:
             return session_doc.get("group_id")
         return None
@@ -170,21 +182,22 @@ class SessionService:
         except (ValueError, AttributeError):
             return False
 
-    async def ensure_session_exists(self, session_id: str) -> str:
+    async def ensure_session_exists(self, session_id: str, user_id: str | None = None) -> str:
         if not self._is_valid_uuid(session_id):
             raise ValueError(f"无效的 session_id 格式: {session_id}")
 
-        session = await self.get_session(session_id)
+        session = await self.get_session(session_id, user_id=user_id)
         if session is None:
             raise ValueError(f"Session 不存在: session_id={session_id}")
 
         return session_id
 
     async def get_session_messages(
-        self, session_id: str, skip: int = 0, limit: int = 100
+        self, session_id: str, skip: int = 0, limit: int = 100,
+        user_id: str | None = None,
     ) -> list[MessageListItem]:
-        await self.ensure_session_exists(session_id)
-        return await message_service.get_messages(session_id, skip, limit)
+        await self.ensure_session_exists(session_id, user_id=user_id)
+        return await message_service.get_messages(session_id, skip, limit, user_id=user_id)
 
     def _doc_to_session(self, doc: dict) -> Session:
         return Session(
