@@ -101,7 +101,6 @@ async def upload_file(
           logger.exception("[Upload] kb_files 写入失败，回滚 Milvus")
           try:
             vs = store.get_vector_store(group_id)
-            vs._ensure_loaded()
             escaped_source = store.VectorStoreManager._escape_expr_value(
               store.FileMetadataExtractor.normalize_path(str(filepath)))
             escaped_group = store.VectorStoreManager._escape_expr_value(group_id)

@@ -73,7 +73,6 @@ class MilvusVectorStore:
         self._sparse_embedder = sparse_embedder
         self.client = self._get_milvus_client()
         self._embedding_dim = None
-        self._collection_loaded = False
 
         try:
             logger.debug(
@@ -86,26 +85,7 @@ class MilvusVectorStore:
                 )
             else:
                 logger.debug(f"[Milvus] 集合不存在，开始创建: {self.collection_name}")
-                try:
-                    self._create_collection()
-                except Exception as create_err:
-                    err_msg = str(create_err)
-                    # create_collection 失败且含 "not loaded" → Milvus 内部残留旧 collection 状态，
-                    # drop 清理后重试一次
-                    if 'not loaded' in err_msg:
-                        logger.warning(
-                            "[Milvus] create_collection 失败（%s），检测到 Milvus 内部残留状态，"
-                            "执行 drop_collection 清理后重试。注意：此操作会清空 rag_docs 中的所有向量数据。",
-                            err_msg,
-                        )
-                        try:
-                            self.client.drop_collection(collection_name=self.collection_name)
-                        except Exception as drop_err:
-                            logger.warning("[Milvus] drop_collection 清理失败: %s", drop_err)
-                        # 重试创建
-                        self._create_collection()
-                    else:
-                        raise
+                self._create_collection()
                 logger.debug(f"[Milvus] 集合创建成功: {self.collection_name}")
 
             logger.debug("[Milvus] Milvus 向量存储初始化成功")
@@ -119,40 +99,6 @@ class MilvusVectorStore:
             self._milvus_client = MilvusClient(uri=settings.MILVUS_URI, token=settings.MILVUS_TOKEN, db_name=settings.MILVUS_DB_NAME, timeout=30)
             logger.debug("[Milvus] Milvus 客户端创建成功")
         return self._milvus_client
-
-    def _ensure_loaded(self):
-        """确保 collection 已加载：检测状态，空跳过，未加载则加载"""
-        if self._collection_loaded:
-            return
-        try:
-            # 先检查数据量，空 collection 直接跳过（加载空 collection 会卡死）
-            row_count = 0
-            try:
-                stats = self.client.get_collection_stats(collection_name=self.collection_name)
-                row_count = stats.get('row_count', 0) if isinstance(stats, dict) else 0
-            except Exception:
-                pass
-            if row_count == 0:
-                logger.info('[Milvus] collection 为空，跳过加载: %s', self.collection_name)
-                self._collection_loaded = True
-                return
-
-            # 检查是否已加载
-            try:
-                load_info = self.client.get_load_state(collection_name=self.collection_name)
-                state_str = str(load_info.get('state', '')) if isinstance(load_info, dict) else str(load_info)
-                if 'Loaded' in state_str:
-                    self._collection_loaded = True
-                    return
-            except Exception:
-                pass
-
-            logger.info('[Milvus] collection 未加载，正在加载 (rows=%s)...', row_count)
-            self.client.load_collection(collection_name=self.collection_name)
-            self._collection_loaded = True
-            logger.info('[Milvus] collection 加载完成: %s', self.collection_name)
-        except Exception:
-            logger.exception('[Milvus] 加载 collection 失败')
 
     def _get_embedding_dim(self) -> int:
         """获取嵌入向量的维度"""
@@ -219,29 +165,11 @@ class MilvusVectorStore:
                 metric_type="IP",
             )
 
-            try:
-                self.client.create_collection(
-                    collection_name=self.collection_name,
-                    schema=fields[0],
-                    index_params=index_params,
-                    timeout=30,
-                )
-            except Exception as e:
-                err_msg = str(e)
-                # pymilvus 3.x 的 create_collection 内部会自动 load_collection，
-                # 当 Milvus 残留了同名旧 collection 数据时 auto-load 会报 "collection not loaded"。
-                # 此时 collection schema 通常已创建成功，仅 auto-load 失败（空 collection 无需加载）。
-                if 'not loaded' in err_msg and self.client.has_collection(
-                    collection_name=self.collection_name
-                ):
-                    logger.warning(
-                        "[Milvus] create_collection 的 auto-load 失败但 schema 已创建，"
-                        "跳过自动加载（由 _ensure_loaded 按需加载）: %s, err=%s",
-                        self.collection_name, err_msg,
-                    )
-                else:
-                    logger.error(f"[Milvus] 创建集合失败: {str(e)}")
-                    raise
+            self.client.create_collection(
+                collection_name=self.collection_name,
+                schema=fields[0],
+                index_params=index_params,
+            )
 
             logger.debug(f"[Milvus] 集合创建成功: {self.collection_name}")
         except Exception as e:
@@ -305,9 +233,14 @@ class MilvusVectorStore:
                 collection_name=self.collection_name,
                 data=data,
             )
-            self._ensure_loaded()
 
-            # 入库后开启 auto_load（用字符串 "true"，布尔 True 会导致 Milvus 死循环）
+            # 入库后加载 collection（有数据不会卡死），并开启 auto_load
+            try:
+                self.client.load_collection(collection_name=self.collection_name)
+                logger.info('[Milvus] collection 已加载: %s', self.collection_name)
+            except Exception:
+                logger.exception('[Milvus] 加载 collection 失败')
+
             try:
                 self.client.alter_collection_properties(
                     collection_name=self.collection_name,
@@ -405,8 +338,7 @@ class MilvusVectorStore:
     def as_retriever(self, search_kwargs: dict[str, Any]):
         return MilvusRetriever(self, search_kwargs=search_kwargs)
 
-    def _search_raw_hits(self, query: str, k: int, expr: str | None,
-                         retried: bool = False) -> list[dict[str, Any]]:
+    def _search_raw_hits(self, query: str, k: int, expr: str | None) -> list[dict[str, Any]]:
         """执行向量检索并返回原始 hit（child 粒度）。"""
         try:
             logger.debug("[Milvus] similarity_search - expr: %s", expr)
@@ -445,11 +377,6 @@ class MilvusVectorStore:
                     hits_flat.append(hit)
             return hits_flat
         except Exception as e:
-            err_msg = str(e)
-            if 'not loaded' in err_msg and not retried:
-                logger.info('[Milvus] 检索时 collection 未加载，正在按需加载...')
-                self._ensure_loaded()
-                return self._search_raw_hits(query, k, expr, retried=True)
             logger.warning(f"[Milvus] 相似性搜索失败: {e}")
             return []
 
@@ -462,7 +389,6 @@ class MilvusVectorStore:
         expr: str | None = None,
         as_parent: bool = False,
         expanded_query: str | None = None,
-        retried: bool = False,
     ) -> list[Document]:
         """Dense + Sparse 双路独立召回，Milvus 内部 RRF 融合。"""
         if self._sparse_embedder is None:
@@ -524,14 +450,6 @@ class MilvusVectorStore:
                 return self._hits_to_parent_documents(hits_flat)
             return self._hits_to_child_documents(hits_flat)
         except Exception as e:
-            err_msg = str(e)
-            if 'not loaded' in err_msg and not retried:
-                logger.info('[Milvus] hybrid_search 时 collection 未加载，正在按需加载...')
-                self._ensure_loaded()
-                return self.hybrid_search(
-                    query=query, k=k, dense_limit=dense_limit, sparse_limit=sparse_limit,
-                    expr=expr, as_parent=as_parent, expanded_query=expanded_query, retried=True,
-                )
             logger.warning(f"[Milvus] hybrid_search 失败，降级为纯 dense: {e}")
             return self.similarity_search(query=query, k=k, expr=expr, as_parent=as_parent)
 
@@ -846,7 +764,6 @@ class VectorStoreManager:
             row_count = 0
 
         if row_count > 0:
-            store._ensure_loaded()
             escaped_source = self._escape_expr_value(path_str_normalized)
             escaped_group = self._escape_expr_value(group_id)
             filter_expr = f'source == "{escaped_source}" && group_id == "{escaped_group}"'
