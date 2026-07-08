@@ -159,7 +159,7 @@ export default function KnowledgePage() {
       const file = list[i];
       setUploading({ current: i + 1, total: list.length });
       try {
-        const res = await uploadFile(file, activeGroup);
+        const res = await uploadFile(file, activeGroup, list.length * 120_000);
         if (res.ok) {
           success++;
           setDocs((prev) => {
@@ -186,6 +186,7 @@ export default function KnowledgePage() {
   };
 
   const handleDelete = async (name: string) => {
+    if (!window.confirm(`确认删除「${name}」？删除后不可恢复。`)) return;
     try {
       const res = await deleteFile(name, activeGroup);
       if (res.ok) {
@@ -223,6 +224,8 @@ export default function KnowledgePage() {
       showMsg('默认知识库不可删除');
       return;
     }
+    const groupName = groups.find((g) => g.group_id === groupId)?.name || groupId;
+    if (!window.confirm(`确认删除知识库「${groupName}」？知识库内所有文档将被一并删除。`)) return;
     try {
       const res = await deleteGroupApi(groupId);
       if (res.ok) {

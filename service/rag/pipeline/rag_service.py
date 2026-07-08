@@ -1616,6 +1616,7 @@ JSON 输出："""
                     kb_has_docs = False
                     try:
                         vector_store_check = store.get_vector_store(group_id=group_id)
+                        vector_store_check._ensure_loaded()
                         result = vector_store_check.client.query(
                             collection_name=vector_store_check.collection_name,
                             filter="",

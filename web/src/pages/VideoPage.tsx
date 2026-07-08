@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Upload, Download, History, Trash2, Film, CheckCircle2, AlertCircle, Loader2, X } from 'lucide-react';
 import { PlatformShell } from '@/components/platform-shell';
 import { Card, CardContent } from '@/components/ui/card';
@@ -32,7 +32,8 @@ const STATUS_LABEL: Record<string, string> = {
   rendering: '合成视频', success: '已完成', failed: '失败',
 };
 
-function TaskCard({ task, onDelete }: { task: VideoTask; onDelete: (id: string) => void }) {
+const TaskCard = React.memo(
+  function TaskCard({ task, onDelete }: { task: VideoTask; onDelete: (id: string) => void }) {
   const isDone = task.status === 'success';
   const isFailed = task.status === 'failed';
   const isProcessing = !isDone && !isFailed;
@@ -138,10 +139,15 @@ function TaskCard({ task, onDelete }: { task: VideoTask; onDelete: (id: string) 
       </CardContent>
     </Card>
   );
-}
+  },
+  (prev, next) =>
+    prev.task.status === next.task.status &&
+    prev.task.progress === next.task.progress &&
+    prev.task.progress_text === next.task.progress_text,
+);
 
 export default function VideoPage() {
-  const { tasks, loading, loadTasks, submitTask, deleteTask } = useVideoStore();
+  const { tasks, loading, loadTasks, pollActiveTasks, submitTask, deleteTask } = useVideoStore();
   const [uploading, setUploading] = useState(false);
   const [aspectRatio, setAspectRatio] = useState('16:9');
   const [resolution, setResolution] = useState('1080p');
@@ -154,9 +160,9 @@ export default function VideoPage() {
   useEffect(() => {
     const hasActive = tasks.some((t) => t.status !== 'success' && t.status !== 'failed');
     if (!hasActive) return;
-    const timer = setInterval(() => loadTasks(), 5000);
+    const timer = setInterval(() => pollActiveTasks(), 5000);
     return () => clearInterval(timer);
-  }, [tasks, loadTasks]);
+  }, [tasks, pollActiveTasks]);
 
   const handleUpload = useCallback(async (file: File) => {
     setUploading(true);

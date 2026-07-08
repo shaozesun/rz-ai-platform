@@ -73,6 +73,12 @@ async def run_video_pipeline(task_id: str):
                                     params.aspect_ratio, params.resolution)
     logger.info(f'[{task_id}] Video rendered: {video_url}')
 
+    # Download MP4 from renderer to local videos/ for fast serving
+    os.makedirs(settings.VIDEO_DIR, exist_ok=True)
+    local_video = os.path.join(settings.VIDEO_DIR, f'{task_id}.mp4')
+    result_url = await _download_video(video_url, local_video)
+    logger.info(f'[{task_id}] Video saved locally: {result_url}')
+
     # ── Success ──
     await db.video_tasks.update_one(
       {'task_id': task_id},
@@ -80,7 +86,7 @@ async def run_video_pipeline(task_id: str):
         'status': VideoTaskStatus.SUCCESS,
         'progress': 100,
         'progress_text': '完成',
-        'result_url': video_url,
+        'result_url': result_url,
         'updated_at': datetime.utcnow(),
       }}
     )
@@ -290,3 +296,25 @@ async def _render_video(images: list[str], audios: list[dict],
   )
   logger.info(f'Renderer response: {json.dumps(data, ensure_ascii=False)[:500]}')
   return data.get('video_url', '')
+
+
+async def _download_video(remote_url: str, local_path: str) -> str:
+  """Download MP4 from renderer to local storage. Returns local path on success,
+  falls back to remote URL on failure so the pipeline doesn't break."""
+  if not remote_url:
+    logger.warning('Empty video URL from renderer, skipping download')
+    return remote_url
+  try:
+    if not remote_url.startswith('http'):
+      remote_url = settings.PLUGIN_VIDEO_RENDERER_URL.rstrip('/') + '/' + remote_url.lstrip('/')
+    async with httpx.AsyncClient(timeout=600) as client:
+      async with client.stream('GET', remote_url) as resp:
+        resp.raise_for_status()
+        with open(local_path, 'wb') as f:
+          async for chunk in resp.aiter_bytes(65536):
+            f.write(chunk)
+    logger.info(f'Downloaded video: {remote_url} → {local_path}')
+    return local_path
+  except Exception as e:
+    logger.warning(f'Failed to download video to local, fallback to remote URL: {e}')
+    return remote_url

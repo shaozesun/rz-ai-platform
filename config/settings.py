@@ -107,7 +107,7 @@ class Settings(BaseSettings):
   RAG_CROSS_ENCODER_ENABLED: bool = False
   RAG_CROSS_ENCODER_PRE_FILTER: int = 15
   RAG_CROSS_ENCODER_WEIGHT: float = 0.6
-  RAG_INTENT_CLASSIFY_ENABLED: bool = True
+  RAG_INTENT_CLASSIFY_ENABLED: bool = False
   RAG_QUERY_REWRITE_ENABLED: bool = True
 
   # 检索缓存
@@ -150,6 +150,7 @@ class Settings(BaseSettings):
   # ==================== 文件 ====================
   UPLOAD_DIR: str = str(Path(__file__).parent.parent / 'uploads')
   EMBEDDED_DIR: str = str(Path(__file__).parent.parent / 'embedded')
+  VIDEO_DIR: str = str(Path(__file__).parent.parent / 'videos')
   SUPPORTED_EXTENSIONS: str = 'pdf,docx,xlsx,xls,csv,txt,md,png,jpg,jpeg'
 
   # ==================== Video Generation Plugins ====================

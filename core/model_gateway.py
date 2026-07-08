@@ -234,6 +234,7 @@ class ModelGateway:
           messages=messages,
           temperature=temperature,
           max_tokens=max_tokens,
+          extra_body={"chat_template_kwargs": {"enable_thinking": False}},
         ),
         timeout=settings.LLM_TIMEOUT,
       )
@@ -343,17 +344,21 @@ class ModelGateway:
 
 
 async def _log_usage(user_id, model, tokens_in, tokens_out, caller):
-    """Fire-and-forget 写入 LLM 用量到 MongoDB"""
+    """Fire-and-forget 写入 LLM 用量到 MongoDB（用同步客户端避免事件循环绑定问题）"""
+    import asyncio
     try:
       from config.mongodb_conn import mongodb_manager
-      await mongodb_manager.db.llm_usage.insert_one({
-        'user_id': user_id,
-        'model': model,
-        'tokens_in': tokens_in,
-        'tokens_out': tokens_out,
-        'caller': caller,
-        'created_at': datetime.utcnow(),
-      })
+      await asyncio.to_thread(
+        mongodb_manager.sync_db.llm_usage.insert_one,
+        {
+          'user_id': user_id,
+          'model': model,
+          'tokens_in': tokens_in,
+          'tokens_out': tokens_out,
+          'caller': caller,
+          'created_at': datetime.utcnow(),
+        },
+      )
     except Exception:
       logger.warning('LLM 用量写入失败 caller=%s', caller, exc_info=True)
 

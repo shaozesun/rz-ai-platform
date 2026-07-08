@@ -4,6 +4,8 @@ import sys
 # 确保项目根目录在 sys.path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+import asyncio
+
 # 日志初始化必须最先完成
 import logging
 

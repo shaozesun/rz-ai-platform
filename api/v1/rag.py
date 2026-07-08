@@ -62,24 +62,16 @@ async def upload_file(
     logger.info("[Upload] 开始处理: filename=%s, group_id=%s, user_id=%s", safe_name, group_id, user_id)
     upload_dir.mkdir(parents=True, exist_ok=True)
 
-    if filepath.exists():
-        logger.info("[Upload] 检测到同名文件，覆盖更新: %s", filepath)
-        try:
-            vectors_deleted, file_deleted = rag_service.delete_file(str(filepath), group_id=group_id)
-            logger.info("[Upload] 覆盖前清理: vectors=%d, file_deleted=%s", vectors_deleted, file_deleted)
-        except Exception as e:
-            logger.error("[Upload] 覆盖前清理失败: %s", e)
-            return JSONResponse(
-                status_code=500,
-                content={"ok": False, "msg": "同名文件清理失败", "detail": str(e)},
-            )
+    is_overwrite = filepath.exists()
+    if is_overwrite:
+        logger.info("[Upload] 检测到同名文件，将覆盖更新: %s", filepath)
 
     try:
         content = await file.read()
         filepath.write_bytes(content)
         logger.info("[Upload] 文件保存成功: size=%d bytes", len(content))
     except Exception as e:
-        logger.error("[Upload] 文件保存失败: %s", e)
+        logger.exception("[Upload] 文件保存失败")
         return JSONResponse(
             status_code=500,
             content={"ok": False, "msg": "文件保存失败", "detail": str(e)},
@@ -89,7 +81,7 @@ async def upload_file(
         count = rag_service.add_file(str(filepath), group_id=group_id, open_id=user_id)
         logger.info("[Upload] 向量入库成功: group_id=%s, chunks=%d", group_id, count)
 
-        # 写入 MongoDB 文件索引（加速后续查询，避免扫 Milvus）
+        # 写入 MongoDB 文件索引
         try:
           db = mongodb_manager.db
           await db.kb_files.update_one(
@@ -106,18 +98,34 @@ async def upload_file(
             upsert=True,
           )
         except Exception:
-          logger.exception("[Upload] kb_files 写入失败（不影响主体流程）")
+          logger.exception("[Upload] kb_files 写入失败，回滚 Milvus")
+          try:
+            vs = store.get_vector_store(group_id)
+            vs._ensure_loaded()
+            escaped_source = store.VectorStoreManager._escape_expr_value(
+              store.FileMetadataExtractor.normalize_path(str(filepath)))
+            escaped_group = store.VectorStoreManager._escape_expr_value(group_id)
+            vs.client.delete(
+              collection_name=vs.collection_name,
+              filter=f'source == "{escaped_source}" && group_id == "{escaped_group}"',
+            )
+          except Exception:
+            logger.exception("[Upload] 回滚 Milvus 失败")
+          return JSONResponse(
+            status_code=500,
+            content={"ok": False, "msg": "索引写入失败，请重试"},
+          )
 
         try:
             embedded_dir = _resolve_group_embedded_dir(group_id)
             rag_service.export_chunks(str(filepath), output_dir=str(embedded_dir))
         except Exception as e:
-            logger.error("[Upload] 切分导出失败: %s", e)
+            logger.exception("[Upload] 切分导出失败")
 
         log_upload(user_id, group_id, safe_name, count, get_trace_id())
         return UploadResponse(ok=True, name=safe_name, size=filepath.stat().st_size, chunks=count)
     except Exception as e:
-        logger.error("[Upload] 向量入库失败: %s", e)
+        logger.exception("[Upload] 向量入库失败")
         return JSONResponse(
             status_code=500,
             content={"ok": False, "msg": "文件已保存但向量入库失败", "detail": str(e)},
@@ -164,7 +172,7 @@ async def delete_file(
             file_deleted=file_deleted,
         )
     except Exception as e:
-        logger.error("[Delete] 删除失败: %s", e)
+        logger.exception("[Delete] 删除失败")
         return JSONResponse(
             status_code=500,
             content={"ok": False, "msg": "删除失败", "detail": str(e)},

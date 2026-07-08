@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect, useRef } from 'react';
+import { useState, useCallback, useEffect, useRef, useMemo, memo } from 'react';
 import {
   Bot, User, Sparkles, Trash2, Search, Menu, Plus,
 } from 'lucide-react';
@@ -6,6 +6,40 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import TableActions from './TableActions';
 import MermaidRenderer from './MermaidRenderer';
+
+function fixMermaidBlocks(text: string): string {
+  if (!text) return text;
+  let result = text;
+  result = result.replace(
+    /mermaid(graph\s+\w+[\s\S]*?)(?=##|---|\*\*|```|$)/gm,
+    (_match, code) => {
+      let body = code.trim();
+      const dirMatch = body.match(/^(graph\s+\w+)\s*/);
+      const dir = dirMatch ? dirMatch[1] : 'graph LR';
+      if (dirMatch) body = body.slice(dirMatch[0].length);
+      body = body.replace(/\["\s+/g, '["').replace(/\s+"\]/g, '"]');
+      body = body
+        .replace(/(\)\]?)\s+(\w)/g, '$1\n$2')
+        .replace(/]\s+(\w)/g, ']\n$1')
+        .replace(/"\s+(\w)/g, '"\n$1')
+        .trim();
+      return `\n\n\`\`\`mermaid\n${dir}\n${body}\n\`\`\`\n`;
+    },
+  );
+  return result;
+}
+
+function hideIncompleteMermaid(text: string): string {
+  // 流式输出时，隐藏未闭合的 mermaid 代码块以避免显示原始语法
+  const lastOpen = text.lastIndexOf('```mermaid');
+  if (lastOpen === -1) return text;
+  const afterOpen = text.slice(lastOpen + '```mermaid'.length);
+  // 检查是否有闭合的 ```
+  const closeIdx = afterOpen.indexOf('\n```');
+  if (closeIdx !== -1) return text; // 已闭合，正常渲染
+  // 未闭合：截掉 mermaid 块内容，显示占位文字
+  return text.slice(0, lastOpen) + '\n\n> 流程图生成中...\n\n';
+}
 import { useChatStore } from '../stores/chatStore';
 import { useAuthStore } from '../stores/authStore';
 import ChatInput from './ChatInput';
@@ -18,6 +52,97 @@ const SUGGESTIONS = [
   '如何配置消防设施？',
   '安全隐患检测怎么做？',
 ];
+
+const MessageBubble = memo(function MessageBubble({
+  msg,
+  isStreaming,
+  isLast,
+  userName,
+}: {
+  msg: Message;
+  isStreaming: boolean;
+  isLast: boolean;
+  userName: string;
+}) {
+  const content = useMemo(() => {
+    const raw = msg.content || '';
+    if (isStreaming && isLast) return fixMermaidBlocks(hideIncompleteMermaid(raw));
+    return fixMermaidBlocks(raw);
+  }, [msg.content, isStreaming, isLast]);
+  const isAssistant = msg.role === 'assistant';
+
+  return (
+    <div
+      className={cn('flex gap-3', msg.role === 'user' && 'flex-row-reverse')}
+    >
+      <div
+        className={cn(
+          'flex size-8 shrink-0 items-center justify-center rounded-lg',
+          msg.role === 'user'
+            ? 'bg-secondary text-secondary-foreground'
+            : 'bg-primary text-primary-foreground',
+        )}
+      >
+        {msg.role === 'user'
+          ? <User className="size-4" />
+          : <Bot className="size-4" />
+        }
+      </div>
+      <div className={cn('max-w-[80%]', msg.role === 'user' && 'flex flex-col items-end')}>
+        <p className="mb-1 text-xs font-medium text-muted-foreground">
+          {msg.role === 'user' ? userName : 'AI 助手'}
+        </p>
+        <div
+          className={cn(
+            'rounded-2xl px-4 py-2.5 text-sm leading-relaxed',
+            msg.role === 'user'
+              ? 'rounded-tr-sm bg-primary text-primary-foreground'
+              : 'rounded-tl-sm bg-secondary text-secondary-foreground',
+          )}
+        >
+          {isAssistant ? (
+            <div className="assistant-msg max-w-none">
+              <ReactMarkdown
+                remarkPlugins={[remarkGfm]}
+                components={{
+                  table: ({ children }) => {
+                    return (
+                      <TableActions>
+                        <table className="assistant-table">{children}</table>
+                      </TableActions>
+                    );
+                  },
+                  code: ({ className, children, ...props }) => {
+                    const codeText = String(children).replace(/\n$/, '');
+                    if (className === 'language-mermaid') {
+                      return <MermaidRenderer code={codeText} />;
+                    }
+                    if (!className) {
+                      return (
+                        <code className="rounded bg-muted px-1 py-0.5 text-xs font-mono" {...props}>
+                          {children}
+                        </code>
+                      );
+                    }
+                    return (
+                      <pre className="overflow-x-auto rounded-lg bg-muted p-3 my-3">
+                        <code className="text-xs font-mono">{codeText}</code>
+                      </pre>
+                    );
+                  },
+                }}
+              >
+                {content}
+              </ReactMarkdown>
+            </div>
+          ) : (
+            <p className="whitespace-pre-line">{msg.content}</p>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+});
 
 export default function ChatArea() {
   const {
@@ -150,77 +275,14 @@ export default function ChatArea() {
               </div>
             </div>
           ) : (
-            messages.map((msg: Message) => (
-              <div
+            messages.map((msg: Message, idx: number) => (
+              <MessageBubble
                 key={msg.message_id}
-                className={cn('flex gap-3', msg.role === 'user' && 'flex-row-reverse')}
-              >
-                <div
-                  className={cn(
-                    'flex size-8 shrink-0 items-center justify-center rounded-lg',
-                    msg.role === 'user'
-                      ? 'bg-secondary text-secondary-foreground'
-                      : 'bg-primary text-primary-foreground',
-                  )}
-                >
-                  {msg.role === 'user'
-                    ? <User className="size-4" />
-                    : <Bot className="size-4" />
-                  }
-                </div>
-                <div className={cn('max-w-[80%]', msg.role === 'user' && 'flex flex-col items-end')}>
-                  <p className="mb-1 text-xs font-medium text-muted-foreground">
-                    {msg.role === 'user' ? user?.name || user?.phone || '我' : 'AI 助手'}
-                  </p>
-                  <div
-                    className={cn(
-                      'rounded-2xl px-4 py-2.5 text-sm leading-relaxed',
-                      msg.role === 'user'
-                        ? 'rounded-tr-sm bg-primary text-primary-foreground'
-                        : 'rounded-tl-sm bg-secondary text-secondary-foreground',
-                    )}
-                  >
-                    {msg.role === 'assistant' ? (
-                      <div className="assistant-msg max-w-none">
-                        <ReactMarkdown
-                          remarkPlugins={[remarkGfm]}
-                          components={{
-                            table: ({ children }) => {
-                              return (
-                                <TableActions>
-                                  <table className="assistant-table">{children}</table>
-                                </TableActions>
-                              );
-                            },
-                            code: ({ className, children, ...props }) => {
-                              const codeText = String(children).replace(/\n$/, '');
-                              if (className === 'language-mermaid') {
-                                return <MermaidRenderer code={codeText} />;
-                              }
-                              if (!className) {
-                                return (
-                                  <code className="rounded bg-muted px-1 py-0.5 text-xs font-mono" {...props}>
-                                    {children}
-                                  </code>
-                                );
-                              }
-                              return (
-                                <pre className="overflow-x-auto rounded-lg bg-muted p-3 my-3">
-                                  <code className="text-xs font-mono">{codeText}</code>
-                                </pre>
-                              );
-                            },
-                          }}
-                        >
-                          {msg.content || (isStreaming ? '...' : '')}
-                        </ReactMarkdown>
-                      </div>
-                    ) : (
-                      <p className="whitespace-pre-line">{msg.content}</p>
-                    )}
-                  </div>
-                </div>
-              </div>
+                msg={msg}
+                isStreaming={isStreaming}
+                isLast={idx === messages.length - 1}
+                userName={user?.name || user?.phone || '我'}
+              />
             ))
           )}
         </div>

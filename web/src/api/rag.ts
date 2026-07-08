@@ -3,11 +3,13 @@ import client from './client';
 export async function uploadFile(
   file: File,
   groupId: string = 'default',
+  timeoutMs: number = 30_000,
 ): Promise<{ ok: boolean; name: string; size: number; chunks: number; msg?: string }> {
   const form = new FormData();
   form.append('file', file);
   const { data } = await client.post(`/upload?group_id=${groupId}`, form, {
     headers: { 'Content-Type': 'multipart/form-data' },
+    timeout: timeoutMs,
   });
   return data;
 }

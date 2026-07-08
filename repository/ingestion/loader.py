@@ -15,6 +15,8 @@ import subprocess
 import json
 from collections import defaultdict
 
+from bs4 import BeautifulSoup
+
 from config.settings import settings
 
 logger = logging.getLogger(__name__)
@@ -80,6 +82,38 @@ def _detect_section_type(row_text: str) -> str | None:
     return None
 
 
+def _html_table_to_markdown(html_table: str) -> str:
+    """将 HTML <table> 转换为 Markdown 表格，使用 BeautifulSoup 解析。"""
+    soup = BeautifulSoup(html_table, 'lxml')
+    table = soup.find('table')
+    if not table:
+        return html_table
+
+    rows: list[list[str]] = []
+    for tr in table.find_all('tr'):
+        cells = [td.get_text(strip=True) for td in tr.find_all(['td', 'th'])]
+        if cells:
+            rows.append(cells)
+
+    if len(rows) < 2:
+        return html_table
+
+    # 补齐列数
+    max_cols = max(len(r) for r in rows)
+    for r in rows:
+        while len(r) < max_cols:
+            r.append('')
+
+    lines: list[str] = []
+    # 首行作表头 + 分隔线
+    lines.append('| ' + ' | '.join(rows[0]) + ' |')
+    lines.append('| ' + ' | '.join(['---'] * max_cols) + ' |')
+    for r in rows[1:]:
+        lines.append('| ' + ' | '.join(r) + ' |')
+
+    return '\n' + '\n'.join(lines) + '\n'
+
+
 def clean_text(text: str) -> str:
     """
     清理文本，去除噪声和重复内容。
@@ -95,6 +129,14 @@ def clean_text(text: str) -> str:
     # 去除多余空白字符（保留代码围栏内的缩进）
     text = re.sub(r"[\r\n]+", "\n", text)
     text = re.sub(r"\n{3,}", "\n\n", text)
+
+    # HTML 表格 → Markdown 表格
+    text = re.sub(
+        r'<table>.*?</table>',
+        lambda m: _html_table_to_markdown(m.group(0)),
+        text,
+        flags=re.DOTALL | re.IGNORECASE,
+    )
 
     # 去除重复的页眉页脚模式
     lines = text.split("\n")
@@ -184,11 +226,14 @@ def _describe_image(image_path: str, caption: str = "", footnote: str = "") -> s
     )
 
     async def _run() -> str:
-        return await model_gateway.vision(
-            system_prompt="你是一个专业的技术文档分析助手，擅长描述图片内容并生成结构化输出。",
-            user_text="\n".join(context_parts),
-            images=[image_data],
-            temperature=0.0,
+        return await asyncio.wait_for(
+            model_gateway.vision(
+                system_prompt="你是一个专业的技术文档分析助手，擅长描述图片内容并生成结构化输出。",
+                user_text="\n".join(context_parts),
+                images=[image_data],
+                temperature=0.0,
+            ),
+            timeout=30,
         )
 
     try:
@@ -218,20 +263,37 @@ def _extract_mermaid_after_image(md_text: str, match_end: int) -> str | None:
     return None
 
 
-def _process_markdown_images(md_text: str) -> str:
+def _process_markdown_images(md_text: str, md_dir: Path | None = None) -> str:
     """将 markdown 中的 ![](images/xxx.jpg) 替换为内联的结构化内容。
 
     - 图片后面有 <details> 含 Mermaid → 用 Mermaid 代码替换图片引用
     - 去掉 <details> 包装，保留 Mermaid 代码块
-    - 无 Mermaid 的图片保留占位标记
+    - 普通图片 → 调用 VLM 生成 Mermaid + 文字描述
+    - VLM 失败 → 静默丢弃
     """
-    img_re = re.compile(r'!\[.*?\]\((images/[^)]+)\)')
+    img_re = re.compile(r'!\[(.*?)\]\((images/[^)]+)\)')
 
     def _replace_img(m: re.Match) -> str:
+        caption = m.group(1).strip()
+        img_rel_path = m.group(2)
         mermaid_code = _extract_mermaid_after_image(md_text, m.end())
         if mermaid_code:
-            return f"\n\n```mermaid\n{mermaid_code}\n```\n"
-        return f"\n\n[图片：{m.group(1)}]\n\n"
+            prefix = f"**{caption}**\n\n" if caption else ""
+            return f"\n\n{prefix}```mermaid\n{mermaid_code}\n```\n"
+
+        # 无内置 Mermaid，尝试 VLM 描述图片
+        if md_dir:
+            full_path = md_dir / img_rel_path
+            if full_path.exists():
+                try:
+                    desc = _describe_image(str(full_path), caption=caption)
+                    if desc:
+                        prefix = f"**{caption}**\n\n" if caption else ""
+                        return f"\n\n{prefix}{desc}\n\n"
+                except Exception as e:
+                    logger.warning("图片 VLM 描述失败 %s: %s", img_rel_path, e)
+
+        return ""  # 静默丢弃
 
     # 替换图片引用
     result = img_re.sub(_replace_img, md_text)
@@ -255,7 +317,7 @@ def _replace_images_in_markdown(md_text: str, md_dir: Path, content_list: list) 
     """
     # 新版：直接用 markdown 内置的 Mermaid/结构化内容，无需 content_list
     if not content_list:
-        return _process_markdown_images(md_text)
+        return _process_markdown_images(md_text, md_dir=md_dir)
 
     # 旧版兼容：content_list 的 caption/footnote 降级
     image_meta: dict[str, dict[str, str]] = {}
@@ -547,8 +609,8 @@ def _load_pdf_mineru_api(file_path: str) -> list[Document]:
         _debug_stem = Path(file_path).stem
         (_debug_dir / f'{_debug_stem}_01_raw.md').write_text(markdown_text, encoding='utf-8')
 
-        # 处理图片：用 markdown 内置的 Mermaid 流程图替换图片引用
-        processed_md = _process_markdown_images(markdown_text)
+        # 处理图片：Mermaid 优先，否则 VLM 描述
+        processed_md = _process_markdown_images(markdown_text, md_dir=md_dir)
         (_debug_dir / f'{_debug_stem}_02_processed.md').write_text(processed_md, encoding='utf-8')
 
         cleaned = clean_text(processed_md)
@@ -632,8 +694,8 @@ def _load_pdf_mineru(file_path: str) -> list[Document]:
         _debug_stem = Path(file_path).stem
         (_debug_dir / f'{_debug_stem}_01_raw.md').write_text(markdown_text, encoding='utf-8')
 
-        # 处理图片：用 markdown 内置的 Mermaid 流程图替换图片引用
-        processed_md = _process_markdown_images(markdown_text)
+        # 处理图片：Mermaid 优先，否则 VLM 描述
+        processed_md = _process_markdown_images(markdown_text, md_dir=md_path.parent)
         (_debug_dir / f'{_debug_stem}_02_processed.md').write_text(processed_md, encoding='utf-8')
 
         cleaned = clean_text(processed_md)

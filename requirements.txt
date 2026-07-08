@@ -24,5 +24,6 @@ docx2txt>=0.7
 openpyxl>=3.1.0
 pandas>=2.0.0
 jieba>=0.42
+beautifulsoup4>=4.12
 edge-tts>=6.1
 python-pptx>=0.6.21
