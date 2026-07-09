@@ -24,14 +24,14 @@ logger = logging.getLogger(__name__)
 
 # SOP/EOP/MOP 模板段落关键词（用于结构化 XLSX 解析）
 _SECTION_PATTERNS: list[tuple[str, str]] = [
-    ("cover", r"封面|文档编号|RZKJ-LF"),
-    ("version", r"版本控制|修订记录|变更记录|版本号|修订|版本历史"),
+    ("cover", r"封面|文档编号|RZKJ-LF|文档控制|版权声明|内部公开|基本信息"),
+    ("version", r"版本控制|修订记录|修改记录|变更记录|版本号|修订|版本历史"),
     ("risk", r"风险评估|风险识别|危险源|风险等级|风险分析|安全风险"),
     ("prerequisites", r"操作前检查|前置条件|准备工作|开机条件|启动条件|操作条件"),
     ("tools", r"所需工具|仪器仪表|工具清单|所需仪表|所需仪器|工具材料|备品备件"),
     ("steps", r"操作步骤|操作流程|操作过程|工作步骤|执行步骤|处理步骤|维护步骤|应急步骤|操作程序"),
     ("rollback", r"回滚方案|回退方案|应急措施|恢复方案|异常处理|终止条件"),
-    ("signoff", r"签字确认|签发|审批|批准|确认签字|操作确认"),
+    ("signoff", r"签字确认|签发|审批|批准|确认签字|操作确认|拟制|会签|标准化"),
 ]
 
 # 文件路径中提取 doc_type 的模式
@@ -72,29 +72,60 @@ def extract_doc_metadata(file_path: str) -> dict[str, str]:
 
 
 def _detect_section_type(row_text: str) -> str | None:
-    """检测行文本是否匹配某个模板段落。"""
+    """检测行文本是否匹配某个模板段落。
+
+    仅在短行（<=60 字符，像 section 标题）或 pattern 出现在行首时触发。
+    避免长行中偶然包含关键词（如修改记录含"操作步骤"）导致误切 section。
+    """
     text = (row_text or "").strip()
     if not text or len(text) < 3:
         return None
     for section_type, pattern in _SECTION_PATTERNS:
-        if re.search(pattern, text):
-            return section_type
+        m = re.search(pattern, text)
+        if m:
+            # 短行直接触发（section 标题通常很短）
+            # 长行仅当 pattern 在行首时触发（避免正文偶然命中关键词）
+            if len(text) <= 60 or m.start() == 0:
+                return section_type
     return None
 
 
 def _html_table_to_markdown(html_table: str) -> str:
-    """将 HTML <table> 转换为 Markdown 表格，使用 BeautifulSoup 解析。"""
+    """将 HTML <table> 转换为 Markdown 表格，支持 rowspan/colspan 合并单元格。"""
     soup = BeautifulSoup(html_table, 'lxml')
     table = soup.find('table')
     if not table:
         return html_table
 
-    rows: list[list[str]] = []
+    # 网格填充算法：处理 rowspan/colspan，把每个单元格文本填到二维网格对应位置
+    grid: list[list[str | None]] = []
     for tr in table.find_all('tr'):
-        cells = [td.get_text(strip=True) for td in tr.find_all(['td', 'th'])]
-        if cells:
-            rows.append(cells)
+        row_idx = len(grid)
+        grid.append([])
+        col_idx = 0
+        for cell in tr.find_all(['td', 'th']):
+            # 跳过已被上层 rowspan 占据的位置
+            while col_idx < len(grid[row_idx]) and grid[row_idx][col_idx] is not None:
+                col_idx += 1
+            text = cell.get_text(strip=True)
+            try:
+                rs = int(cell.get('rowspan', 1) or 1)
+            except (TypeError, ValueError):
+                rs = 1
+            try:
+                cs = int(cell.get('colspan', 1) or 1)
+            except (TypeError, ValueError):
+                cs = 1
+            for r in range(row_idx, row_idx + rs):
+                while len(grid) <= r:
+                    grid.append([])
+                for c in range(col_idx, col_idx + cs):
+                    while len(grid[r]) <= c:
+                        grid[r].append(None)
+                    grid[r][c] = text
+            col_idx += cs
 
+    rows = [[(c or '') for c in row] for row in grid if any(c is not None for c in row)]
     if len(rows) < 2:
         return html_table
 
@@ -136,6 +167,12 @@ def clean_text(text: str) -> str:
         lambda m: _html_table_to_markdown(m.group(0)),
         text,
         flags=re.DOTALL | re.IGNORECASE,
+    )
+
+    # 清理内联 HTML 标签（<sub>/<sup>/<br>/<span> 等），保留标签内文本
+    text = re.sub(r'<br\s*/?>', '\n', text, flags=re.IGNORECASE)
+    text = re.sub(
+        r'</?(?:sub|sup|small|font|span|em|strong|b|i|u)[^>]*>', '', text, flags=re.IGNORECASE
     )
 
     # 去除重复的页眉页脚模式
@@ -292,8 +329,11 @@ def _process_markdown_images(md_text: str, md_dir: Path | None = None) -> str:
                         return f"\n\n{prefix}{desc}\n\n"
                 except Exception as e:
                     logger.warning("图片 VLM 描述失败 %s: %s", img_rel_path, e)
+                # VLM 失败或返回空：保留占位提示，避免 LLM 丢失上下文
+                prefix = f"**{caption}**" if caption else "**图片**"
+                return f"\n\n{prefix}（图片内容未能自动解析，请勿基于此图编造信息）\n\n"
 
-        return ""  # 静默丢弃
+        return ""  # 非 MinerU 来源或图片文件不存在：丢弃
 
     # 替换图片引用
     result = img_re.sub(_replace_img, md_text)
@@ -943,7 +983,12 @@ def _load_excel_xlsx(file_path: str) -> list[Document]:
                     sections.setdefault(current_section, []).append(row_text)
 
                 # 为每个有内容的 section 创建 Document
+                # cover/version/signoff 是文档管理元数据（版本号/修改人/审批人），
+                # 对 RAG 检索无价值且会污染回答，跳过不入库
+                _SKIP_SECTIONS = {"cover", "version", "signoff", "__header__"}
                 for section_type, rows in sections.items():
+                    if section_type in _SKIP_SECTIONS:
+                        continue
                     # 去重
                     deduped = []
                     boilerplate_seen = False
@@ -958,6 +1003,9 @@ def _load_excel_xlsx(file_path: str) -> list[Document]:
                         deduped.append(line)
                     full_text = "\n".join(deduped).strip()
                     if not full_text:
+                        continue
+                    # 跳过过短的非表格内容（避免"【内部公开】""基本信息"等垃圾 chunk）
+                    if len(full_text) < 30 and "|" not in full_text:
                         continue
 
                     metadata = {

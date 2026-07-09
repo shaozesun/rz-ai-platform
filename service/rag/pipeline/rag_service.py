@@ -33,15 +33,6 @@ try:
 except Exception:  # pragma: no cover
     jieba = None
 
-# 需要触发 query rewrite 的指代词/省略句模式
-_REWRITE_TRIGGER_PATTERN = re.compile(
-    r"它[们]?|其|这[个些种]?|那[个些种]?|该[设备系统流程项]?|"
-    r"上[面述文次]|前[面述文]|刚[才刚]|之[前后]|"
-    r"怎么[样么做办]|如何|什么[时候]?|哪[个些]"
-)
-
-# 只有匹配到指代词才触发改写
-
 # 简单问候/闲聊关键词（跳过 RAG 检索，直接由 LLM 自由回答）
 _GREETING_PATTERNS = [
     r"^(你好|您好|hi|hello|嗨|早|晚上好|下午好|早上好)[\s，。,\.!！?？]*$",
@@ -50,6 +41,18 @@ _GREETING_PATTERNS = [
     r"^(在吗|在不在|有人吗|hello\??|hi\??)$",
 ]
 _GREETING_RE = re.compile("|".join(_GREETING_PATTERNS), re.IGNORECASE)
+
+# 压缩类追问模式（跳过 RAG，直接基于对话历史总结/精简）
+_COMPRESSION_PATTERNS = [
+    r"总结",
+    r"精简",
+    r"概括",
+    r"归纳",
+    r"提炼",
+    r"简单说",
+    r"简要",
+]
+_COMPRESSION_RE = re.compile("|".join(_COMPRESSION_PATTERNS))
 
 
 class RagService:
@@ -184,12 +187,16 @@ class RagService:
         return False
 
     @staticmethod
-    def _needs_rewrite(question: str) -> bool:
-        """仅当问题包含指代词/省略模式时才触发改写，避免短查询被错误扩写。"""
+    def _is_compression_followup(question: str) -> bool:
+        """判断是否为纯压缩类追问（总结/精简/概括），应跳过 RAG 直接基于对话历史回答。"""
         q = (question or "").strip()
         if not q:
             return False
-        return bool(_REWRITE_TRIGGER_PATTERN.search(q))
+        # 仅当问题很短（≤10字）且包含压缩关键词时才跳过检索
+        # 长问题如"总结下市电断电操作流程"仍需走 rewrite+检索
+        if len(q) <= 10 and _COMPRESSION_RE.search(q):
+            return True
+        return False
 
     def _rewrite_query(
         self, question: str, history_messages: list, llm=None
@@ -220,10 +227,12 @@ class RagService:
             return question
 
         history_text = "\n".join(history_lines)
-        rewrite_prompt = f"""根据对话历史，将用户当前问题中的指代词（如"它""这个""该"）替换为具体的实体名称。
-只做指代消解，不要自行添加、扩展或推测任何检索词。
-如果当前问题已经是完整独立的查询，请原样输出，不要做任何修改。
-只输出改写后的查询文本，不要输出任何解释、标点或引号。
+        rewrite_prompt = f"""根据对话历史，将用户当前问题改写为独立完整的检索查询。
+- 如果问题包含指代词（如"它""这个""该"），替换为具体的实体名称。
+- 如果问题是无主语的追问（如"详细说下""展开""继续说""然后呢"），默认指向上一条助手回答的主题，补全主语。
+- 如果当前问题已经是完整独立的查询，原样输出，不要做任何修改。
+只做指代消解和主语补全，不要自行扩展或推测检索词。
+只输出改写后的查询文本，不要输出任何解释或引号。
 
 对话历史：
 {history_text}
@@ -360,6 +369,7 @@ JSON 输出："""
             "修改记录", "修改日期", "批准人", "内部公开",
             "文件编号", "设备信息", "设备厂家", "设备型号",
             "现场信息", "数据中心名称", "适用场景", "售后联系电话",
+            "基本信息",
         ]
         hits = sum(1 for p in strong_patterns if p in head)
         part_ids = re.findall(r"第\d+部分", head)
@@ -367,7 +377,7 @@ JSON 输出："""
             hits += len(part_ids) - 1
         if re.search(r"第\s*\d+\s*页\s*共\s*\d+\s*页", head):
             hits += 1
-        if hits >= 5:
+        if hits >= 3:
             return True
         # 纯修订记录块：有修改记录 + 版本号 + 日期
         if "修改记录" in head and re.search(r"V\d+\.\d+", head) and re.search(r"\d{4}[./-]\d{1,2}", head):
@@ -381,10 +391,10 @@ JSON 输出："""
 
     @staticmethod
     def _doc_name_relevance(question: str, doc: Document) -> float:
-        """文档文件名与 query 的词面重叠度，返回 [1.0, 1.15] 的乘性系数。
+        """文档文件名与 query 的词面重叠度，返回 [1.0, 1.5] 的乘性系数。
 
-        当 query 与文档名共享关键词时加分（如 query 含"事件"，
-        文档名含"事件管理流程"），基于 jieba 分词后的词面重叠数。
+        当 query 与文档名共享关键词时加分（如 query 含"单路市电断电"，
+        文档名含"单路市电断电应急操作流程"），基于 jieba 分词后的词面重叠数。
         """
         md = doc.metadata or {}
         file_name = str(md.get("file_name", "")).strip()
@@ -411,12 +421,12 @@ JSON 输出："""
         base = 1.0
 
         if n_overlap >= 3:
-            base *= 1.12
+            base *= 1.4
         elif n_overlap >= 2:
-            base *= 1.08
+            base *= 1.25
         elif n_overlap >= 1:
-            base *= 1.04
-        return min(base, 1.15)
+            base *= 1.1
+        return min(base, 1.5)
 
     def _resolve_file_name(self, doc: Document, source: str = "") -> str:
         md = doc.metadata or {}
@@ -1010,31 +1020,16 @@ JSON 输出："""
 
     @staticmethod
     def _html_table_to_markdown(text: str) -> str:
-        """将 HTML <table> 标签转换为 Markdown 表格，使 LLM 能正确理解并输出。"""
-        def _strip_tags(s: str) -> str:
-            return re.sub(r'<[^>]+>', '', s).strip()
+        """将 HTML <table> 标签转换为 Markdown 表格，使 LLM 能正确理解并输出。
 
-        def _convert(match: re.Match) -> str:
-            table_html = match.group(0)
-            rows = re.findall(r'<tr[^>]*>(.*?)</tr>', table_html, re.DOTALL | re.IGNORECASE)
-            md_rows: list[str] = []
-            for row_html in rows:
-                cells = re.findall(
-                    r'<(?:th|td)[^>]*>(.*?)</(?:th|td)>', row_html, re.DOTALL | re.IGNORECASE
-                )
-                if cells:
-                    md_rows.append('| ' + ' | '.join(_strip_tags(c) for c in cells) + ' |')
-            if len(md_rows) < 2:
-                return '\n'.join(md_rows) if md_rows else table_html
-            num_cols = md_rows[0].count('|') - 1
-            if num_cols < 1:
-                return '\n'.join(md_rows)
-            sep = '|' + '|'.join([' --- '] * num_cols) + '|'
-            md_rows.insert(1, sep)
-            return '\n'.join(md_rows)
+        复用 loader 中的 BeautifulSoup 实现，支持 rowspan/colspan 合并单元格。
+        """
+        from repository.ingestion.loader import _html_table_to_markdown as _convert_one
 
         return re.sub(
-            r'<table[^>]*>.*?</table>', _convert, text, flags=re.DOTALL | re.IGNORECASE
+            r'<table[^>]*>.*?</table>',
+            lambda m: _convert_one(m.group(0)),
+            text, flags=re.DOTALL | re.IGNORECASE,
         )
 
     def _format_docs_for_context(self, docs: list[Document]) -> str:
@@ -1396,6 +1391,10 @@ JSON 输出："""
             # 文档元数据降权（修订记录/编写目的/版权声明等无关片段）
             penalty = self._boilerplate_penalty(doc.page_content or "")
             s_final *= penalty
+            # 短元数据 chunk 额外降权（版权声明/文档编号等且文本较短）
+            low_signal = self._low_signal_penalty(doc.page_content or "")
+            if low_signal > 0:
+                s_final *= max(0.1, 1.0 - low_signal * 0.3)
             # 文档名与 query 词面重叠：相关文档加分，跨域文档降权
             s_final *= self._doc_name_relevance(question, doc)
             key = self._doc_key(doc)
@@ -1527,35 +1526,36 @@ JSON 输出："""
             [
                 (
                     "system",
-                    """你是一个严格的结构化问答助手。即使处于流式输出模式，也必须遵守以下规则。请仅根据下面「参考内容」回答问题，若没有足够信息则如实说明。
+                    """你是一个结构化问答助手。即使处于流式输出模式，也必须遵守以下规则。请仅根据下面「参考内容」回答问题，若没有足够信息则如实说明。
+
+对话历史中可能包含多轮话题切换。当用户追问模糊（如"详细说下""展开""继续说""然后呢"）且未明确指明主题时，只针对最近一轮对话的话题展开回答，不要混合之前轮次的内容。
 
 【硬性输出规则 — 逐条严格遵守】
 
 第一部分：结构要求
 1. 必须以 ## 标题直接开头，禁止输出任何前置文字（禁止「好的」「根据参考内容」「以下是回答」等引导语）。
 2. 必须先输出完整的小标题（## 或 ###），然后换行，再输出该小节内容。禁止边写标题边写内容。
-3. 每个小节内容控制在 3-5 句话或一个列表，严禁输出一大段超过 100 字的连续纯文本。
+3. 按参考内容的自然结构组织回答，信息完整优先于篇幅控制。不要为了简短而删减关键步骤、参数或数值。
 4. 小节之间必须有空行（即输出一个空行）分隔。
 
 第二部分：内容格式
-5. 步骤类内容必须使用 1. 2. 3. 编号列表，每条单独一行。
-6. 并列要点必须使用 - 无序列表，每条单独一行。
-7. 每段文字控制在 2-3 句以内，超过必须分段或改用列表。
-8. 如果参考内容中包含流程/步骤类信息（如"XX 分钟内通报""随后进行 XX""完成后通知 XX"等含先后顺序和数量约束的描述），必须将流程用 ```mermaid 围栏代码块绘制流程图（graph LR 方向），每个步骤作为一个节点，流程节点的标签中必须严格保留参考内容中的具体数值（时间、数量、频率、百分比等）。例如参考内容写"2 分钟快速通报"，节点必须标注 `"2分钟快速通报"` 而不是 `"快速通报"`。流程图前后各空一行，禁止编造或简化节点文字。
-9. 对于结构化数据（参数对比、分类说明、流程步骤、数值列表、配置参数等），必须优先使用 Markdown 表格呈现。参考内容中已有的表格必须原样保留，表格前后各空一行。使用表格时确保列对齐，表头加粗自动识别。
+5. 步骤类内容（操作流程、应急流程、处置流程、检查流程等）必须将参考内容中的全部步骤用 1. 2. 3. 编号列表逐条完整列出，每条单独一行，不得合并、跳过或精简任何步骤。保留每个步骤中的具体数值（时间、数量、阈值、频率等）。
+6. 并列要点必须使用 - 无序列表，每条单独一行。确保列出参考内容中所有要点，不遗漏。
+7. 如果参考内容中包含流程、步骤、操作顺序、应急响应过程等先后关系，必须用 ```mermaid 围栏代码块绘制流程图（graph LR 方向），每个步骤作为一个节点，节点标签中严格保留参考内容中的具体数值（时间、数量、频率等，若有）。流程图前后各空一行。禁止输出"无法生成""暂时无法"等放弃性表述——只要参考内容含步骤信息就必须绘制，步骤信息不足时基于已知信息简化绘制。Mermaid 代码只含节点与连线，禁止 %% 注释、classDef、style 指令，禁止 graph/flowchart 以外的图表类型。
+8. 对于结构化数据（参数对比、分类说明、流程步骤、数值列表、配置参数等），必须优先使用 Markdown 表格呈现。参考内容中已有的表格必须原样保留，表格前后各空一行。使用表格时确保列对齐，表头加粗自动识别。
 
 第三部分：格式约束
-10. 严格使用 Markdown 格式，正确使用 ##、###、**粗体**（仅用于关键术语）、列表等。
-11. 数字、编号、设备编号等必须用反引号包裹（如 `RZKJ-LF-001`）。
-12. 每输出完一个语义完整的段落（一个标题+内容、或一个完整列表），必须立即换行。
+9. 严格使用 Markdown 格式，正确使用 ##、###、**粗体**（仅用于关键术语）、列表等。
+10. 数字、编号、设备编号等必须用反引号包裹（如 `RZKJ-LF-001`）。
+11. 每输出完一个语义完整的段落，必须立即换行。
 
 第四部分：禁止事项
-13. 禁止输出连续超过 5 行纯文本（不含标题/列表标记的文本）。
-14. 禁止整段加粗，**粗体**仅用于单个关键术语（如设备名、风险等级）。
-15. 禁止编造内容，只基于参考内容回答。
-16. 禁止输出思考过程、think 标签或任何非回答内容。
-17. 若参考内容为"知识库存在文档但未匹配"，直接友好礼貌地回复：「未找到与您问题相关的文档内容，请尝试换个方式描述问题或上传相关文档。」不输出任何其他内容。
-18. 若参考内容为空，直接友好礼貌地回复：「请先上传文档，我才能基于文档内容为您解答。」不输出任何其他内容。
+12. 禁止整段加粗，**粗体**仅用于单个关键术语（如设备名、风险等级）。
+13. 禁止编造内容，只基于参考内容回答。
+14. 禁止输出思考过程、think 标签或任何非回答内容。
+15. 若参考内容为"知识库存在文档但未匹配"，直接友好礼貌地回复：「未找到与您问题相关的文档内容，请尝试换个方式描述问题或上传相关文档。」不输出任何其他内容。
+16. 若参考内容为空，直接友好礼貌地回复：「请先上传文档，我才能基于文档内容为您解答。」不输出任何其他内容。
+17. 禁止输出版本号、修改人、审批人、文档编号、拟制日期等文档管理元信息（除非用户明确询问）。回答只关注技术内容本身。
 
 参考内容：
 {context}""",
@@ -1576,10 +1576,18 @@ JSON 输出："""
                 logger.info("[RAG] 检测到问候/闲聊，跳过检索: q=%s", q)
                 return {"context": "（用户打招呼或闲聊，请友好自然地回复，介绍自己并引导用户提出具体问题）", "question": q}
 
+            # 总结/精简/概括类追问：跳过 RAG，直接基于对话历史总结
+            if self._is_compression_followup(q):
+                logger.info("[RAG] 检测到精简/总结类追问，跳过检索: q=%s", q)
+                return {
+                    "context": "（用户要求对上一轮回答进行精简总结，请基于对话历史中最近一次回答进行压缩提炼。只保留核心要点和关键结论，去除冗余描述。不要引入任何新信息。）",
+                    "question": q,
+                }
+
             # Query rewrite: 用对话历史对追问做指代消解
             search_query = q
             rewrite_enabled = getattr(settings, "RAG_QUERY_REWRITE_ENABLED", True)
-            if rewrite_enabled and session_id and self._needs_rewrite(q):
+            if rewrite_enabled and session_id:
                 try:
                     with rag_stage("query_rewrite"):
                         from service.rag.conversation.chat_history import get_session_history as _get_hist

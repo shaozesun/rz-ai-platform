@@ -2,7 +2,7 @@ import { useState, useRef, useEffect, useCallback } from 'react';
 import {
   FileText, Upload, Search, FileCode2, FileSpreadsheet,
   Folder, CheckCircle2, Trash2, AlertTriangle,
-  Database, Loader2, Plus, X,
+  Database, Loader2, Plus, X, CheckSquare,
 } from 'lucide-react';
 import { PlatformShell } from '@/components/platform-shell';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -75,6 +75,8 @@ export default function KnowledgePage() {
   const [newGroupName, setNewGroupName] = useState('');
   const [totalDocs, setTotalDocs] = useState(0);
   const [totalChunksAll, setTotalChunksAll] = useState(0);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [batchMode, setBatchMode] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const groupInfoCache = useRef<Map<string, DocItem[]>>(new Map());
   const { hasPermission } = useAuthStore();
@@ -149,6 +151,11 @@ export default function KnowledgePage() {
     }
   }, [activeGroup, groups.length, loadFiles]);
 
+  useEffect(() => {
+    setSelected(new Set());
+    setBatchMode(false);
+  }, [activeGroup]);
+
   const handleUploadFiles = async (files: FileList | File[]) => {
     const list = Array.from(files);
     if (list.length === 0) return;
@@ -193,11 +200,60 @@ export default function KnowledgePage() {
         showMsg(`已删除: ${name}`);
         groupInfoCache.current.delete(activeGroup);
         setDocs((prev) => prev.filter((f) => f.name !== name));
+        setSelected((prev) => {
+          const next = new Set(prev);
+          next.delete(name);
+          return next;
+        });
         loadStats();
       }
     } catch {
       showMsg('删除失败');
     }
+  };
+
+  const toggleSelect = (name: string) => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(name)) next.delete(name);
+      else next.add(name);
+      return next;
+    });
+  };
+
+  const exitBatchMode = () => {
+    setBatchMode(false);
+    setSelected(new Set());
+  };
+
+  const handleBatchDelete = async () => {
+    if (selected.size === 0) return;
+    if (!window.confirm(`确认删除选中的 ${selected.size} 个文档？删除后不可恢复。`)) return;
+    const names = Array.from(selected);
+    let success = 0;
+    let fail = 0;
+    for (const name of names) {
+      try {
+        const res = await deleteFile(name, activeGroup);
+        if (res.ok) {
+          success++;
+          setDocs((prev) => prev.filter((f) => f.name !== name));
+        } else {
+          fail++;
+        }
+      } catch {
+        fail++;
+      }
+    }
+    setSelected(new Set());
+    groupInfoCache.current.delete(activeGroup);
+    loadStats();
+    if (fail === 0) {
+      showMsg(`已删除 ${success} 个文档`);
+    } else {
+      showMsg(`删除完成: ${success} 成功, ${fail} 失败`);
+    }
+    setBatchMode(false);
   };
 
   const handleCreateGroup = async () => {
@@ -245,6 +301,16 @@ export default function KnowledgePage() {
   const filtered = search
     ? docs.filter((d) => d.name.toLowerCase().includes(search.toLowerCase()))
     : docs;
+
+  const toggleSelectAll = () => {
+    setSelected((prev) =>
+      prev.size === filtered.length && filtered.length > 0
+        ? new Set()
+        : new Set(filtered.map((d) => d.name)),
+    );
+  };
+
+  const allSelected = filtered.length > 0 && filtered.every((d) => selected.has(d.name));
 
   const totalChunks = docs.reduce((sum, d) => sum + (d.chunks || 0), 0);
 
@@ -383,15 +449,29 @@ export default function KnowledgePage() {
                 {docs.length} 个文档 · {totalChunks || 0} 个切片 · 自动向量化
               </p>
             </div>
-            <div className="relative hidden sm:block">
-              <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
-              <input
-                type="search"
-                placeholder="搜索文档…"
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-                className="h-9 w-56 rounded-lg border border-border bg-secondary/60 pl-9 pr-3 text-sm outline-none transition-colors placeholder:text-muted-foreground focus:border-ring focus:bg-card"
-              />
+            <div className="flex items-center gap-2">
+              <div className="relative hidden sm:block">
+                <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+                <input
+                  type="search"
+                  placeholder="搜索文档…"
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  className="h-9 w-56 rounded-lg border border-border bg-secondary/60 pl-9 pr-3 text-sm outline-none transition-colors placeholder:text-muted-foreground focus:border-ring focus:bg-card"
+                />
+              </div>
+              {canDelete && docs.length > 0 && !batchMode && (
+                <Button variant="outline" size="sm" onClick={() => setBatchMode(true)}>
+                  <CheckSquare className="size-4" />
+                  批量操作
+                </Button>
+              )}
+              {batchMode && (
+                <Button variant="outline" size="sm" onClick={exitBatchMode}>
+                  <X className="size-4" />
+                  取消
+                </Button>
+              )}
             </div>
           </CardHeader>
           <CardContent className="p-0">
@@ -451,6 +531,34 @@ export default function KnowledgePage() {
 
             {/* Doc list */}
             {filtered.length > 0 && (
+              <>
+              {canDelete && batchMode && (
+                <div className="flex items-center gap-3 px-5 py-3 border-b border-border bg-secondary/30">
+                  <label className="flex items-center gap-2 text-sm cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={allSelected}
+                      onChange={toggleSelectAll}
+                      className="size-4"
+                    />
+                    全选
+                  </label>
+                  {selected.size > 0 && (
+                    <>
+                      <span className="text-sm text-muted-foreground">已选 {selected.size} 项</span>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={handleBatchDelete}
+                        className="text-destructive hover:text-destructive"
+                      >
+                        <Trash2 className="size-4" />
+                        批量删除
+                      </Button>
+                    </>
+                  )}
+                </div>
+              )}
               <div className="divide-y divide-border">
                 {filtered.map((d, i) => {
                   const Icon = fileIcon(d.name);
@@ -467,6 +575,14 @@ export default function KnowledgePage() {
                         }
                       }}
                     >
+                      {canDelete && batchMode && (
+                        <input
+                          type="checkbox"
+                          checked={selected.has(d.name)}
+                          onChange={() => toggleSelect(d.name)}
+                          className="size-4 shrink-0"
+                        />
+                      )}
                       <div className="flex size-10 shrink-0 items-center justify-center rounded-lg bg-secondary text-muted-foreground">
                         <Icon className="size-5" />
                       </div>
@@ -497,6 +613,7 @@ export default function KnowledgePage() {
                   );
                 })}
               </div>
+              </>
             )}
 
             {/* No results */}

@@ -30,7 +30,7 @@ _current_user_id: contextvars.ContextVar[str | None] = contextvars.ContextVar(
 class MongoDBChatMessageHistory(BaseChatMessageHistory):
     """基于 MongoDB 的聊天消息历史"""
 
-    def __init__(self, session_id: str, max_messages: int = 6,
+    def __init__(self, session_id: str, max_messages: int = 4,
                  user_id: str | None = None) -> None:
         self.session_id = session_id
         self.user_id = user_id
@@ -112,7 +112,7 @@ class MongoDBChatMessageHistory(BaseChatMessageHistory):
 
 
 def get_session_history(
-    session_id: str, max_messages: int = 6, user_id: str | None = None,
+    session_id: str, max_messages: int = 4, user_id: str | None = None,
 ) -> MongoDBChatMessageHistory:
     effective_user_id = user_id or _current_user_id.get()
     return MongoDBChatMessageHistory(

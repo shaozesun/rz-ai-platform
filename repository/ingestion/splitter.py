@@ -72,6 +72,261 @@ def _doc_is_markdown(documents: list[Document]) -> bool:
     return parser.startswith("mineru")
 
 
+# ==================== 表格感知切分 ====================
+
+_TABLE_SEP_RE = re.compile(r"^\|[\s\-:|]+\|\s*$")
+
+
+def _is_table_line(line: str) -> bool:
+    s = line.strip()
+    return s.startswith("|") and s.endswith("|") and len(s) >= 3
+
+
+def _extract_table_blocks(text: str) -> list[tuple[str, bool]]:
+    """将文本分割为 [(段文本, 是否表格)] 列表，保留原始顺序。
+
+    表格块判定：以 | 开头的行紧跟 | --- | 分隔线，后续连续 | 行。
+    """
+    segments: list[tuple[str, bool]] = []
+    lines = text.split("\n")
+    i = 0
+    n = len(lines)
+    while i < n:
+        if (
+            _is_table_line(lines[i])
+            and i + 1 < n
+            and _TABLE_SEP_RE.match(lines[i + 1].strip())
+        ):
+            j = i + 2
+            while j < n and _is_table_line(lines[j]):
+                j += 1
+            segments.append(("\n".join(lines[i:j]), True))
+            i = j
+        else:
+            j = i
+            while j < n:
+                if (
+                    _is_table_line(lines[j])
+                    and j + 1 < n
+                    and _TABLE_SEP_RE.match(lines[j + 1].strip())
+                ):
+                    break
+                j += 1
+            block = "\n".join(lines[i:j]).strip()
+            if block:
+                segments.append((block, False))
+            i = j
+    return segments
+
+
+def _split_markdown_table_block(table_text: str, chunk_size: int) -> list[str]:
+    """将大 markdown 表格按第一列分类值分组切分，每个子块复制表头。
+
+    - 小表格（<=chunk_size）：整体返回
+    - 大表格：按第一列分类值分组，相同分类的连续行放一起
+    - 超过 chunk_size 的组：按行切，每块带表头
+    """
+    lines = [l for l in table_text.strip().split("\n") if l.strip()]
+    if len(lines) < 3:
+        return [table_text]
+
+    header_lines = lines[:2]  # 表头行 + 分隔线
+    data_lines = lines[2:]
+
+    full = "\n".join(header_lines + data_lines)
+    if len(full) <= chunk_size:
+        return [full]
+
+    # 按第一列分类值分组（空第一列或与上组相同 → 归入上一组，处理 rowspan 续行）
+    groups: list[tuple[str, list[str]]] = []
+    for line in data_lines:
+        parts = line.split("|")
+        first_col = parts[1].strip() if len(parts) > 1 else ""
+        if groups and (not first_col or first_col == groups[-1][0]):
+            groups[-1][1].append(line)
+        else:
+            groups.append((first_col, [line]))
+
+    header_text = "\n".join(header_lines)
+    header_len = len(header_text)
+    chunks: list[str] = []
+
+    for _, group_lines in groups:
+        group_text = "\n".join(header_lines + group_lines)
+        if len(group_text) <= chunk_size:
+            chunks.append(group_text)
+            continue
+        # 组内仍超大：按行切，每块带表头
+        batch: list[str] = []
+        batch_len = header_len
+        for line in group_lines:
+            if batch and batch_len + 1 + len(line) > chunk_size:
+                chunks.append("\n".join(header_lines + batch))
+                batch = [line]
+                batch_len = header_len + 1 + len(line)
+            else:
+                batch.append(line)
+                batch_len += 1 + len(line)
+        if batch:
+            chunks.append("\n".join(header_lines + batch))
+
+    return chunks
+
+
+# ==================== 步骤块感知切分 ====================
+
+_STEP_LINE_RE = re.compile(r"^\d+(?:\.\d+){1,}\s")
+# 连续编号行达到此数量才视为步骤块（短编号列表如 4.1/5.1 走普通切分）
+_MIN_STEP_LINES = 5
+
+
+def _is_step_line(line: str) -> bool:
+    return bool(_STEP_LINE_RE.match(line.strip()))
+
+
+def _extract_step_blocks(text: str) -> list[tuple[str, bool]]:
+    """将文本分为 [(段文本, 是否步骤块)]，保留顺序。
+
+    步骤块：以编号行（如 9.3.1.1）开头，后续续行（非空、非新 section 标题）
+    一并归入，直至空行或"第N部分"标题结束。仅当编号行数 >= _MIN_STEP_LINES
+    时才标记为步骤块，避免短编号列表被单独切出丢失上下文。
+    """
+    lines = text.split("\n")
+    segments: list[tuple[str, bool]] = []
+    i = 0
+    n = len(lines)
+    while i < n:
+        if _is_step_line(lines[i]):
+            j = i + 1
+            while j < n:
+                if _is_step_line(lines[j]):
+                    j += 1
+                elif lines[j].strip() == "":
+                    break
+                elif re.match(r"^第\d+部分", lines[j].strip()):
+                    break
+                else:
+                    j += 1  # 续行归入步骤块
+            block = "\n".join(lines[i:j])
+            step_count = sum(1 for k in range(i, j) if _is_step_line(lines[k]))
+            segments.append((block, step_count >= _MIN_STEP_LINES))
+            i = j
+        else:
+            j = i
+            while j < n and not _is_step_line(lines[j]):
+                j += 1
+            block = "\n".join(lines[i:j])
+            if block.strip():
+                segments.append((block, False))
+            i = j
+    return segments
+
+
+def _split_step_block(text: str, chunk_size: int) -> list[str]:
+    """按步骤行分组切分，每块含完整步骤（含续行），不切断单步，不 overlap。"""
+    lines = text.split("\n")
+    groups: list[list[str]] = []
+    for line in lines:
+        if _is_step_line(line):
+            groups.append([line])
+        elif groups:
+            groups[-1].append(line)
+        else:
+            groups.append([line])
+    chunks: list[str] = []
+    batch: list[str] = []
+    batch_len = 0
+    for grp in groups:
+        grp_text = "\n".join(grp)
+        grp_len = len(grp_text)
+        if batch and batch_len + 1 + grp_len > chunk_size:
+            chunks.append("\n".join(batch))
+            batch = grp
+            batch_len = grp_len
+        else:
+            if batch:
+                batch_len += 1
+            batch.extend(grp)
+            batch_len += grp_len
+    if batch:
+        chunks.append("\n".join(batch))
+    return chunks
+
+
+def _table_aware_split_documents(
+    doc: Document,
+    splitter: "RecursiveCharacterTextSplitter",
+    chunk_size: int,
+) -> list[Document]:
+    """对单个文档做表格感知切分。
+
+    表格块走 _split_markdown_table_block（保留表头 + 按分类列分组），
+    步骤块走 _split_step_block（按步骤行分组，不切断单步），
+    普通文本走原 splitter，保留原始顺序。
+    """
+    base_meta = dict(doc.metadata or {})
+    segments = _extract_table_blocks(doc.page_content or "")
+    result: list[Document] = []
+    text_parts: list[str] = []
+    for seg_text, is_table in segments:
+        if is_table:
+            if text_parts:
+                text_doc = Document(
+                    page_content="\n\n".join(text_parts), metadata=dict(base_meta)
+                )
+                result.extend(splitter.split_documents([text_doc]))
+                text_parts = []
+            for tbl_chunk in _split_markdown_table_block(seg_text, chunk_size):
+                result.append(Document(page_content=tbl_chunk, metadata=dict(base_meta)))
+        else:
+            # 步骤块感知：非表格段再拆步骤块
+            for sub_text, is_step in _extract_step_blocks(seg_text):
+                if is_step:
+                    if text_parts:
+                        text_doc = Document(
+                            page_content="\n\n".join(text_parts), metadata=dict(base_meta)
+                        )
+                        result.extend(splitter.split_documents([text_doc]))
+                        text_parts = []
+                    for step_chunk in _split_step_block(sub_text, chunk_size):
+                        result.append(Document(page_content=step_chunk, metadata=dict(base_meta)))
+                else:
+                    text_parts.append(sub_text)
+    if text_parts:
+        text_doc = Document(page_content="\n\n".join(text_parts), metadata=dict(base_meta))
+        result.extend(splitter.split_documents([text_doc]))
+    return result
+
+
+def _table_aware_split_text(
+    text: str,
+    splitter: "RecursiveCharacterTextSplitter",
+    chunk_size: int,
+) -> list[str]:
+    """对纯文本做表格感知切分，返回切分后的文本列表。"""
+    segments = _extract_table_blocks(text)
+    result: list[str] = []
+    text_parts: list[str] = []
+    for seg_text, is_table in segments:
+        if is_table:
+            if text_parts:
+                result.extend(splitter.split_text("\n\n".join(text_parts)))
+                text_parts = []
+            result.extend(_split_markdown_table_block(seg_text, chunk_size))
+        else:
+            for sub_text, is_step in _extract_step_blocks(seg_text):
+                if is_step:
+                    if text_parts:
+                        result.extend(splitter.split_text("\n\n".join(text_parts)))
+                        text_parts = []
+                    result.extend(_split_step_block(sub_text, chunk_size))
+                else:
+                    text_parts.append(sub_text)
+    if text_parts:
+        result.extend(splitter.split_text("\n\n".join(text_parts)))
+    return result
+
+
 def get_splitter(
     chunk_size: int,
     chunk_overlap: int,
@@ -153,9 +408,15 @@ def split_documents_smart(
         chunk_overlap=chunk_overlap,
         is_markdown=_doc_is_markdown(documents),
     )
-    splits = text_splitter.split_documents(documents)
+
+    # 表格感知切分：表格块走 _split_markdown_table_block（保留表头 + 分类分组），
+    # 普通文本走原有 splitter
+    all_chunks: list[Document] = []
+    for doc in documents:
+        all_chunks.extend(_table_aware_split_documents(doc, text_splitter, chunk_size))
+
     return merge_small_chunks(
-        splits,
+        all_chunks,
         min_chunk_chars=min_chunk_chars,
         soft_max_chars=max(int(chunk_size * 1.4), chunk_size + chunk_overlap),
     )
@@ -194,7 +455,8 @@ def split_documents_parent_child(
         source = str(base_meta.get("source", ""))
         scope = f"{source}|{base_meta.get('sheet', '')}"
 
-        raw_parents = parent_splitter.split_documents([doc])
+        # 表格感知父切分：表格块走 _split_markdown_table_block，普通文本走原 splitter
+        raw_parents = _table_aware_split_documents(doc, parent_splitter, parent_chunk_size)
         parent_docs = merge_small_chunks(
             raw_parents,
             min_chunk_chars=max(180, parent_chunk_size // 4),
@@ -221,8 +483,11 @@ def split_documents_parent_child(
             }
             parents.append(Document(page_content=parent_text, metadata=parent_meta))
 
+            # 表格感知子切分：含表格的父块走 _split_markdown_table_block
             child_texts = [
-                t.strip() for t in child_splitter.split_text(parent_text) if t.strip()
+                t.strip()
+                for t in _table_aware_split_text(parent_text, child_splitter, child_chunk_size)
+                if t.strip()
             ] or [parent_text]
             accepted = [t for t in child_texts if len(t) >= min_child_chars]
             if not accepted:

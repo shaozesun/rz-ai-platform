@@ -4,6 +4,7 @@ RAG 对话 API 端点（流式 SSE）
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from datetime import datetime
 
@@ -77,12 +78,12 @@ async def generate_rag_stream(
                 if not cleaned:
                     continue
                 answer_parts.append(cleaned)
-                yield f"data: {cleaned}\n\n"
+                yield f"data: {json.dumps({'content': cleaned}, ensure_ascii=False)}\n\n"
 
             tail = stream_filter.flush()
             if tail:
                 answer_parts.append(tail)
-                yield f"data: {tail}\n\n"
+                yield f"data: {json.dumps({'content': tail}, ensure_ascii=False)}\n\n"
 
             yield "data: [DONE]\n\n"
 
@@ -90,7 +91,7 @@ async def generate_rag_stream(
             logger.info("[Chat][RAG] 最终回答 q=%s answer_len=%d", question[:100], len(final_answer))
         except Exception as e:
             logger.error("[RAG 流式] 生成失败: %s", e)
-            yield f"data: [错误] 生成回复失败: {str(e)}\n\n"
+            yield f"data: {json.dumps({'content': f'[错误] 生成回复失败: {str(e)}'}, ensure_ascii=False)}\n\n"
         finally:
             ai_content = strip_thinking_text("".join(answer_parts)).strip()
             if ai_content:
@@ -139,15 +140,15 @@ async def generate_no_rag_stream(text: str, session_id: str, trace_id: str = "",
                     if not cleaned:
                         continue
                     answer_parts.append(cleaned)
-                    await send_func(f"data: {cleaned}\n\n")
+                    await send_func(f"data: {json.dumps({'content': cleaned}, ensure_ascii=False)}\n\n")
 
                 tail = stream_filter.flush()
                 if tail:
                     answer_parts.append(tail)
-                    await send_func(f"data: {tail}\n\n")
+                    await send_func(f"data: {json.dumps({'content': tail}, ensure_ascii=False)}\n\n")
             except Exception as e:
                 logger.error("[普通流式] 生成失败: %s", e)
-                await send_func(f"data: [错误] 生成回复失败: {str(e)}\n\n")
+                await send_func(f"data: {json.dumps({'content': f'[错误] 生成回复失败: {str(e)}'}, ensure_ascii=False)}\n\n")
             finally:
                 await send_func(None)
 

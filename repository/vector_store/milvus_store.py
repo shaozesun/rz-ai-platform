@@ -63,6 +63,17 @@ class FileMetadataExtractor:
         normalized = decoded.replace("\\", "/")
         return normalized
 
+    @staticmethod
+    def extract_clean_title(file_name: str) -> str:
+        """从文件名提取干净标题，去掉编号/扩展名/公司前缀。
+
+        "2.6.7.2润泽科技-廊坊-AX-单路市电断电应急操作流程.xlsx" → "单路市电断电应急操作流程"
+        """
+        name = re.sub(r"\.\w+$", "", file_name)  # 去扩展名
+        name = re.sub(r"^[\d.\-]+", "", name)  # 去开头编号 "2.6.7.2"
+        name = re.sub(r"^润泽科技[-\u4e00-\u9fa5]*-[A-Z]+-?", "", name)  # 去公司前缀
+        return name.strip()
+
 
 class MilvusVectorStore:
     """Milvus 向量存储封装类（使用 pymilvus.MilvusClient）"""
