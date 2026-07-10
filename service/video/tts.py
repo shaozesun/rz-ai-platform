@@ -17,14 +17,24 @@ os.makedirs(TTS_OUTPUT_DIR, exist_ok=True)
 async def synthesize_speech(script: str, voice: str = 'neutral') -> tuple[str, float]:
   """将单段文本合成为语音，返回 (url_or_path, duration_seconds)。
 
-  Qwen TTS 返回远程音频 URL，其他 provider 返回本地文件路径。
+  Qwen/OpenAI TTS 失败时自动降级到 Edge TTS，保证视频生成不中断。
   """
-  if settings.TTS_PROVIDER == 'qwen':
-    return await _synthesize_qwen(script, voice)
-  if settings.TTS_PROVIDER == 'openai':
-    output_path = os.path.join(TTS_OUTPUT_DIR, f'{uuid.uuid4().hex}.mp3')
-    path = await _synthesize_openai(script, voice, output_path)
-    return path, 0.0
+  provider = settings.TTS_PROVIDER
+
+  if provider == 'qwen':
+    try:
+      return await _synthesize_qwen(script, voice)
+    except Exception as e:
+      logger.warning('Qwen TTS 失败，降级到 Edge TTS: %s', e)
+
+  if provider == 'openai':
+    try:
+      output_path = os.path.join(TTS_OUTPUT_DIR, f'{uuid.uuid4().hex}.mp3')
+      path = await _synthesize_openai(script, voice, output_path)
+      return path, 0.0
+    except Exception as e:
+      logger.warning('OpenAI TTS 失败，降级到 Edge TTS: %s', e)
+
   output_path = os.path.join(TTS_OUTPUT_DIR, f'{uuid.uuid4().hex}.mp3')
   path = await _synthesize_edge(script, voice, output_path)
   return path, 0.0
@@ -105,7 +115,7 @@ async def _synthesize_qwen(text: str, voice: str) -> str:
 
   last_error = None
   for attempt in range(QWEN_TTS_MAX_RETRIES):
-    async with httpx.AsyncClient(timeout=120) as client:
+    async with httpx.AsyncClient(timeout=15) as client:
       resp = await client.post(
         f'{settings.TTS_API_URL}/tts',
         headers=headers,

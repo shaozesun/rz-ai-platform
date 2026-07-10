@@ -9,7 +9,8 @@ const client = axios.create({
 });
 
 let isRefreshing = false;
-let pendingQueue: (() => void)[] = [];
+let pendingQueue: ((token: string) => void)[] = [];
+let refreshTimer: ReturnType<typeof setTimeout> | null = null;
 
 const storage = sessionStorage;
 
@@ -21,11 +22,6 @@ function getRefreshToken(): string | null {
   return storage.getItem('refresh_token');
 }
 
-function setAuth(access: string, refresh: string): void {
-  storage.setItem('access_token', access);
-  storage.setItem('refresh_token', refresh);
-}
-
 function clearAuth(): void {
   storage.removeItem('access_token');
   storage.removeItem('refresh_token');
@@ -33,9 +29,62 @@ function clearAuth(): void {
   storage.removeItem('permissions');
 }
 
-function processQueue(): void {
-  pendingQueue.forEach((cb) => cb());
+function processQueue(token: string): void {
+  pendingQueue.forEach((cb) => cb(token));
   pendingQueue = [];
+}
+
+function rejectQueue(_error: unknown): void {
+  pendingQueue.forEach((cb) => cb('')); // trigger reject via empty token
+  pendingQueue = [];
+}
+
+function decodeJwtExp(token: string): number {
+  try {
+    const payload = JSON.parse(atob(token.split('.')[1]));
+    return payload.exp || 0;
+  } catch {
+    return 0;
+  }
+}
+
+function scheduleRefresh(token: string): void {
+  clearRefreshTimer();
+  const exp = decodeJwtExp(token);
+  if (!exp) return;
+  const expiresIn = exp * 1000 - Date.now();
+  const refreshIn = expiresIn - 5 * 60 * 1000; // 过期前 5 分钟刷新
+  if (refreshIn <= 0) return; // 已经快过期了，让拦截器处理
+  refreshTimer = setTimeout(() => {
+    refreshTimer = null;
+    doRefresh().catch(() => {});
+  }, refreshIn);
+}
+
+function clearRefreshTimer(): void {
+  if (refreshTimer) {
+    clearTimeout(refreshTimer);
+    refreshTimer = null;
+  }
+}
+
+function setAuth(access: string, refresh: string): void {
+  storage.setItem('access_token', access);
+  storage.setItem('refresh_token', refresh);
+  scheduleRefresh(access);
+}
+
+async function doRefresh(): Promise<string | null> {
+  const refreshToken = getRefreshToken();
+  if (!refreshToken) return null;
+
+  const { data } = await axios.post(`${API_BASE}/auth/refresh`, {
+    refresh_token: refreshToken,
+  });
+
+  const { access_token, refresh_token } = data.data;
+  setAuth(access_token, refresh_token);
+  return access_token;
 }
 
 // Request interceptor - attach token
@@ -67,9 +116,10 @@ client.interceptors.response.use(
     }
 
     if (isRefreshing) {
-      return new Promise((resolve) => {
-        pendingQueue.push(() => {
-          originalRequest.headers.Authorization = `Bearer ${getAccessToken()}`;
+      return new Promise((resolve, reject) => {
+        pendingQueue.push((token: string) => {
+          if (!token) { reject(error); return; }
+          originalRequest.headers.Authorization = `Bearer ${token}`;
           resolve(client(originalRequest));
         });
       });
@@ -79,26 +129,20 @@ client.interceptors.response.use(
     originalRequest._retry = true;
 
     try {
-      const refreshToken = getRefreshToken();
-      if (!refreshToken) {
+      const newToken = await doRefresh();
+      if (!newToken) {
         throw new Error('No refresh token');
       }
 
-      const { data } = await axios.post(`${API_BASE}/auth/refresh`, {
-        refresh_token: refreshToken,
-      });
-
-      const { access_token, refresh_token } = data.data;
-      setAuth(access_token, refresh_token);
-
-      processQueue();
-
-      originalRequest.headers.Authorization = `Bearer ${access_token}`;
+      processQueue(newToken);
+      originalRequest.headers.Authorization = `Bearer ${newToken}`;
       return client(originalRequest);
     } catch {
+      clearRefreshTimer();
       clearAuth();
-      pendingQueue = [];
-      window.location.href = '/login';
+      rejectQueue(error);
+      // 使用 replace 避免用户点后退按钮回到报错页面
+      window.location.replace('/login');
       return Promise.reject(error);
     } finally {
       isRefreshing = false;
@@ -106,5 +150,12 @@ client.interceptors.response.use(
   },
 );
 
-export { client, setAuth, clearAuth, getAccessToken };
+function initTokenRefresh(): void {
+  const token = getAccessToken();
+  if (token) {
+    scheduleRefresh(token);
+  }
+}
+
+export { client, setAuth, clearAuth, getAccessToken, initTokenRefresh };
 export default client;

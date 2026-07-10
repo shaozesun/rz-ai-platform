@@ -253,49 +253,78 @@ def _split_step_block(text: str, chunk_size: int) -> list[str]:
     return chunks
 
 
+# ==================== 小标题感知贪心打包 ====================
+
+# 层级1边界：第N部分 / markdown 标题（最高优先级，不在中间切）
+_HEADING_BOUNDARY_RE = re.compile(r"(?=^第\d+部分)|(?=^\s*#{1,6}\s)", re.MULTILINE)
+
+
+def _split_by_headings(text: str) -> list[str]:
+    """按 第N部分 / markdown 标题切分，每段含标题行及后续内容直至下一标题。
+
+    无标题的文本返回整体作为一个段。保留原始顺序。
+    """
+    if not text or not text.strip():
+        return []
+    parts = _HEADING_BOUNDARY_RE.split(text)
+    return [p.strip() for p in parts if p.strip()]
+
+
+def _pack_structured(
+    text: str,
+    splitter: "RecursiveCharacterTextSplitter",
+    chunk_size: int,
+) -> list[str]:
+    """层级结构感知贪心打包。
+
+    层级：第N部分/markdown标题（最高优先）→ 表格/步骤/段落（大块降级）→ 句子。
+    小块贪心合并到 chunk_size（不切碎段落/小节），大块（超 chunk_size）才降级
+    走 _table_aware_split_text（表格/步骤/文本感知）细切，不切断原子单元。
+    """
+    blocks = _split_by_headings(text)
+    chunks: list[str] = []
+    current = ""
+    for block in blocks:
+        block = block.strip()
+        if not block:
+            continue
+        if len(block) <= chunk_size:
+            # 小块：贪心合并到当前 chunk
+            if current and len(current) + 2 + len(block) <= chunk_size:
+                current = current + "\n\n" + block
+            else:
+                if current:
+                    chunks.append(current)
+                current = block
+        else:
+            # 大块：先 flush 当前，再降级细切
+            if current:
+                chunks.append(current)
+                current = ""
+            chunks.extend(_table_aware_split_text(block, splitter, chunk_size))
+    if current:
+        chunks.append(current)
+    return chunks
+
+
 def _table_aware_split_documents(
     doc: Document,
     splitter: "RecursiveCharacterTextSplitter",
     chunk_size: int,
 ) -> list[Document]:
-    """对单个文档做表格感知切分。
+    """对单个文档做结构感知切分。
 
-    表格块走 _split_markdown_table_block（保留表头 + 按分类列分组），
-    步骤块走 _split_step_block（按步骤行分组，不切断单步），
-    普通文本走原 splitter，保留原始顺序。
+    最外层按 第N部分/markdown 标题贪心打包到 chunk_size（小节合并、不切碎段落），
+    超出 chunk_size 的大节降级走 _table_aware_split_text（表格/步骤/文本感知）。
+    保留原始顺序。
     """
     base_meta = dict(doc.metadata or {})
-    segments = _extract_table_blocks(doc.page_content or "")
-    result: list[Document] = []
-    text_parts: list[str] = []
-    for seg_text, is_table in segments:
-        if is_table:
-            if text_parts:
-                text_doc = Document(
-                    page_content="\n\n".join(text_parts), metadata=dict(base_meta)
-                )
-                result.extend(splitter.split_documents([text_doc]))
-                text_parts = []
-            for tbl_chunk in _split_markdown_table_block(seg_text, chunk_size):
-                result.append(Document(page_content=tbl_chunk, metadata=dict(base_meta)))
-        else:
-            # 步骤块感知：非表格段再拆步骤块
-            for sub_text, is_step in _extract_step_blocks(seg_text):
-                if is_step:
-                    if text_parts:
-                        text_doc = Document(
-                            page_content="\n\n".join(text_parts), metadata=dict(base_meta)
-                        )
-                        result.extend(splitter.split_documents([text_doc]))
-                        text_parts = []
-                    for step_chunk in _split_step_block(sub_text, chunk_size):
-                        result.append(Document(page_content=step_chunk, metadata=dict(base_meta)))
-                else:
-                    text_parts.append(sub_text)
-    if text_parts:
-        text_doc = Document(page_content="\n\n".join(text_parts), metadata=dict(base_meta))
-        result.extend(splitter.split_documents([text_doc]))
-    return result
+    chunks = _pack_structured(doc.page_content or "", splitter, chunk_size)
+    return [
+        Document(page_content=c, metadata=dict(base_meta))
+        for c in chunks
+        if c.strip()
+    ]
 
 
 def _table_aware_split_text(

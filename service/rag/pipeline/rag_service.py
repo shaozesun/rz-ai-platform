@@ -343,10 +343,6 @@ JSON 输出："""
         # 页码模式："第 X 页共 Y 页"
         if re.search(r"第\s*\d+\s*页\s*共\s*\d+\s*页", head):
             hits += 1
-        # xlsx 结构化章节编号连续出现（如"第01部分""第02部分"）
-        part_ids = re.findall(r"第\d+部分", head)
-        if len(part_ids) >= 2:
-            hits += len(part_ids) - 1
         if hits >= 4:  return 0.20
         if hits >= 3:  return 0.35
         if hits >= 2:  return 0.55
@@ -391,10 +387,9 @@ JSON 输出："""
 
     @staticmethod
     def _doc_name_relevance(question: str, doc: Document) -> float:
-        """文档文件名与 query 的词面重叠度，返回 [1.0, 1.5] 的乘性系数。
+        """文档文件名与 query 的词面重叠度，返回 [0.3, 3.0] 的乘性系数。
 
-        当 query 与文档名共享关键词时加分（如 query 含"单路市电断电"，
-        文档名含"单路市电断电应急操作流程"），基于 jieba 分词后的词面重叠数。
+        先剥离 SOP/EOP 公共后缀再计算 Jaccard，无关文档不再被公共后缀错误拉升。
         """
         md = doc.metadata or {}
         file_name = str(md.get("file_name", "")).strip()
@@ -407,26 +402,38 @@ JSON 输出："""
         if not name.strip():
             return 1.0
 
+        # 剥离公共后缀，保留文件名中真正有区分度的部分
+        for suffix in ("应急操作流程", "标准操作流程", "维护操作流程"):
+            if name.endswith(suffix):
+                name = name[:-len(suffix)]
+                break
+        q_clean = question
+        for suffix in ("应急操作流程", "标准操作流程", "维护操作流程"):
+            if q_clean.endswith(suffix):
+                q_clean = q_clean[:-len(suffix)]
+                break
+
         if jieba is not None:
-            q_words = set(w for w in jieba.lcut(question) if len(w) >= 2)
+            q_words = set(w for w in jieba.lcut(q_clean) if len(w) >= 2)
             n_words = set(w for w in jieba.lcut(name) if len(w) >= 2)
         else:
-            # 中文无空格，退化为单字粒度
-            q_words = set(question)
+            q_words = set(q_clean)
             n_words = set(name)
 
         overlap = q_words & n_words
         n_overlap = len(overlap)
+        union = q_words | n_words
+        jaccard = n_overlap / len(union) if union else 0.0
 
-        base = 1.0
-
-        if n_overlap >= 3:
-            base *= 1.4
-        elif n_overlap >= 2:
-            base *= 1.25
-        elif n_overlap >= 1:
-            base *= 1.1
-        return min(base, 1.5)
+        if jaccard >= 0.7:
+            return 3.0
+        if jaccard >= 0.5:
+            return 2.5
+        if jaccard >= 0.4:
+            return 1.5
+        if jaccard >= 0.35:
+            return 1.0
+        return 0.3
 
     def _resolve_file_name(self, doc: Document, source: str = "") -> str:
         md = doc.metadata or {}

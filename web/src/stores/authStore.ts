@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import type { User } from '../types';
 import { getMe } from '../api/auth';
+import { initTokenRefresh } from '../api/client';
 
 const storage = sessionStorage;
 
@@ -58,6 +59,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       try {
         const user = JSON.parse(userStr) as User;
         const permissions = permsStr ? JSON.parse(permsStr) : [];
+        initTokenRefresh(); // 启动主动续期定时器
         set({
           accessToken: access,
           refreshToken: refresh,

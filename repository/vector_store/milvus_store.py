@@ -492,7 +492,7 @@ class MilvusVectorStore:
                 parent_id = f"legacy:{source_value}|{hit.get('chunk_index', 0)}"
             dist = float(hit.get("distance", 0) or 0.0)
             existing = parent_best.get(parent_id)
-            if existing and dist >= existing["dist"]:
+            if existing and dist <= existing["dist"]:
                 continue
             parent_best[parent_id] = {
                 "dist": dist,
