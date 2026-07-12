@@ -929,7 +929,7 @@ def _cell_value(val) -> str:
 def _load_excel_xlsx(file_path: str) -> list[Document]:
     """
     使用 openpyxl 加载 .xlsx：支持多 sheet，合并单元格展开后按行拼成文本。
-    对于 SOP/EOP/MOP 模板文档，自动识别段落类型并添加 section_type 等元数据。
+    每 sheet 产出完整的一个 Document，保留原始行顺序，不按 section_type 拆散。
     """
     try:
         from openpyxl import load_workbook
@@ -937,8 +937,11 @@ def _load_excel_xlsx(file_path: str) -> list[Document]:
         doc_meta = extract_doc_metadata(file_path)
         wb = load_workbook(file_path, data_only=True)
         docs: list[Document] = []
+        _SKIP_SHEETS = {"封面", "版本控制"}
         try:
             for sheet_name in wb.sheetnames:
+                if sheet_name in _SKIP_SHEETS:
+                    continue
                 ws = wb[sheet_name]
                 if ws.max_row < 1 or ws.max_column < 1:
                     continue
@@ -953,13 +956,11 @@ def _load_excel_xlsx(file_path: str) -> list[Document]:
                     except Exception:
                         continue
 
-                # 按段落分组：检测 section header，将内容按 section_type 分段
-                sections: dict[str, list[str]] = {}
-                current_section = "__header__"
-                sections[current_section] = []
-
+                # 按行拼接为完整文本，保留原始顺序
+                rows_text: list[str] = []
+                boilerplate_seen = False
                 for r in range(1, ws.max_row + 1):
-                    cells = []
+                    cells: list[str] = []
                     for c in range(1, ws.max_column + 1):
                         val = merge_map.get((r, c))
                         if val is None:
@@ -967,54 +968,36 @@ def _load_excel_xlsx(file_path: str) -> list[Document]:
                         cells.append(_cell_value(val))
 
                     # 行内连续相同单元格只保留一个
-                    deduped_cells = []
-                    for c in cells:
-                        if deduped_cells and deduped_cells[-1] == c:
+                    deduped_cells: list[str] = []
+                    for cell in cells:
+                        if deduped_cells and deduped_cells[-1] == cell:
                             continue
-                        deduped_cells.append(c)
+                        deduped_cells.append(cell)
                     row_text = " ".join(deduped_cells)
                     row_text = _dedupe_boilerplate_in_line(row_text)
-
-                    detected = _detect_section_type(row_text)
-                    if detected:
-                        current_section = detected
-                        if current_section not in sections:
-                            sections[current_section] = []
-                    sections.setdefault(current_section, []).append(row_text)
-
-                # 为每个有内容的 section 创建 Document
-                # cover/version/signoff 是文档管理元数据（版本号/修改人/审批人），
-                # 对 RAG 检索无价值且会污染回答，跳过不入库
-                _SKIP_SECTIONS = {"cover", "version", "signoff", "__header__"}
-                for section_type, rows in sections.items():
-                    if section_type in _SKIP_SECTIONS:
+                    if not row_text.strip():
                         continue
-                    # 去重
-                    deduped = []
-                    boilerplate_seen = False
-                    for line in rows:
-                        s = line.strip()
-                        if s and deduped and deduped[-1] == line:
+                    # 行级去重 + boilerplate 行只保留一条
+                    if rows_text and rows_text[-1] == row_text:
+                        continue
+                    if _is_boilerplate_line(row_text):
+                        if boilerplate_seen:
                             continue
-                        if s and _is_boilerplate_line(line):
-                            if boilerplate_seen:
-                                continue
-                            boilerplate_seen = True
-                        deduped.append(line)
-                    full_text = "\n".join(deduped).strip()
-                    if not full_text:
-                        continue
-                    # 跳过过短的非表格内容（避免"【内部公开】""基本信息"等垃圾 chunk）
-                    if len(full_text) < 30 and "|" not in full_text:
-                        continue
+                        boilerplate_seen = True
+                    rows_text.append(row_text)
 
-                    metadata = {
-                        "sheet": sheet_name,
-                        "source": file_path,
-                        "section_type": section_type,
-                    }
-                    metadata.update(doc_meta)
-                    docs.append(Document(page_content=full_text, metadata=metadata))
+                full_text = "\n".join(rows_text).strip()
+                if not full_text:
+                    continue
+                if len(full_text) < 30 and "|" not in full_text:
+                    continue
+
+                metadata = {
+                    "sheet": sheet_name,
+                    "source": file_path,
+                }
+                metadata.update(doc_meta)
+                docs.append(Document(page_content=full_text, metadata=metadata))
 
         finally:
             if getattr(wb, "close", None):
@@ -1022,11 +1005,11 @@ def _load_excel_xlsx(file_path: str) -> list[Document]:
 
         if docs and doc_meta:
             logger.info(
-                "[Loader] 结构化解析 %s: doc_type=%s subsystem=%s sections=%d",
+                "[Loader] 加载 %s: doc_type=%s subsystem=%s sheets=%d",
                 Path(file_path).name,
                 doc_meta.get("doc_type", "-"),
                 doc_meta.get("subsystem", "-"),
-                len(set(d.metadata.get("section_type", "") for d in docs)),
+                len(docs),
             )
         return docs
     except Exception:

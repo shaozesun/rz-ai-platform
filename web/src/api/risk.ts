@@ -10,6 +10,28 @@ import type {
   FireSafetyHistoryDetail,
 } from '../types';
 
+// ── 下载辅助：直接 form submit，token 放 URL query param ──
+// 原生 form 提交不会被 Chrome 拦截，后端返回 Content-Disposition: attachment 时页面不跳转
+
+function submitDownload(path: string, fields: Record<string, string>) {
+  const token = sessionStorage.getItem('access_token');
+  const form = document.createElement('form');
+  form.method = 'POST';
+  form.action = `/api/v1${path}${token ? `?token=${encodeURIComponent(token)}` : ''}`;
+
+  for (const [name, value] of Object.entries(fields)) {
+    const input = document.createElement('input');
+    input.type = 'hidden';
+    input.name = name;
+    input.value = value;
+    form.appendChild(input);
+  }
+
+  document.body.appendChild(form);
+  form.submit();
+  document.body.removeChild(form);
+}
+
 export async function checkImage(
   file: File,
   description?: string,
@@ -46,17 +68,9 @@ export async function fireSafetyRecommend(
 }
 
 export function downloadFireSafetyReport(result: FireSafetyResult) {
-  const formEl = document.createElement('form');
-  formEl.method = 'POST';
-  formEl.action = '/api/v1/risk/fire-safety/report';
-  const input = document.createElement('input');
-  input.type = 'hidden';
-  input.name = 'data';
-  input.value = JSON.stringify(result);
-  formEl.appendChild(input);
-  document.body.appendChild(formEl);
-  formEl.submit();
-  document.body.removeChild(formEl);
+  submitDownload('/risk/fire-safety/report', {
+    data: JSON.stringify(result),
+  });
 }
 
 export async function generateReport(
@@ -74,39 +88,14 @@ export async function generateReport(
   return data;
 }
 
-export async function downloadReportDocx(
+export function downloadReportDocx(
   results: CheckResult[],
   title: string = '安全隐患检测报告',
-): Promise<void> {
+) {
   const checkIds = results.map((r) => r.check_id);
-  const token = sessionStorage.getItem('access_token');
-  const response = await fetch('/api/v1/risk/report', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-    },
-    body: JSON.stringify({
-      check_ids: checkIds,
-      results,
-      title,
-      format: 'docx',
-    }),
+  submitDownload('/risk/report', {
+    data: JSON.stringify({ check_ids: checkIds, results, title, format: 'docx' }),
   });
-  if (!response.ok) {
-    throw new Error(`下载失败: ${response.status}`);
-  }
-  const blob = await response.blob();
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = '安全隐患检测报告.docx';
-  document.body.appendChild(a);
-  a.click();
-  setTimeout(() => {
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
-  }, 200);
 }
 
 export async function getRiskHistory(

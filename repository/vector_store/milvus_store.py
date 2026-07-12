@@ -75,6 +75,21 @@ class FileMetadataExtractor:
         return name.strip()
 
 
+def _make_clean_title(file_name: str) -> str:
+    """从文档名提取精简标题用于 chunk 富化。
+
+    "2.6.7.2润泽科技-廊坊-AX-单路市电断电应急操作流程.xlsx" → "单路市电断电"
+    """
+    name = FileMetadataExtractor.extract_clean_title(file_name)
+    if not name:
+        return ""
+    for suffix in ("应急操作流程", "标准操作流程", "维护操作流程"):
+        if name.endswith(suffix):
+            name = name[:-len(suffix)]
+            break
+    return name.strip()
+
+
 class MilvusVectorStore:
     """Milvus 向量存储封装类（使用 pymilvus.MilvusClient）"""
 
@@ -682,6 +697,7 @@ class VectorStoreManager:
         seen = set()
         unique_splits = []
         file_name = Path(file_path).name
+        clean_title = _make_clean_title(file_name)
         for doc in splits:
             key = doc.page_content.strip().replace("\r\n", "\n").replace("\r", "\n")
             if key and key not in seen:
@@ -690,6 +706,8 @@ class VectorStoreManager:
                 doc.metadata["group_id"] = group_id
                 if open_id:
                     doc.metadata["uploaded_by"] = open_id
+                if clean_title:
+                    doc.page_content = f"【{clean_title}】{doc.page_content}"
                 unique_splits.append(doc)
         logger.debug("[AddFile] 去重后文档数量: %d", len(unique_splits))
         if not unique_splits:

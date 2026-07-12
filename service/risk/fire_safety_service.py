@@ -8,6 +8,7 @@ import json
 import logging
 import re
 import time
+from datetime import datetime
 
 from core.model_gateway import model_gateway
 from models.risk.schemas import (
@@ -27,6 +28,18 @@ _cache: dict[str, tuple[dict, float]] = {}
 _CACHE_TTL = 3600
 _CACHE_MAX_SIZE = 128
 
+
+async def _log_fire_safety_usage(user_id: str | None = None) -> None:
+  """将消防配置调用记录写入 MongoDB（独立于 LLM usage 统计）。"""
+  try:
+    from config.mongodb_conn import mongodb_manager
+    await mongodb_manager.db.llm_usage.insert_one({
+      'user_id': user_id,
+      'caller': 'fire_safety',
+      'created_at': datetime.utcnow(),
+    })
+  except Exception:
+    logger.warning('消防配置用量写入失败', exc_info=True)
 
 
 def _clean_cache() -> None:
@@ -139,6 +152,9 @@ async def recommend(request: FireSafetyRequest) -> FireSafetyResult:
   if len(_cache) > _CACHE_MAX_SIZE * 1.5:
     _clean_cache()
 
+  # 记录用量（用于统计）
+  await _log_fire_safety_usage()
+
   return _build_result(request, parsed)
 
 
@@ -198,6 +214,8 @@ async def _recommend_simple(request: FireSafetyRequest) -> FireSafetyResult:
     )
 
   parsed = _parse_fire_safety_json(raw)
+
+  await _log_fire_safety_usage()
 
   items = [
     FireSafetyItem(

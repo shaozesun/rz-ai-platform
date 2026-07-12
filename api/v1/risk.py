@@ -178,9 +178,14 @@ async def fire_safety_recommend(
 @require_permission('ai:risk')
 async def generate_report(
   request: Request,
-  body: ReportRequest = Body(...),
+  body: ReportRequest = Body(None),
+  data: str = Form(None),
 ):
   """根据检测结果生成报告（支持 Markdown 和 Word 格式）"""
+  if body is None and data:
+    body = ReportRequest(**json.loads(data))
+  if body is None:
+    return JSONResponse(status_code=400, content={'ok': False, 'msg': '请提供检测结果'})
   user_id = request.state.user_id
   logger.info('[RiskReport] 生成报告: user_id=%s check_ids=%s format=%s',
               user_id, body.check_ids, body.format)

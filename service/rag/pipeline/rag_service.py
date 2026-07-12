@@ -1113,59 +1113,83 @@ JSON 输出："""
             logger.exception("[RAG][S_file] 文件向量打分失败，降级为纯 chunk 分")
             return {}, {}, [], True
 
+    @staticmethod
+    def _reranker_endpoint() -> str:
+        """规范化 RERANKER_BASE_URL 为 vLLM rerank 端点。"""
+        base = (settings.RERANKER_BASE_URL or "").strip().rstrip("/")
+        if not base:
+            return ""
+        if base.endswith("/rerank"):
+            return base
+        if base.endswith("/v1"):
+            return base + "/rerank"
+        return base + "/v1/rerank"
+
     def _cross_encoder_rerank(
         self,
         question: str,
         docs: list[Document],
     ) -> list[float]:
-        """使用 LLM 对候选文档做批量相关性评分，返回每个文档的归一化分数。
+        """调用 Qwen3-Reranker (vLLM /v1/rerank) 对候选文档做相关性精排。
 
-        一次 LLM 调用批量处理所有候选文档，返回 0~1 之间的相关度分数列表。
+        返回每个文档的原始相关度分数（0~1，reranker sigmoid 输出，跨批次可比，
+        不做 z-score 归一化）。vLLM 单次 documents 上限 32，超出自动分批。
         失败时返回全 1.0（不改变原有排序）。
         """
         n = len(docs)
         if n <= 1:
             return [1.0] * n
 
-        # 截断每个文档文本以控制 prompt 长度
-        passages: list[str] = []
-        for i, doc in enumerate(docs):
-            text = (doc.page_content or "")[:600]
-            passages.append(f"[{i}] {text}\n")
+        endpoint = self._reranker_endpoint()
+        if not endpoint:
+            logger.warning("[CrossEncoder] RERANKER_BASE_URL 未配置，跳过精排")
+            return [1.0] * n
 
-        prompt = f"""对以下文档片段与用户问题的相关度打分，输出每行一个分数（0-1 之间的浮点数，1=高度相关，0=完全无关）。
-严格按给出的序号顺序输出，不要输出任何解释、序号或括号。
+        import requests
 
-用户问题：{question[:300]}
+        model_name = settings.RERANKER_MODEL
+        headers = {"Content-Type": "application/json"}
+        if settings.RERANKER_API_KEY:
+            headers["Authorization"] = f"Bearer {settings.RERANKER_API_KEY}"
 
-文档片段：
-{''.join(passages)}
-分数（每行一个，共{n}行）："""
-
+        batch_size = 32
+        scores: list[float] = [1.0] * n
         try:
-            llm = self._get_llm(temperature=0.0)
-            response = llm.invoke(prompt)
-            raw = (response.content if hasattr(response, "content") else str(response)).strip()
-            # 提取每行中的浮点数
-            scores: list[float] = []
-            for line in raw.split("\n"):
-                match = re.search(r"(\d+\.?\d*)", line)
-                if match:
-                    val = float(match.group(1))
-                    scores.append(min(max(val, 0.0), 1.0))
-            # 补齐到 n 个
-            while len(scores) < n:
-                scores.append(1.0)
-            scores = scores[:n]
+            for start in range(0, n, batch_size):
+                batch = docs[start:start + batch_size]
+                passages = [(d.page_content or "")[:1024] for d in batch]
+                payload = {
+                    "model": model_name,
+                    "query": question[:512],
+                    "documents": passages,
+                }
+                resp = requests.post(
+                    endpoint,
+                    json=payload,
+                    headers=headers,
+                    timeout=settings.LLM_TIMEOUT,
+                )
+                resp.raise_for_status()
+                data = resp.json()
+                results = data.get("results") or data.get("data") or []
+                for item in results:
+                    local_idx = item.get("index")
+                    score = item.get("relevance_score", item.get("score"))
+                    if local_idx is None or score is None:
+                        continue
+                    global_idx = start + int(local_idx)
+                    if 0 <= global_idx < n:
+                        scores[global_idx] = float(score)
 
             logger.debug(
-                "[CrossEncoder] 批量评分 %d docs: %s",
+                "[CrossEncoder] Qwen3-Reranker 精排 %d docs (%d批): %s",
                 n,
-                ", ".join(f"{s:.3f}" for s in scores),
+                (n + batch_size - 1) // batch_size,
+                ", ".join(f"{s:.3f}" for s in scores[:10]),
             )
             return scores
         except Exception:
-            logger.exception("[CrossEncoder] 评分失败，降级为原排序")
+            logger.exception("[CrossEncoder] Reranker 调用失败，降级为原排序")
             return [1.0] * n
 
     def _rerank_docs(
@@ -1548,8 +1572,8 @@ JSON 输出："""
 第二部分：内容格式
 5. 步骤类内容（操作流程、应急流程、处置流程、检查流程等）必须将参考内容中的全部步骤用 1. 2. 3. 编号列表逐条完整列出，每条单独一行，不得合并、跳过或精简任何步骤。保留每个步骤中的具体数值（时间、数量、阈值、频率等）。
 6. 并列要点必须使用 - 无序列表，每条单独一行。确保列出参考内容中所有要点，不遗漏。
-7. 如果参考内容中包含流程、步骤、操作顺序、应急响应过程等先后关系，必须用 ```mermaid 围栏代码块绘制流程图（graph LR 方向），每个步骤作为一个节点，节点标签中严格保留参考内容中的具体数值（时间、数量、频率等，若有）。流程图前后各空一行。禁止输出"无法生成""暂时无法"等放弃性表述——只要参考内容含步骤信息就必须绘制，步骤信息不足时基于已知信息简化绘制。Mermaid 代码只含节点与连线，禁止 %% 注释、classDef、style 指令，禁止 graph/flowchart 以外的图表类型。
-8. 对于结构化数据（参数对比、分类说明、流程步骤、数值列表、配置参数等），必须优先使用 Markdown 表格呈现。参考内容中已有的表格必须原样保留，表格前后各空一行。使用表格时确保列对齐，表头加粗自动识别。
+7. 参考内容中已有的 mermaid 流程图原样保留。参考内容含明确的先后关系（多分支、判断节点、并行路径等复杂流程）时，可用 ```mermaid 围栏代码块绘制流程图（graph LR 方向）辅助说明，节点标签中保留参考内容中的具体数值（时间、数量、频率等，若有），流程图前后各空一行。简单线性步骤直接用 1. 2. 3. 编号列表即可，不必画流程图。Mermaid 代码只含节点与连线，禁止 %% 注释、classDef、style 指令，禁止 graph/flowchart 以外的图表类型。
+8. 参考内容中已有的表格原样保留，表格前后各空一行。适合表格呈现的结构化数据（多组参数对比、分类对照等，且数据行不少于 3 行）可用 Markdown 表格呈现，表头加粗。简单的数值列表、单列步骤或少量数据不必转成表格，用列表即可。
 
 第三部分：格式约束
 9. 严格使用 Markdown 格式，正确使用 ##、###、**粗体**（仅用于关键术语）、列表等。

@@ -58,6 +58,11 @@ class Settings(BaseSettings):
   EMBEDDING_MODEL: str = 'bge-m3'
   EMBEDDING_API_KEY: str = ''
 
+  # Reranker 模型 (Qwen3-Reranker-8B)
+  RERANKER_BASE_URL: str = ''
+  RERANKER_MODEL: str = 'Qwen3-Reranker-8B'
+  RERANKER_API_KEY: str = ''
+
   # 模型调用参数
   LLM_TIMEOUT: int = 60
   LLM_MAX_RETRIES: int = 2
@@ -77,11 +82,11 @@ class Settings(BaseSettings):
   RAG_FETCH_K_GLOBAL: int = 300
   RAG_FETCH_K_PER_FILE: int = 12
   RAG_FILE_TOP_K: int = 10
-  RAG_FUSION_TOP_K: int = 30
-  RAG_FINAL_TOP_K: int = 8
+  RAG_FUSION_TOP_K: int = 50
+  RAG_FINAL_TOP_K: int = 10
   RAG_FILE_SCAN_LIMIT: int = 10000
-  RAG_DENSE_RECALL_LIMIT: int = 150
-  RAG_SPARSE_RECALL_LIMIT: int = 150
+  RAG_DENSE_RECALL_LIMIT: int = 250
+  RAG_SPARSE_RECALL_LIMIT: int = 250
 
   # RAG 融合权重 (v2)
   RAG_FUSION_A: float = 0.20
@@ -104,9 +109,9 @@ class Settings(BaseSettings):
   RAG_SPARSE_WEIGHT: float = 0.35
 
   # 重排序
-  RAG_CROSS_ENCODER_ENABLED: bool = False
-  RAG_CROSS_ENCODER_PRE_FILTER: int = 15
-  RAG_CROSS_ENCODER_WEIGHT: float = 0.6
+  RAG_CROSS_ENCODER_ENABLED: bool = True
+  RAG_CROSS_ENCODER_PRE_FILTER: int = 50
+  RAG_CROSS_ENCODER_WEIGHT: float = 0.75
   RAG_INTENT_CLASSIFY_ENABLED: bool = False
   RAG_QUERY_REWRITE_ENABLED: bool = True
 
@@ -120,7 +125,7 @@ class Settings(BaseSettings):
   RAG_A_PARENT_CHUNK_OVERLAP: int = 80
   RAG_A_CHILD_CHUNK_SIZE: int = 600
   RAG_A_CHILD_CHUNK_OVERLAP: int = 60
-  RAG_A_FETCH_K_CHILD: int = 300
+  RAG_A_FETCH_K_CHILD: int = 500
 
   RAG_PER_SOURCE_CAP: int = 5
   RAG_PER_FILE_CAP: int = 5

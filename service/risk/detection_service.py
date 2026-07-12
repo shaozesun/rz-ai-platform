@@ -147,8 +147,9 @@ def _build_result(
   error: str = '',
 ) -> CheckResult:
   """从解析结果构建 CheckResult"""
-  risk_level = parsed.get('risk_level', 'unknown')
-  severity = SEVERITY_MAP.get(risk_level, '低')
+  risk_level_raw = parsed.get('risk_level', 'unknown')
+  severity = SEVERITY_MAP.get(risk_level_raw, '低')
+  risk_level = SEVERITY_MAP.get(risk_level_raw, risk_level_raw)
 
   violations_raw = parsed.get('violations', [])
   if not isinstance(violations_raw, list):
@@ -340,8 +341,8 @@ async def check_images_batch(
   results = await asyncio.gather(*tasks)
 
   total_risks = sum(1 for r in results if r.has_risk)
-  high_count = sum(1 for r in results if r.risk_level in ('high', 'critical'))
-  mid_count = sum(1 for r in results if r.risk_level == 'medium')
+  high_count = sum(1 for r in results if r.risk_level == '高')
+  mid_count = sum(1 for r in results if r.risk_level == '中')
 
   summary_parts = [f'共检测 {len(results)} 张图片']
   if total_risks == 0:

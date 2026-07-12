@@ -73,6 +73,7 @@ class ModelGateway:
     cache: bool = False,
     timeout: float | None = None,
     caller: str = 'chat',
+    enable_thinking: bool = False,
   ) -> str:
     """文本对话 — 返回完整回复"""
     client = self._chat_client
@@ -100,6 +101,8 @@ class ModelGateway:
     }
     if json_mode:
       kwargs['response_format'] = {'type': 'json_object'}
+    if not enable_thinking:
+      kwargs['extra_body'] = {'chat_template_kwargs': {'enable_thinking': False}}
 
     try:
       response = await asyncio.wait_for(

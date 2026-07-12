@@ -192,6 +192,79 @@
   height: auto;
 }
 
+/* ========== Markdown 标题与排版 ========== */
+.assistant-msg h1,
+.assistant-msg h2,
+.assistant-msg h3,
+.assistant-msg h4 {
+  font-weight: 700;
+  color: var(--foreground);
+  line-height: 1.3;
+  margin: 1em 0 0.5em;
+}
+.assistant-msg h1 {
+  font-size: 1.25rem;
+}
+.assistant-msg h2 {
+  font-size: 1.125rem;
+  padding-bottom: 0.2em;
+  border-bottom: 1px solid var(--border);
+}
+.assistant-msg h3 {
+  font-size: 1rem;
+}
+.assistant-msg h4 {
+  font-size: 0.9375rem;
+  color: oklch(0.45 0.02 257);
+}
+.assistant-msg h1:first-child,
+.assistant-msg h2:first-child,
+.assistant-msg h3:first-child {
+  margin-top: 0;
+}
+.assistant-msg p {
+  margin: 0.5em 0;
+}
+.assistant-msg strong {
+  font-weight: 700;
+  color: var(--foreground);
+}
+.assistant-msg ul,
+.assistant-msg ol {
+  margin: 0.5em 0;
+  padding-left: 1.5em;
+}
+.assistant-msg ul {
+  list-style: disc;
+}
+.assistant-msg ol {
+  list-style: decimal;
+}
+.assistant-msg li {
+  margin: 0.25em 0;
+}
+.assistant-msg li > ul,
+.assistant-msg li > ol {
+  margin: 0.25em 0;
+}
+.assistant-msg blockquote {
+  border-left: 3px solid var(--border);
+  padding-left: 0.75rem;
+  margin: 0.5em 0;
+  color: oklch(0.5 0.02 257);
+}
+.assistant-msg hr {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: 1em 0;
+}
+.dark .assistant-msg h4 {
+  color: oklch(0.7 0.02 257);
+}
+.dark .assistant-msg blockquote {
+  color: oklch(0.7 0.02 257);
+}
+
 /* ========== 代码块 ========== */
 .assistant-msg pre {
   overflow-x: auto;
