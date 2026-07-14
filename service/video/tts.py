@@ -3,6 +3,7 @@
 import os
 import uuid
 import asyncio
+import traceback
 
 import httpx
 from config.settings import settings
@@ -24,20 +25,20 @@ async def synthesize_speech(script: str, voice: str = 'neutral') -> tuple[str, f
   if provider == 'qwen':
     try:
       return await _synthesize_qwen(script, voice)
-    except Exception as e:
-      logger.warning('Qwen TTS 失败，降级到 Edge TTS: %s', e)
+    except Exception:
+      logger.warning('Qwen TTS 失败，降级到 Edge TTS:\n%s', traceback.format_exc())
 
   if provider == 'openai':
     try:
       output_path = os.path.join(TTS_OUTPUT_DIR, f'{uuid.uuid4().hex}.mp3')
       path = await _synthesize_openai(script, voice, output_path)
-      return path, 0.0
-    except Exception as e:
-      logger.warning('OpenAI TTS 失败，降级到 Edge TTS: %s', e)
+      return path, _estimate_duration(script)
+    except Exception:
+      logger.warning('OpenAI TTS 失败，降级到 Edge TTS:\n%s', traceback.format_exc())
 
   output_path = os.path.join(TTS_OUTPUT_DIR, f'{uuid.uuid4().hex}.mp3')
   path = await _synthesize_edge(script, voice, output_path)
-  return path, 0.0
+  return path, _estimate_duration(script)
 
 
 async def _synthesize_edge(text: str, voice: str, output_path: str) -> str:
@@ -82,6 +83,11 @@ async def _synthesize_openai(text: str, voice: str, output_path: str) -> str:
   return output_path
 
 
+def _estimate_duration(text: str) -> float:
+  """根据文本长度估算中文 TTS 音频时长，约 4 字/秒，下限 1.0 秒。"""
+  return max(1.0, len(text) / 4.0)
+
+
 QWEN_TTS_MAX_CHARS = 300
 QWEN_TTS_MAX_RETRIES = 3
 
@@ -115,7 +121,7 @@ async def _synthesize_qwen(text: str, voice: str) -> str:
 
   last_error = None
   for attempt in range(QWEN_TTS_MAX_RETRIES):
-    async with httpx.AsyncClient(timeout=15) as client:
+    async with httpx.AsyncClient(timeout=120) as client:
       resp = await client.post(
         f'{settings.TTS_API_URL}/tts',
         headers=headers,

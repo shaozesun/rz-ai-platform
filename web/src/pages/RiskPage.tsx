@@ -183,7 +183,7 @@ export default function RiskPage() {
   };
 
   const downloadReport= () => {
-    downloadReportDocx(results, '安全隐患检测报告').catch(() => {});
+    downloadReportDocx(results, '安全隐患检测报告');
   };
 
   const deleteHistoryEntry = async (checkId: string) => {

@@ -17,8 +17,11 @@ from pathlib import Path
 from typing import Optional
 
 from PIL import Image
+from fastapi import Request
 
 from core.model_gateway import model_gateway
+from core.scheduler.scheduler import scheduler
+from core.scheduler.enums import TaskType
 from models.risk.schemas import CheckResult, ViolationItem, HazardItem, BatchCheckResult
 from prompts.risk.detection import (
   DETECTION_SYSTEM_PROMPT,
@@ -226,6 +229,7 @@ async def check_image(
   image_name: str = '',
   media_type: str = 'image/jpeg',
   user_description: str = '',
+  request: Request | None = None,
 ) -> CheckResult:
   """两阶段图片安全检测。
 
@@ -247,12 +251,16 @@ async def check_image(
   # ==================== Phase 1: VLM 识别 ====================
   logger.info('[Phase1] 开始调用 model image_size=%.0fKB', len(b64) * 3 / 4 / 1024)
   try:
-    raw = await model_gateway.vision(
-      system_prompt=DETECTION_SYSTEM_PROMPT,
-      user_text=user_text,
-      images=[b64],
-      temperature=0.1,
-      max_tokens=4096,
+    raw = await scheduler.schedule(
+      task_type=TaskType.RISK_DETECTION,
+      coro=model_gateway.vision(
+        system_prompt=DETECTION_SYSTEM_PROMPT,
+        user_text=user_text,
+        images=[b64],
+        temperature=0.1,
+        max_tokens=4096,
+      ),
+      request=request,
     )
   except Exception as e:
     logger.error('[Phase1] 模型调用失败: %s', e)
@@ -299,12 +307,16 @@ async def check_image(
 
   logger.info('[Phase2] 降级到视觉模型对比 cabinet=%s', cabinet_type)
   try:
-    raw2 = await model_gateway.vision(
-      system_prompt=CABINET_COMPARE_PROMPT,
-      user_text=f'请对比以下两张图片。机柜类型：{cabinet_type}',
-      images=[b64, ref_b64],
-      temperature=0.1,
-      max_tokens=4096,
+    raw2 = await scheduler.schedule(
+      task_type=TaskType.RISK_DETECTION,
+      coro=model_gateway.vision(
+        system_prompt=CABINET_COMPARE_PROMPT,
+        user_text=f'请对比以下两张图片。机柜类型：{cabinet_type}',
+        images=[b64, ref_b64],
+        temperature=0.1,
+        max_tokens=4096,
+      ),
+      request=request,
     )
   except Exception as e:
     logger.error('[Phase2] 视觉对比失败: %s', e)
@@ -325,17 +337,19 @@ async def check_image(
 async def check_images_batch(
   image_data_list: list[tuple[bytes, str, str]],
   user_description: str = '',
+  request: Request | None = None,
 ) -> BatchCheckResult:
   """批量检测多张图片。
 
   Args:
       image_data_list: [(bytes, image_name, media_type), ...]
       user_description: 用户补充描述
+      request: FastAPI Request（用于调度优先级）
   """
   import asyncio
 
   tasks = [
-    check_image(data, name, mime, user_description)
+    check_image(data, name, mime, user_description, request)
     for data, name, mime in image_data_list
   ]
   results = await asyncio.gather(*tasks)

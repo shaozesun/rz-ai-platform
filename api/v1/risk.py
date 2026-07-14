@@ -90,6 +90,7 @@ async def risk_check(
       image_name=file.filename,
       media_type=media_type,
       user_description=description,
+      request=request,
     )
     result.trace_id = get_trace_id()
     # 持久化到数据库
@@ -134,7 +135,7 @@ async def risk_batch_check(
     return JSONResponse(status_code=400, content={'ok': False, 'msg': '没有有效的图片'})
 
   try:
-    result = await check_images_batch(image_data_list, user_description=description)
+    result = await check_images_batch(image_data_list, user_description=description, request=request)
     # 持久化到数据库
     for i, r in enumerate(result.results):
       if r.ok and r.check_id and i < len(image_data_list):
@@ -163,7 +164,7 @@ async def fire_safety_recommend(
               user_id, body.building_type or body.room_type,
               body.building_height or body.height,
               body.building_area or body.area)
-  result = await recommend(body)
+  result = await recommend(body, http_request=request)
   result.trace_id = get_trace_id()
   # 持久化到数据库
   if result.ok:

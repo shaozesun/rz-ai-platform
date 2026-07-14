@@ -245,6 +245,8 @@ def _describe_image(image_path: str, caption: str = "", footnote: str = "") -> s
     import asyncio
 
     from core.model_gateway import model_gateway
+    from core.scheduler.scheduler import scheduler
+    from core.scheduler.enums import TaskType
 
     with open(image_path, "rb") as f:
         image_data = base64.b64encode(f.read()).decode("utf-8")
@@ -264,11 +266,14 @@ def _describe_image(image_path: str, caption: str = "", footnote: str = "") -> s
 
     async def _run() -> str:
         return await asyncio.wait_for(
-            model_gateway.vision(
-                system_prompt="你是一个专业的技术文档分析助手，擅长描述图片内容并生成结构化输出。",
-                user_text="\n".join(context_parts),
-                images=[image_data],
-                temperature=0.0,
+            scheduler.schedule(
+                task_type=TaskType.INGESTION,
+                coro=model_gateway.vision(
+                    system_prompt="你是一个专业的技术文档分析助手，擅长描述图片内容并生成结构化输出。",
+                    user_text="\n".join(context_parts),
+                    images=[image_data],
+                    temperature=0.0,
+                ),
             ),
             timeout=30,
         )

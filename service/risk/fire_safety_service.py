@@ -10,7 +10,11 @@ import re
 import time
 from datetime import datetime
 
+from fastapi import Request
+
 from core.model_gateway import model_gateway
+from core.scheduler.scheduler import scheduler
+from core.scheduler.enums import TaskType
 from models.risk.schemas import (
   FireSafetyRequest,
   FireSafetyResult,
@@ -82,7 +86,7 @@ def _is_simple_mode(request: FireSafetyRequest) -> bool:
   return bool(request.room_type) and not bool(request.building_type)
 
 
-async def recommend(request: FireSafetyRequest) -> FireSafetyResult:
+async def recommend(request: FireSafetyRequest, http_request: Request | None = None) -> FireSafetyResult:
   """根据建筑参数推荐消防配置方案。
 
   支持两种模式：
@@ -91,7 +95,7 @@ async def recommend(request: FireSafetyRequest) -> FireSafetyResult:
   """
   # 简化模式兼容
   if _is_simple_mode(request):
-    return await _recommend_simple(request)
+    return await _recommend_simple(request, http_request)
 
   # 完整模式
   user_text = FIRE_SAFETY_USER_TEMPLATE.format(
@@ -124,16 +128,20 @@ async def recommend(request: FireSafetyRequest) -> FireSafetyResult:
       return _build_result(request, result_dict)
 
   try:
-    raw = await model_gateway.chat(
-      messages=[
-        {'role': 'system', 'content': FIRE_SAFETY_SYSTEM_PROMPT},
-        {'role': 'user', 'content': user_text},
-      ],
-      temperature=0.1,
-      max_tokens=4096,
-      json_mode=True,
-      timeout=120,
-      caller='fire_safety',
+    raw = await scheduler.schedule(
+      task_type=TaskType.FIRE_SAFETY,
+      coro=model_gateway.chat(
+        messages=[
+          {'role': 'system', 'content': FIRE_SAFETY_SYSTEM_PROMPT},
+          {'role': 'user', 'content': user_text},
+        ],
+        temperature=0.1,
+        max_tokens=4096,
+        json_mode=True,
+        timeout=120,
+        caller='fire_safety',
+      ),
+      request=http_request,
     )
   except Exception as e:
     logger.error('[FireSafety] LLM 调用失败 (%s): %s', type(e).__name__, e)
@@ -183,7 +191,7 @@ def _build_result(request: FireSafetyRequest, parsed: dict) -> FireSafetyResult:
   )
 
 
-async def _recommend_simple(request: FireSafetyRequest) -> FireSafetyResult:
+async def _recommend_simple(request: FireSafetyRequest, http_request: Request | None = None) -> FireSafetyResult:
   """简化模式（兼容旧接口）：仅用 room_type 做数据中心场景推荐"""
   user_text = f"""请为以下房间推荐消防配置方案：
 
@@ -194,16 +202,20 @@ async def _recommend_simple(request: FireSafetyRequest) -> FireSafetyResult:
 - 特殊要求：{request.special_requirements or '无'}"""
 
   try:
-    raw = await model_gateway.chat(
-      messages=[
-        {'role': 'system', 'content': FIRE_SAFETY_SYSTEM_PROMPT},
-        {'role': 'user', 'content': user_text},
-      ],
-      temperature=0.1,
-      max_tokens=2048,
-      json_mode=True,
-      timeout=120,
-      caller='fire_safety',
+    raw = await scheduler.schedule(
+      task_type=TaskType.FIRE_SAFETY,
+      coro=model_gateway.chat(
+        messages=[
+          {'role': 'system', 'content': FIRE_SAFETY_SYSTEM_PROMPT},
+          {'role': 'user', 'content': user_text},
+        ],
+        temperature=0.1,
+        max_tokens=2048,
+        json_mode=True,
+        timeout=120,
+        caller='fire_safety',
+      ),
+      request=http_request,
     )
   except Exception as e:
     logger.error('[FireSafety] LLM 调用失败 (%s): %s', type(e).__name__, e)

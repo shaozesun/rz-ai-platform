@@ -132,7 +132,7 @@ class Settings(BaseSettings):
   RAG_PRIMARY_FILE_CHUNKS: int = 3
   RAG_PRIMARY_MIN_SCORE: float = 0.40
   RAG_PRIMARY_GAP_THRESHOLD: float = 0.075
-  RAG_RERANK_LOG_TOP_N: int = 30
+  RAG_RERANK_LOG_TOP_N: int = 50
   RAG_MERGED_LOG_TOP_N: int = 20
   RAG_BM25_K1: float = 1.2
   RAG_BM25_B: float = 0.75
@@ -178,6 +178,13 @@ class Settings(BaseSettings):
   MINERU_TIMEOUT: int = 600
   MINERU_API_POLL_INTERVAL: int = 5
   MINERU_API_MAX_POLL: int = 60
+
+  # ==================== Scheduler ====================
+  SCHEDULER_ENABLED: bool = True
+  SCHEDULER_MAX_CONCURRENT_LLM_CALLS: int = 10
+  SCHEDULER_QUEUE_TIMEOUT: int = 120
+  SCHEDULER_SLOT_ACQUIRE_TIMEOUT: int = 5
+  SCHEDULER_STREAM_SLOT_TIMEOUT: int = 10
 
   # ==================== 部署 ====================
   ALLOWED_ORIGINS: str = '*'

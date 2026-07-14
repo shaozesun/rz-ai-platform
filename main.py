@@ -37,6 +37,8 @@ def _reset_all_for_child():
     rag_service.reset_for_child()
     from repository.vector_store.milvus_store import reset_for_child as _vector_reset
     _vector_reset()
+    from core.scheduler.scheduler import TaskScheduler
+    TaskScheduler._instance = None
 
 
 if hasattr(os, "register_at_fork"):
@@ -54,6 +56,15 @@ async def lifespan(app: FastAPI):
     logger.info('数据库连接成功')
   except Exception as e:
     logger.critical('数据库初始化失败: %s', e)
+
+  try:
+    from core.scheduler.scheduler import scheduler
+    from core.scheduler.rag_llm_patch import patch_rag_service
+    scheduler.initialize()
+    patch_rag_service(scheduler)
+    logger.info('Scheduler 初始化完成')
+  except Exception as e:
+    logger.warning('Scheduler 初始化失败: %s，LLM 调用将不受限', e)
 
   try:
     await user_service.init_builtin_permissions()

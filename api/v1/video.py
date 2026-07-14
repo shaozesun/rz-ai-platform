@@ -23,6 +23,10 @@ from models.video import (
 )
 from service.video.pipeline import run_video_pipeline
 
+# 限制同时运行的视频生成任务数
+_video_semaphore = asyncio.Semaphore(2)
+
+
 router = APIRouter()
 
 logger = logging.getLogger(__name__)
@@ -72,8 +76,11 @@ async def create_video_task(
   db = mongodb_manager.db
   await db.video_tasks.insert_one(task.model_dump())
 
-  # Launch pipeline in background
-  asyncio.create_task(run_video_pipeline(task.task_id))
+  # Launch pipeline in background (with concurrency limit)
+  async def _run_with_limit():
+    async with _video_semaphore:
+      await run_video_pipeline(task.task_id)
+  asyncio.create_task(_run_with_limit())
 
   logger.info(f'Video task created: {task.task_id} by {user["phone"]}')
   return {'ok': True, 'data': {'task_id': task.task_id}}

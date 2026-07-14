@@ -12,6 +12,8 @@ from fastapi import APIRouter, Query, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from core.rbac import require_permission
+from core.scheduler.rag_llm_patch import set_chat_role
+from core.scheduler.priority import PriorityCalculator
 from config.trace_id import get_trace_id, set_trace_id
 from service.rag.pipeline.rag_service import rag_service
 from service.rag.utils.llm_output_filter import ThinkingStreamFilter, strip_thinking_text
@@ -226,6 +228,9 @@ async def chat(
     elif session.user_id != user_id:
         return JSONResponse(status_code=403, content={"ok": False, "msg": "无权访问该会话"})
 
+    role = PriorityCalculator.resolve_role(request)
+    set_chat_role(role)
+
     return StreamingResponse(
         generate_rag_stream(
             text,
@@ -271,6 +276,9 @@ async def chat_no_rag(
         session_id = session.session_id
     elif session.user_id != user_id:
         return JSONResponse(status_code=403, content={"ok": False, "msg": "无权访问该会话"})
+
+    role = PriorityCalculator.resolve_role(request)
+    set_chat_role(role)
 
     return StreamingResponse(
         generate_no_rag_stream(text, session_id=session_id, trace_id=get_trace_id(),
