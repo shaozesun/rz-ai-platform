@@ -3,6 +3,7 @@
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import tempfile
@@ -202,7 +203,8 @@ async def generate_report(
     return JSONResponse(status_code=400, content={'ok': False, 'msg': '无可用于生成报告的检测结果'})
 
   if body.format == 'docx':
-    doc_bytes = generate_word_report(results, title=body.title)
+    doc_bytes = await asyncio.to_thread(
+      generate_word_report, results, title=body.title)
     filename = generate_word_report_filename(body.title)
     return Response(
       content=doc_bytes,
@@ -213,10 +215,12 @@ async def generate_report(
     )
 
   if body.format == 'md':
-    markdown = generate_markdown_report(results, title=body.title)
+    markdown = await asyncio.to_thread(
+      generate_markdown_report, results, title=body.title)
     return PlainTextResponse(markdown, media_type='text/markdown; charset=utf-8')
 
-  return {'ok': True, 'markdown': generate_markdown_report(results, title=body.title)}
+  return {'ok': True, 'markdown': await asyncio.to_thread(
+    generate_markdown_report, results, title=body.title)}
 
 
 @router.post('/fire-safety/report')
@@ -232,7 +236,7 @@ async def download_fire_safety_report(
   try:
     raw = json.loads(data)
     result = FireSafetyResult(**raw)
-    doc_bytes = generate_fire_safety_word_report(result)
+    doc_bytes = await asyncio.to_thread(generate_fire_safety_word_report, result)
     filename = generate_fire_safety_word_report_filename()
     return Response(
       content=doc_bytes,

@@ -13,7 +13,7 @@ async def health():
 
   # MongoDB
   try:
-    mongodb_manager.client.server_info()
+    await mongodb_manager.client.server_info()
     checks['mongodb'] = 'ok'
   except Exception as e:
     checks['mongodb'] = str(e)

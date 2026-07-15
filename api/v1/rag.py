@@ -1,6 +1,7 @@
 """
 RAG 文件管理 API 端点
 """
+import asyncio
 import logging
 from datetime import datetime
 from pathlib import Path
@@ -78,7 +79,8 @@ async def upload_file(
         )
 
     try:
-        count = rag_service.add_file(str(filepath), group_id=group_id, open_id=user_id)
+        count = await asyncio.to_thread(
+          rag_service.add_file, str(filepath), group_id=group_id, open_id=user_id)
         logger.info("[Upload] 向量入库成功: group_id=%s, chunks=%d", group_id, count)
 
         # 写入 MongoDB 文件索引
@@ -117,7 +119,8 @@ async def upload_file(
 
         try:
             embedded_dir = _resolve_group_embedded_dir(group_id)
-            rag_service.export_chunks(str(filepath), output_dir=str(embedded_dir))
+            await asyncio.to_thread(
+              rag_service.export_chunks, str(filepath), output_dir=str(embedded_dir))
         except Exception as e:
             logger.exception("[Upload] 切分导出失败")
 
@@ -152,7 +155,8 @@ async def delete_file(
         else:
             filepath = _resolve_group_upload_path(group_id, name)
 
-        vectors_deleted, file_deleted = rag_service.delete_file(str(filepath), group_id=group_id)
+        vectors_deleted, file_deleted = await asyncio.to_thread(
+          rag_service.delete_file, str(filepath), group_id=group_id)
 
         # 同步删除 MongoDB 文件索引
         try:
@@ -223,7 +227,7 @@ async def retrieve_documents(
         group_id = group_id.strip() or "default"
         vector_store = store.get_vector_store(group_id=group_id)
         retriever = vector_store.as_retriever(search_kwargs={"k": k})
-        docs = retriever.invoke(query.strip())
+        docs = await asyncio.to_thread(retriever.invoke, query.strip())
 
         documents = [
             {"content": doc.page_content, "metadata": doc.metadata}
@@ -297,6 +301,10 @@ async def create_group(request: Request, body: dict):
         if "duplicate key" in str(e).lower() or "E11000" in str(e):
             return JSONResponse(status_code=400, content={"ok": False, "msg": "分组已存在"})
         raise
+
+    # 创建对应的 embedded 目录
+    _resolve_group_embedded_dir(group_id).mkdir(parents=True, exist_ok=True)
+
     return {"ok": True, "group": {"group_id": group_id, "name": name, "created_at": now}}
 
 
@@ -313,4 +321,31 @@ async def delete_group(group_id: str, request: Request):
     })
     if result.deleted_count == 0:
         return JSONResponse(status_code=404, content={"ok": False, "msg": "分组不存在"})
+
+    # 清理 MongoDB 文件索引
+    kb_deleted = await db.kb_files.delete_many({'group_id': group_id})
+    logger.info("[DeleteGroup] 删除 kb_files 记录: %d 条", kb_deleted.deleted_count)
+
+    # 清理 Milvus 向量
+    try:
+        await asyncio.to_thread(store.clear_vector_store, group_id)
+    except Exception:
+        logger.exception("[DeleteGroup] Milvus 向量清理失败")
+
+    # 清理磁盘目录
+    import shutil
+    for base in (Path(settings.UPLOAD_DIR), Path(settings.EMBEDDED_DIR)):
+        target = (base / _safe_group_dir(group_id)).resolve()
+        try:
+            target.relative_to(base.resolve())
+        except ValueError:
+            logger.warning("[DeleteGroup] 路径越界，跳过: %s", target)
+            continue
+        if target.is_dir():
+            try:
+                shutil.rmtree(target)
+                logger.info("[DeleteGroup] 已删除目录: %s", target)
+            except Exception:
+                logger.exception("[DeleteGroup] 删除目录失败: %s", target)
+
     return {"ok": True}

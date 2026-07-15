@@ -42,7 +42,7 @@ def _milvus_hit_summary(hit: Any) -> str:
 def _safe_group_dir(group_id: str) -> str:
     """与 api.v1.endpoints.rag._safe_group_dir 保持一致：组目录名。"""
     normalized = (group_id or "").strip()
-    safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", normalized).strip("._")
+    safe = re.sub(r"[\\/:*?\"<>|]+", "_", normalized).strip()
     return safe or "group_default"
 
 

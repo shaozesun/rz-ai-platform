@@ -23,6 +23,11 @@ from models.video import (
 )
 from service.video.pipeline import run_video_pipeline
 
+def _write_file_sync(path: str, data: bytes) -> None:
+  with open(path, 'wb') as f:
+    f.write(data)
+
+
 # 限制同时运行的视频生成任务数
 _video_semaphore = asyncio.Semaphore(2)
 
@@ -56,8 +61,7 @@ async def create_video_task(
   saved_name = f'{file_id}{ext}'
   file_path = os.path.join(settings.UPLOAD_DIR, saved_name)
   content = await file.read()
-  with open(file_path, 'wb') as f:
-    f.write(content)
+  await asyncio.to_thread(_write_file_sync, file_path, content)
 
   user = request.state.current_user
   task = VideoTask(
@@ -204,13 +208,13 @@ async def delete_video_task(task_id: str, request: Request):
   file_path = doc.get('file_path')
   if file_path and os.path.isfile(file_path):
     try:
-      os.remove(file_path)
+      await asyncio.to_thread(os.remove, file_path)
     except OSError:
       pass
   result_url = doc.get('result_url')
   if result_url and os.path.isfile(result_url):
     try:
-      os.remove(result_url)
+      await asyncio.to_thread(os.remove, result_url)
     except OSError:
       pass
 
