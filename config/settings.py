@@ -191,6 +191,9 @@ class Settings(BaseSettings):
   RATE_LIMIT_PER_MINUTE: int = 60
   RATE_LIMIT_SMS_PER_HOUR: int = 20
 
+  # 受保护的管理员手机号（其他 admin 不能改其角色/权限/状态/密码）
+  PROTECTED_ADMIN_PHONE: str = '18888888888'
+  
   # 权限全开模式 (开发/调试用, 认证用户自动获得全部权限)
   PERMISSION_OPEN_MODE: bool = False
 

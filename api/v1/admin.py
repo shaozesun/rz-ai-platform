@@ -4,6 +4,7 @@ from fastapi import APIRouter, Request, HTTPException, Query
 from pydantic import BaseModel, Field
 from core.rbac import require_permission
 from service.auth import user_service
+from config.settings import settings
 
 router = APIRouter(prefix='/admin')
 
@@ -16,6 +17,38 @@ async def _audit(request: Request, action: str, resource: str, detail: str, ip: 
     action, resource, detail, ip,
     operator_name=request.state.current_user.get('name', ''),
   )
+
+
+def _is_protected(user: dict) -> bool:
+  """是否为受保护管理员账号"""
+  return user.get('phone') == settings.PROTECTED_ADMIN_PHONE
+
+
+async def _assert_can_manage_user(
+  request: Request,
+  user_id: str,
+  *,
+  new_roles: list[str] | None = None,
+  new_status: str | None = None,
+) -> dict:
+  """校验当前 admin 是否有权修改目标用户"""
+  operator = request.state.current_user
+  target = await user_service.get_by_id(user_id)
+  if not target:
+    raise HTTPException(404, '用户不存在')
+
+  # 其他 admin 不能修改受保护账号
+  if _is_protected(target) and operator.get('phone') != settings.PROTECTED_ADMIN_PHONE:
+    raise HTTPException(403, '无权修改该管理员账号')
+
+  # 禁止禁用 / 降权自己
+  if user_id == operator['user_id']:
+    if new_status == 'DISABLED':
+      raise HTTPException(403, '不能禁用自己的账号')
+    if new_roles is not None and 'admin' in operator.get('roles', []) and 'admin' not in new_roles:
+      raise HTTPException(403, '不能移除自己的 admin 角色')
+
+  return target
 
 
 # ==================== 用户管理 ====================
@@ -52,6 +85,7 @@ async def update_user_status(
   user_id: str, request: Request,
   status: str = Query(..., pattern='^(ACTIVE|DISABLED)$'),
 ):
+  await _assert_can_manage_user(request, user_id, new_status=status)
   await user_service.update_user(user_id, {'status': status})
   await _audit(request, 'admin.update_status', 'user', f'用户 {user_id} 状态 → {status}')
   user = await user_service.get_by_id(user_id)
@@ -64,6 +98,7 @@ async def update_user_roles(user_id: str, request: Request):
   """直接修改用户角色"""
   body = await request.json()
   roles = body.get('roles', [])
+  await _assert_can_manage_user(request, user_id, new_roles=roles)
   await user_service.update_user(user_id, {'roles': roles, 'permissions': []})
   await _audit(request, 'admin.update_roles', 'user', f'用户 {user_id} 角色 → {roles}')
   user = await user_service.get_by_id(user_id)
@@ -76,6 +111,10 @@ async def update_user_permissions(user_id: str, request: Request):
   """直接修改用户权限"""
   body = await request.json()
   permissions = body.get('permissions', [])
+  target = await _assert_can_manage_user(request, user_id)
+  # 非 admin 角色不允许持有 system:admin
+  if 'admin' not in target.get('roles', []):
+    permissions = [p for p in permissions if p != 'system:admin']
   await user_service.update_user(user_id, {'permissions': permissions})
   await _audit(request, 'admin.update_permissions', 'user', f'用户 {user_id} 权限 → {permissions}')
   user = await user_service.get_by_id(user_id)
@@ -86,6 +125,7 @@ async def update_user_permissions(user_id: str, request: Request):
 @require_permission('system:admin')
 async def reset_user_password(user_id: str, request: Request):
   """管理员重置用户密码，返回新密码"""
+  await _assert_can_manage_user(request, user_id)
   import secrets
   new_pw = secrets.token_hex(8)
   await user_service.reset_password(user_id, new_pw)

@@ -79,7 +79,9 @@ class AuthMiddleware(BaseHTTPMiddleware):
         role_ids = user.get('roles', [])
         permissions = await load_role_permissions(role_ids)
         permissions.update(user.get('permissions', []))
-
+        # system:admin 只跟 admin 角色走（兜底，防历史脏数据）
+        if 'admin' not in role_ids:
+            permissions.discard('system:admin')
         # 权限全开模式 (开发/调试) — 认证用户自动获得所有权限
         if settings.PERMISSION_OPEN_MODE:
             permissions = {p.perm_key for p in BUILTIN_PERMISSIONS}
