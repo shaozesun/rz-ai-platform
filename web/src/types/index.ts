@@ -205,6 +205,7 @@ export interface AdminUser {
   status: string;
   roles: string[];
   permissions: string[];
+  direct_permissions: string[];
   created_at: string;
 }
 

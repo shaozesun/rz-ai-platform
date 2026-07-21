@@ -64,7 +64,7 @@ async def update_user_roles(user_id: str, request: Request):
   """直接修改用户角色"""
   body = await request.json()
   roles = body.get('roles', [])
-  await user_service.update_user(user_id, {'roles': roles})
+  await user_service.update_user(user_id, {'roles': roles, 'permissions': []})
   await _audit(request, 'admin.update_roles', 'user', f'用户 {user_id} 角色 → {roles}')
   user = await user_service.get_by_id(user_id)
   return {'ok': True, 'data': await user_service.get_user_public(user)}

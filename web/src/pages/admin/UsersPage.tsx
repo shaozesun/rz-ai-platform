@@ -56,7 +56,12 @@ export default function UsersPage() {
     if (!editModal) return;
     try {
       await updateUserRoles(editModal.user.user_id, editModal.roles);
-      await updateUserPermissions(editModal.user.user_id, editModal.permissions);
+      // 只有当直接权限被手动改动时才重新写入，避免把刚清空的残留权限写回去
+      const origPerms = [...(editModal.user.direct_permissions || [])].sort();
+      const currPerms = [...editModal.permissions].sort();
+      if (JSON.stringify(origPerms) !== JSON.stringify(currPerms)) {
+        await updateUserPermissions(editModal.user.user_id, editModal.permissions);
+      }
       showMsg('已更新');
       setEditModal(null);
       fetchUsers();
@@ -152,7 +157,7 @@ export default function UsersPage() {
                           <Button size="xs" variant="outline" onClick={() => setEditModal({
                             user: u,
                             roles: [...u.roles],
-                            permissions: [...(u.permissions || [])],
+                            permissions: [...(u.direct_permissions || [])],
                           })}>
                             编辑权限
                           </Button>

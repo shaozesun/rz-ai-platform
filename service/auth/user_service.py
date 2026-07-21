@@ -130,12 +130,10 @@ class UserService:
   async def get_user_public(self, user: dict) -> dict:
     """构建用户公开信息, 附带权限列表"""
     role_ids = user.get('roles', [])
-    permissions = await load_role_permissions(role_ids)
-    # 合并用户独立权限（非角色授予的单独权限）
-    permissions.update(user.get('permissions', []))
-    # 权限全开模式 — 所有认证用户看到全部权限（角色保持不变）
-    if settings.PERMISSION_OPEN_MODE:
-      permissions = {p.perm_key for p in BUILTIN_PERMISSIONS}
+    role_perms = await load_role_permissions(role_ids)
+    direct_perms = set(user.get('permissions', []))
+    # 有效权限 = 角色权限 + 直接权限
+    effective_perms = role_perms | direct_perms
     return {
       'user_id': user['user_id'],
       'phone': user['phone'],
@@ -145,7 +143,8 @@ class UserService:
       'user_type': user.get('user_type', UserType.UNVERIFIED.value),
       'status': user.get('status', UserStatus.ACTIVE.value),
       'roles': role_ids,
-      'permissions': sorted(permissions),
+      'permissions': sorted(effective_perms),
+      'direct_permissions': sorted(direct_perms),
       'avatar': user.get('avatar', ''),
       'created_at': user.get('created_at', datetime.utcnow()),
     }
