@@ -3,6 +3,7 @@
 from fastapi import APIRouter, Request, HTTPException
 from pydantic import BaseModel, Field
 from service.auth import auth_service, user_service
+from config.settings import settings
 
 router = APIRouter(prefix='/auth')
 
@@ -90,6 +91,7 @@ async def get_me(request: Request):
   """获取当前用户信息 (需登录)"""
   user_id = request.state.user_id
   user_info = await auth_service.get_current_user_info(user_id)
+  user_info['agent_enabled'] = settings.AGENT_ENABLED
   return {'ok': True, 'data': user_info}
 
 

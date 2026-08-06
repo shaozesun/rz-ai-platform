@@ -116,6 +116,77 @@ export function chatStream(
   return controller;
 }
 
+// Agent 流式对话
+export function agentStream(
+  sessionId: string,
+  text: string,
+  onChunk: (text: string) => void,
+  onToolCall: (name: string, args: Record<string, unknown>) => void,
+  onToolResult: (name: string, result: string) => void,
+  onDone: () => void,
+  onError: (err: Error) => void,
+  groupId: string = 'default',
+): AbortController {
+  const controller = new AbortController();
+  const token = getAccessToken();
+
+  const params = new URLSearchParams({ session_id: sessionId, group_id: groupId });
+  const url = `/api/v1/chat/agent?${params}`;
+
+  fetch(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({ message: text }),
+    signal: controller.signal,
+  })
+    .then(async (res) => {
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const reader = res.body?.getReader();
+      if (!reader) throw new Error('No stream reader');
+      const decoder = new TextDecoder();
+      let buffer = '';
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue;
+          const payload = line.slice(6);
+          try {
+            const parsed = JSON.parse(payload);
+            const event = parsed.event;
+            const data = parsed.data || {};
+            if (event === 'text') {
+              onChunk(data.content || '');
+            } else if (event === 'tool_call') {
+              onToolCall(data.name || '', data.args || {});
+            } else if (event === 'tool_result') {
+              onToolResult(data.name || '', data.result || '');
+            } else if (event === 'error') {
+              onChunk(`\n\n> ⚠️ ${data.message || '未知错误'}\n\n`);
+            } else if (event === 'done') {
+              onDone();
+              return;
+            }
+          } catch {
+            // 忽略解析失败的行
+          }
+        }
+      }
+      onDone();
+    })
+    .catch((err) => {
+      if (err.name !== 'AbortError') onError(err);
+    });
+
+  return controller;
+}
+
 // 非 RAG 纯对话
 export function chatNoRagStream(
   sessionId: string,

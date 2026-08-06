@@ -1,6 +1,7 @@
 import { useState, useCallback, useEffect, useRef, useMemo, memo } from 'react';
+import type { ReactNode } from 'react';
 import {
-  Bot, User, Sparkles, Trash2, Search, Menu, Plus,
+  Bot, User, Sparkles, Trash2, Search, Menu, Plus, Wrench, ChevronDown,
 } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -47,6 +48,86 @@ import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 import type { Message } from '../types';
 
+// ── Agent 工具调用段解析 ──
+// chatStore 在 agent 流式时会插入 <tool-call name="x">args</tool-call> /
+// <tool-result name="x">result</tool-result> 标记，这里解析成结构化段落
+type MsgSegment =
+  | { kind: 'text'; content: string }
+  | { kind: 'tool'; name: string; args?: string; result?: string };
+
+const TOOL_TAG_RE = /<tool-(call|result) name="([^"]*)">([\s\S]*?)<\/tool-\1>/g;
+
+function parseMessageSegments(text: string): MsgSegment[] {
+  if (!text.includes('<tool-')) return [{ kind: 'text', content: text }];
+  const segments: MsgSegment[] = [];
+  const re = new RegExp(TOOL_TAG_RE.source, 'g');
+  let lastIndex = 0;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text)) !== null) {
+    if (m.index > lastIndex) {
+      const t = text.slice(lastIndex, m.index);
+      if (t.trim()) segments.push({ kind: 'text', content: t });
+    }
+    const [, tagType, name, body] = m;
+    if (tagType === 'call') {
+      segments.push({ kind: 'tool', name, args: body });
+    } else {
+      // result 挂到最近一个同名且还没有 result 的工具段上
+      const target = [...segments].reverse().find(
+        (s): s is Extract<MsgSegment, { kind: 'tool' }> =>
+          s.kind === 'tool' && s.name === name && s.result === undefined,
+      );
+      if (target) target.result = body;
+      else segments.push({ kind: 'tool', name, result: body });
+    }
+    lastIndex = re.lastIndex;
+  }
+  if (lastIndex < text.length) {
+    const t = text.slice(lastIndex);
+    if (t.trim()) segments.push({ kind: 'text', content: t });
+  }
+  return segments;
+}
+
+function ToolCard({ name, args, result }: { name: string; args?: string; result?: string }) {
+  const [open, setOpen] = useState(false);
+  const done = result !== undefined;
+  return (
+    <div className="my-2 overflow-hidden rounded-lg border border-border bg-card/60 text-xs">
+      <button
+        onClick={() => setOpen((v) => !v)}
+        className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-muted/50 transition-colors"
+      >
+        <Wrench className="size-3.5 shrink-0 text-primary" />
+        <span className="font-medium font-mono">{name}</span>
+        <span className="text-muted-foreground">
+          {done ? '调用完成' : '调用中...'}
+        </span>
+        <ChevronDown
+          className={cn('ml-auto size-3.5 shrink-0 text-muted-foreground transition-transform', open && 'rotate-180')}
+        />
+      </button>
+      {open && (
+        <div className="space-y-2 border-t border-border px-3 py-2">
+          {args && args !== '{}' && (
+            <div>
+              <p className="mb-1 text-muted-foreground">参数</p>
+              <pre className="overflow-x-auto whitespace-pre-wrap break-all rounded bg-muted p-2 font-mono">{args}</pre>
+            </div>
+          )}
+          {result !== undefined && (
+            <div>
+              <p className="mb-1 text-muted-foreground">返回</p>
+              <pre className="overflow-x-auto whitespace-pre-wrap break-all rounded bg-muted p-2 font-mono">{result}</pre>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+
 const SUGGESTIONS = [
   '智能运维平台有哪些功能？',
   '如何配置消防设施？',
@@ -64,12 +145,46 @@ const MessageBubble = memo(function MessageBubble({
   isLast: boolean;
   userName: string;
 }) {
-  const content = useMemo(() => {
+  const segments = useMemo(() => {
     const raw = msg.content || '';
-    if (isStreaming && isLast) return fixMermaidBlocks(hideIncompleteMermaid(raw));
-    return fixMermaidBlocks(raw);
+    const parsed = parseMessageSegments(raw);
+    return parsed.map((seg) => {
+      if (seg.kind !== 'text') return seg;
+      const fixed = isStreaming && isLast
+        ? fixMermaidBlocks(hideIncompleteMermaid(seg.content))
+        : fixMermaidBlocks(seg.content);
+      return { ...seg, content: fixed };
+    });
   }, [msg.content, isStreaming, isLast]);
   const isAssistant = msg.role === 'assistant';
+
+  const markdownComponents = {
+    table: ({ children }: { children?: ReactNode }) => {
+      return (
+        <TableActions>
+          <table className="assistant-table">{children}</table>
+        </TableActions>
+      );
+    },
+    code: ({ className, children, ...props }: { className?: string; children?: ReactNode }) => {
+      const codeText = String(children).replace(/\n$/, '');
+      if (className === 'language-mermaid') {
+        return <MermaidRenderer code={codeText} />;
+      }
+      if (!className) {
+        return (
+          <code className="rounded bg-muted px-1 py-0.5 text-xs font-mono" {...props}>
+            {children}
+          </code>
+        );
+      }
+      return (
+        <pre className="overflow-x-auto rounded-lg bg-muted p-3 my-3">
+          <code className="text-xs font-mono">{codeText}</code>
+        </pre>
+      );
+    },
+  };
 
   return (
     <div
@@ -102,38 +217,19 @@ const MessageBubble = memo(function MessageBubble({
         >
           {isAssistant ? (
             <div className="assistant-msg max-w-none">
-              <ReactMarkdown
-                remarkPlugins={[remarkGfm]}
-                components={{
-                  table: ({ children }) => {
-                    return (
-                      <TableActions>
-                        <table className="assistant-table">{children}</table>
-                      </TableActions>
-                    );
-                  },
-                  code: ({ className, children, ...props }) => {
-                    const codeText = String(children).replace(/\n$/, '');
-                    if (className === 'language-mermaid') {
-                      return <MermaidRenderer code={codeText} />;
-                    }
-                    if (!className) {
-                      return (
-                        <code className="rounded bg-muted px-1 py-0.5 text-xs font-mono" {...props}>
-                          {children}
-                        </code>
-                      );
-                    }
-                    return (
-                      <pre className="overflow-x-auto rounded-lg bg-muted p-3 my-3">
-                        <code className="text-xs font-mono">{codeText}</code>
-                      </pre>
-                    );
-                  },
-                }}
-              >
-                {content}
-              </ReactMarkdown>
+              {segments.map((seg, i) =>
+                seg.kind === 'tool' ? (
+                  <ToolCard key={i} name={seg.name} args={seg.args} result={seg.result} />
+                ) : (
+                  <ReactMarkdown
+                    key={i}
+                    remarkPlugins={[remarkGfm]}
+                    components={markdownComponents}
+                  >
+                    {seg.content}
+                  </ReactMarkdown>
+                ),
+              )}
             </div>
           ) : (
             <p className="whitespace-pre-line">{msg.content}</p>

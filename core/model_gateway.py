@@ -345,6 +345,21 @@ class ModelGateway:
     )
     return scores
 
+  def as_langchain_model(self, model_name: str | None = None):
+    """返回 LangChain BaseChatModel，供 langgraph Agent 使用"""
+    from langchain_openai import ChatOpenAI
+
+    name = model_name or settings.LLM_MODEL
+    return ChatOpenAI(
+      base_url=str(self._chat_client.base_url) if self._chat_client else '',
+      api_key=settings.LLM_API_KEY,
+      model=name,
+      temperature=settings.LLM_TEMPERATURE,
+      timeout=settings.LLM_TIMEOUT,
+      max_retries=settings.LLM_MAX_RETRIES,
+      extra_body={'chat_template_kwargs': {'enable_thinking': False}},
+    )
+
 
 async def _log_usage(user_id, model, tokens_in, tokens_out, caller):
     """Fire-and-forget 写入 LLM 用量到 MongoDB（用同步客户端避免事件循环绑定问题）"""

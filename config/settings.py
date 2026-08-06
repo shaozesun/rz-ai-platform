@@ -194,6 +194,22 @@ class Settings(BaseSettings):
   # 权限全开模式 (开发/调试用, 认证用户自动获得全部权限)
   PERMISSION_OPEN_MODE: bool = False
 
+  # ==================== Agent ====================
+  AGENT_ENABLED: bool = False     # 总开关，默认关闭，开发环境手动开启
+
+  # ==================== DCIM 集成 ====================
+  DCIM_ENABLED: bool = False           # DCIM 门面工具开关，默认关闭
+  DCIM_BASE_URL: str = ''              # DCIM API 基地址（真实接口就绪后配置）
+  DCIM_API_TOKEN: str = ''             # DCIM 服务级访问 token
+  DCIM_TIMEOUT: int = 30               # DCIM 调用超时（秒）
+  DCIM_RETRIEVAL_TOP_K: int = 8        # discover 检索返回的能力条数上限
+
+  # ==================== 综合管理平台集成 ====================
+  MGMT_ENABLED: bool = False           # 综合管理平台开关，默认关闭
+  MGMT_BASE_URL: str = ''              # 综合管理平台 API 基地址
+  MGMT_API_TOKEN: str = ''             # 服务级访问 token
+  MGMT_TIMEOUT: int = 30               # 调用超时（秒）
+
   model_config = {
     'env_file': '.env',
     'env_file_encoding': 'utf-8',

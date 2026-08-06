@@ -12,6 +12,7 @@ interface AuthState {
   permissions: string[];
   isAuthenticated: boolean;
   initialized: boolean;
+  agentEnabled: boolean;
 
   setAuth: (access: string, refresh: string, user: User, permissions: string[]) => void;
   updateUser: (user: User) => void;
@@ -28,6 +29,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   permissions: [],
   isAuthenticated: false,
   initialized: false,
+  agentEnabled: false,
 
   setAuth: (access, refresh, user, permissions) => {
     storage.setItem('access_token', access);
@@ -79,6 +81,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
             set({
               user: fresh,
               permissions: fresh.permissions || [],
+              agentEnabled: fresh.agent_enabled === true,
             });
           }
         } catch {

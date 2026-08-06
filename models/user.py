@@ -111,6 +111,7 @@ BUILTIN_PERMISSIONS: list[Permission] = [
   Permission(perm_key='ai:risk', resource='ai', action='risk', description='隐患识别'),
   Permission(perm_key='ai:fire_safety', resource='ai', action='fire_safety', description='消防配置'),
   Permission(perm_key='ai:video', resource='ai', action='video', description='视频生成'),
+  Permission(perm_key='ai:agent', resource='ai', action='agent', description='AI Agent 对话'),
   Permission(perm_key='system:admin', resource='system', action='admin', description='系统管理'),
 ]
 
@@ -122,7 +123,7 @@ BUILTIN_ROLES: list[dict] = [
     'role_id': 'admin',
     'name': '管理员',
     'description': '拥有所有 AI 能力和系统管理权限',
-    'permissions': ['system:admin', 'ai:chat', 'ai:knowledge', 'ai:risk', 'ai:fire_safety', 'ai:video'],
+    'permissions': ['system:admin', 'ai:chat', 'ai:agent', 'ai:knowledge', 'ai:risk', 'ai:fire_safety', 'ai:video'],
     'is_builtin': True,
   },
   {
@@ -136,7 +137,14 @@ BUILTIN_ROLES: list[dict] = [
     'role_id': 'power_user',
     'name': '全功能用户',
     'description': '可使用全部 AI 功能（知识库、隐患识别、消防配置、视频生成）',
-    'permissions': ['ai:chat', 'ai:knowledge', 'ai:risk', 'ai:fire_safety', 'ai:video'],
+    'permissions': ['ai:chat', 'ai:agent', 'ai:knowledge', 'ai:risk', 'ai:fire_safety', 'ai:video'],
+    'is_builtin': True,
+  },
+  {
+    'role_id': 'dc_operator',
+    'name': '数据中心运维',
+    'description': '可使用 AI Agent 对话和 DCIM 工具查询',
+    'permissions': ['ai:chat', 'ai:agent', 'ai:knowledge'],
     'is_builtin': True,
   },
 ]

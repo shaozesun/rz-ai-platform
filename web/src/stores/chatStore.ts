@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import type { Session, Message } from '../types';
 import * as chatApi from '../api/chat';
 import PLATFORM_INTRO from '../data/platformIntro';
+import { useAuthStore } from './authStore';
 
 function simulateStream(text: string, onChunk: (t: string) => void, onDone: () => void): AbortController {
   const controller = new AbortController();
@@ -22,6 +23,8 @@ function simulateStream(text: string, onChunk: (t: string) => void, onDone: () =
 function findIntro(text: string): string | undefined {
   const trimmed = text.trim();
   if (PLATFORM_INTRO[trimmed]) return PLATFORM_INTRO[trimmed];
+  // 长问题是真实业务提问，不做模糊匹配，交给后端处理
+  if (trimmed.length > 20) return undefined;
   // Fuzzy: check if any key is contained in the user question, or vice versa
   const keys = Object.keys(PLATFORM_INTRO);
   for (const key of keys) {
@@ -153,6 +156,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
     }));
 
     const introAnswer = findIntro(text);
+    const isAgent = useAuthStore.getState().agentEnabled;
+
     const controller = introAnswer
       ? simulateStream(
         introAnswer,
@@ -162,7 +167,29 @@ export const useChatStore = create<ChatState>((set, get) => ({
           get().loadSessions();
         },
       )
-      : chatApi.chatStream(
+      : isAgent
+        ? chatApi.agentStream(
+          sessionId,
+          text,
+          (chunk) => get().appendChunk(chunk),
+          (name, args) => {
+            get().appendChunk(`\n\n<tool-call name="${name}">${JSON.stringify(args)}</tool-call>\n\n`);
+          },
+          (name, result) => {
+            const preview = result.length > 300 ? result.slice(0, 300) + '...' : result;
+            get().appendChunk(`\n\n<tool-result name="${name}">${preview}</tool-result>\n\n`);
+          },
+          () => {
+            set({ isStreaming: false, streamAbort: null });
+            get().loadSessions();
+          },
+          (err) => {
+            console.error('Agent stream error:', err);
+            set({ isStreaming: false, streamAbort: null });
+          },
+          groupId,
+        )
+        : chatApi.chatStream(
         sessionId,
         text,
         (chunk) => get().appendChunk(chunk),

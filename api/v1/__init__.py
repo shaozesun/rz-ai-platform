@@ -1,4 +1,5 @@
 from fastapi import APIRouter
+from config.settings import settings
 from api.v1.health import router as health_router
 from api.v1.auth import router as auth_router
 from api.v1.admin import router as admin_router
@@ -19,3 +20,7 @@ api_v1_router.include_router(risk_router, tags=['risk'])
 api_v1_router.include_router(video_router, tags=['video'])
 api_v1_router.include_router(stats_router, tags=['stats'])
 api_v1_router.include_router(feedback_router, tags=['feedback'])
+
+if settings.AGENT_ENABLED:
+  from api.v1.agent import router as agent_router
+  api_v1_router.include_router(agent_router, tags=['agent'])

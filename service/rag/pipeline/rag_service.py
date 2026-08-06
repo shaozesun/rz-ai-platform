@@ -1607,11 +1607,28 @@ JSON 输出："""
                 logger.info("[RAG] 检测到问候/闲聊，跳过检索: q=%s", q)
                 return {"context": "（用户打招呼或闲聊，请友好自然地回复，介绍自己并引导用户提出具体问题）", "question": q}
 
-            # 总结/精简/概括类追问：跳过 RAG，直接基于对话历史总结
+            # 总结/精简/概括类追问：跳过 RAG，将上一轮 AI 回答作为参考内容传给 LLM
             if self._is_compression_followup(q):
                 logger.info("[RAG] 检测到精简/总结类追问，跳过检索: q=%s", q)
+                last_ai_answer = ""
+                try:
+                    from service.rag.conversation.chat_history import get_session_history as _get_hist
+                    hist = _get_hist(session_id)
+                    for msg in reversed(hist.messages):
+                        if msg.type == "ai":
+                            content = getattr(msg, "content", "")
+                            if isinstance(content, str) and content.strip():
+                                last_ai_answer = content
+                                break
+                except Exception:
+                    logger.exception("[RAG] 获取上一轮回答失败，降级使用元指令")
+                if last_ai_answer:
+                    return {
+                        "context": last_ai_answer,
+                        "question": q,
+                    }
                 return {
-                    "context": "（用户要求对上一轮回答进行精简总结，请基于对话历史中最近一次回答进行压缩提炼。只保留核心要点和关键结论，去除冗余描述。不要引入任何新信息。）",
+                    "context": "（用户要求总结，但未找到上一轮回答内容，请告知用户当前没有可以总结的内容。）",
                     "question": q,
                 }
 
