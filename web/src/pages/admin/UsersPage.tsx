@@ -5,7 +5,10 @@ import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
 import { Card, CardContent } from '@/components/ui/card';
 import { getUsers, updateUserStatus, updateUserRoles, updateUserPermissions } from '../../api/admin';
+import { useAuthStore } from '../../stores/authStore';
 import type { AdminUser } from '../../types';
+
+const PROTECTED_PHONE = '18888888888';
 
 const ALL_ROLES = ['user', 'admin'];
 const ALL_PERMISSIONS: { key: string; label: string }[] = [
@@ -18,6 +21,11 @@ const ALL_PERMISSIONS: { key: string; label: string }[] = [
 
 const PAGE_SIZE = 20;
 
+function getErrorMessage(err: unknown, fallback: string): string {
+  const detail = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
+  return typeof detail === 'string' ? detail : fallback;
+}
+
 export default function UsersPage() {
   const [users, setUsers] = useState<AdminUser[]>([]);
   const [total, setTotal] = useState(0);
@@ -27,6 +35,23 @@ export default function UsersPage() {
   const [editModal, setEditModal] = useState<{ user: AdminUser; roles: string[]; permissions: string[] } | null>(null);
   const [loading, setLoading] = useState(false);
   const [msg, setMsg] = useState('');
+
+  const currentUser = useAuthStore((s) => s.user);
+  const isProtectedOperator = currentUser?.phone === PROTECTED_PHONE;
+
+  const isProtected = (u: AdminUser) => u.phone === PROTECTED_PHONE;
+  const isSelf = (u: AdminUser) => u.user_id === currentUser?.user_id;
+
+  const canEditUser = (u: AdminUser) => {
+    if (isProtected(u) && !isProtectedOperator) return false;
+    return true;
+  };
+
+  const canChangeStatus = (u: AdminUser) => {
+    if (isSelf(u)) return false;
+    if (isProtected(u) && !isProtectedOperator) return false;
+    return true;
+  };
 
   const showMsg = (text: string) => { setMsg(text); setTimeout(() => setMsg(''), 3000); };
 
@@ -48,8 +73,13 @@ export default function UsersPage() {
   const handleSearch = () => { setPage(1); fetchUsers(); };
 
   const handleStatusChange = async (userId: string, status: string) => {
-    try { await updateUserStatus(userId, status); showMsg('状态已更新'); fetchUsers(); }
-    catch { showMsg('更新失败'); }
+    try {
+      await updateUserStatus(userId, status);
+      showMsg('状态已更新');
+      fetchUsers();
+    } catch (err) {
+      showMsg(getErrorMessage(err, '更新失败'));
+    }
   };
 
   const handleSaveEdit = async () => {
@@ -65,10 +95,13 @@ export default function UsersPage() {
       showMsg('已更新');
       setEditModal(null);
       fetchUsers();
-    } catch { showMsg('更新失败'); }
+    } catch (err) {
+      showMsg(getErrorMessage(err, '更新失败'));
+    }
   };
 
   const totalPages = Math.ceil(total / PAGE_SIZE);
+  const editingSelf = editModal ? isSelf(editModal.user) : false;
 
   return (
     <div>
@@ -143,9 +176,9 @@ export default function UsersPage() {
                       </td>
                       <td className="px-4 py-2.5">
                         <div className="flex flex-wrap gap-1">
-                          {(u.permissions || []).length === 0
+                          {(u.direct_permissions || []).length === 0
                             ? <span className="text-xs text-muted-foreground">—</span>
-                            : (u.permissions || []).map((p) => {
+                            : (u.direct_permissions || []).map((p) => {
                               const info = ALL_PERMISSIONS.find((ap) => ap.key === p);
                               return <Badge key={p} variant="primary">{info?.label || p}</Badge>;
                             })
@@ -154,17 +187,23 @@ export default function UsersPage() {
                       </td>
                       <td className="px-4 py-2.5">
                         <div className="flex gap-1.5">
-                          <Button size="xs" variant="outline" onClick={() => setEditModal({
-                            user: u,
-                            roles: [...u.roles],
-                            permissions: [...(u.direct_permissions || [])],
-                          })}>
-                            编辑权限
-                          </Button>
-                          {u.status === 'ACTIVE' ? (
-                            <Button size="xs" variant="destructive" onClick={() => handleStatusChange(u.user_id, 'DISABLED')}>禁用</Button>
+                          {canEditUser(u) ? (
+                            <Button size="xs" variant="outline" onClick={() => setEditModal({
+                              user: u,
+                              roles: [...u.roles],
+                              permissions: [...(u.direct_permissions || [])],
+                            })}>
+                              编辑权限
+                            </Button>
                           ) : (
-                            <Button size="xs" onClick={() => handleStatusChange(u.user_id, 'ACTIVE')}>启用</Button>
+                            <span className="text-xs text-muted-foreground">—</span>
+                          )}
+                          {canChangeStatus(u) && (
+                            u.status === 'ACTIVE' ? (
+                              <Button size="xs" variant="destructive" onClick={() => handleStatusChange(u.user_id, 'DISABLED')}>禁用</Button>
+                            ) : (
+                              <Button size="xs" onClick={() => handleStatusChange(u.user_id, 'ACTIVE')}>启用</Button>
+                            )
                           )}
                         </div>
                       </td>
@@ -204,27 +243,33 @@ export default function UsersPage() {
             {/* 角色选择 */}
             <p className="mb-2 text-xs font-medium text-muted-foreground">角色</p>
             <div className="flex flex-wrap gap-2 mb-4">
-              {ALL_ROLES.map((role) => (
-                <button
-                  key={role}
-                  onClick={() => {
-                    setEditModal((prev) => {
-                      if (!prev) return null;
-                      const roles = prev.roles.includes(role)
-                        ? prev.roles.filter((r) => r !== role)
-                        : [...prev.roles, role];
-                      return { ...prev, roles };
-                    });
-                  }}
-                  className={`rounded-full px-2.5 py-0.5 text-xs font-medium border transition-colors ${
-                    editModal.roles.includes(role)
-                      ? 'border-primary bg-primary/10 text-primary'
-                      : 'border-border text-muted-foreground hover:border-primary/50'
-                  }`}
-                >
-                  {role}
-                </button>
-              ))}
+              {ALL_ROLES.map((role) => {
+                const lockedAdmin = editingSelf && role === 'admin' && editModal.roles.includes('admin');
+                return (
+                  <button
+                    key={role}
+                    type="button"
+                    title={lockedAdmin ? '不能移除自己的管理员角色' : undefined}
+                    onClick={() => {
+                      if (lockedAdmin) return;
+                      setEditModal((prev) => {
+                        if (!prev) return null;
+                        const roles = prev.roles.includes(role)
+                          ? prev.roles.filter((r) => r !== role)
+                          : [...prev.roles, role];
+                        return { ...prev, roles };
+                      });
+                    }}
+                    className={`rounded-full px-2.5 py-0.5 text-xs font-medium border transition-colors ${
+                      editModal.roles.includes(role)
+                        ? 'border-primary bg-primary/10 text-primary'
+                        : 'border-border text-muted-foreground hover:border-primary/50'
+                    } ${lockedAdmin ? 'cursor-not-allowed opacity-60' : ''}`}
+                  >
+                    {role}
+                  </button>
+                );
+              })}
             </div>
 
             {/* 直接权限选择 */}
@@ -233,6 +278,7 @@ export default function UsersPage() {
               {ALL_PERMISSIONS.map((perm) => (
                 <button
                   key={perm.key}
+                  type="button"
                   onClick={() => {
                     setEditModal((prev) => {
                       if (!prev) return null;
