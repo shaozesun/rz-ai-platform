@@ -2,6 +2,7 @@
 
 import hashlib
 import os
+import re
 import uuid
 from datetime import datetime, timezone
 from typing import Optional
@@ -24,6 +25,15 @@ def _hash_password(password: str) -> tuple[str, str]:
   salt = os.urandom(32)
   dk = hashlib.pbkdf2_hmac('sha256', password.encode('utf-8'), salt, HASH_ITERATIONS)
   return dk.hex(), salt.hex()
+
+MAX_SEARCH_KEYWORD_LEN = 100
+
+
+def _escape_regex(keyword: str) -> str:
+  """转义正则特殊字符，防止 ReDoS"""
+  keyword = keyword[:MAX_SEARCH_KEYWORD_LEN]
+  return re.escape(keyword)
+
 
 logger = logging.getLogger(__name__)
 
@@ -168,9 +178,10 @@ class UserService:
                        keyword: str = '', status: str = '') -> tuple[list, int]:
     query = {}
     if keyword:
+      safe = _escape_regex(keyword)
       query['$or'] = [
-        {'phone': {'$regex': keyword}},
-        {'name': {'$regex': keyword}},
+        {'phone': {'$regex': safe}},
+        {'name': {'$regex': safe}},
       ]
     if status:
       query['status'] = status
@@ -266,9 +277,10 @@ class UserService:
     if status:
       query['status'] = status
     if search:
+      safe = _escape_regex(search)
       query['$or'] = [
-        {'name': {'$regex': search, '$options': 'i'}},
-        {'phone': {'$regex': search, '$options': 'i'}},
+        {'name': {'$regex': safe, '$options': 'i'}},
+        {'phone': {'$regex': safe, '$options': 'i'}},
       ]
     total = await self.applications.count_documents(query)
     items = await self.applications.find(query) \

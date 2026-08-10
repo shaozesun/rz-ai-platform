@@ -1,11 +1,121 @@
 """认证相关 API: 登录/验证码/刷新/登出/用户信息/权限申请/重置密码"""
 
+from io import BytesIO
+import base64
+import httpx
+import random
+import uuid
 from fastapi import APIRouter, Request, HTTPException
-from pydantic import BaseModel, Field
+import re
+from pydantic import BaseModel, Field, field_validator
+from PIL import Image, ImageDraw, ImageFont
 from service.auth import auth_service, user_service
 from config.settings import settings
+from config.redis_conn import redis_manager
 
 router = APIRouter(prefix='/auth')
+
+
+# ==================== Pillow 图形验证码 ====================
+
+def _generate_captcha_image() -> tuple[str, str]:
+  """生成数学算式图片，返回 (answer, base64_png)"""
+  a = random.randint(1, 30)
+  b = random.randint(1, 30)
+  op = random.choice(['+', '-'])
+  if op == '-':
+    a, b = max(a, b), min(a, b)
+  answer = str(a + b if op == '+' else a - b)
+  text = f'{a} {op} {b} = ?'
+
+  width, height = 160, 50
+  img = Image.new('RGB', (width, height), (255, 255, 255))
+  draw = ImageDraw.Draw(img)
+
+  for _ in range(3):
+    x1, y1 = random.randint(0, width), random.randint(0, height)
+    x2, y2 = random.randint(0, width), random.randint(0, height)
+    draw.line([(x1, y1), (x2, y2)], fill=(random.randint(150, 220),) * 3, width=1)
+
+  for _ in range(40):
+    draw.point(
+      (random.randint(0, width - 1), random.randint(0, height - 1)),
+      fill=(random.randint(100, 200),) * 3,
+    )
+
+  try:
+    font = ImageFont.truetype('/Library/Fonts/Arial.ttf', 24)
+  except (OSError, IOError):
+    try:
+      font = ImageFont.truetype('/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf', 24)
+    except (OSError, IOError):
+      font = ImageFont.load_default()
+
+  bbox = draw.textbbox((0, 0), text, font=font)
+  tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
+  draw.text(((width - tw) // 2, (height - th) // 2), text, fill=(0, 0, 0), font=font)
+
+  buf = BytesIO()
+  img.save(buf, format='PNG')
+  return answer, base64.b64encode(buf.getvalue()).decode('ascii')
+
+
+def _check_captcha(captcha_id: str, captcha_code: str):
+  """校验图形验证码，失败抛 HTTPException"""
+  if not captcha_id or not captcha_code:
+    raise HTTPException(400, '请输入验证码')
+  key = f'{settings.REDIS_PREFIX}captcha:{captcha_id}'
+  stored = redis_manager.client.get(key)
+  if stored is None:
+    raise HTTPException(400, '验证码已过期，请刷新重试')
+  redis_manager.client.delete(key)
+  if str(stored) != str(captcha_code):
+    raise HTTPException(400, '验证码错误')
+
+
+@router.get('/captcha')
+async def get_captcha():
+  """获取图形验证码"""
+  answer, img_base64 = _generate_captcha_image()
+  captcha_id = uuid.uuid4().hex
+  key = f'{settings.REDIS_PREFIX}captcha:{captcha_id}'
+  redis_manager.client.set(key, answer, ex=120)
+  return {'ok': True, 'data': {'captcha_id': captcha_id, 'image_base64': img_base64}}
+
+
+# ==================== Turnstile 验证 ====================
+
+async def _verify_turnstile(token: str):
+  """验证 Cloudflare Turnstile token，失败抛 HTTPException"""
+  if not token:
+    raise HTTPException(400, '请完成安全验证')
+  async with httpx.AsyncClient() as client:
+    resp = await client.post(
+      'https://challenges.cloudflare.com/turnstile/v0/siteverify',
+      data={'secret': settings.TURNSTILE_SECRET_KEY, 'response': token},
+      timeout=10,
+    )
+    result = resp.json()
+    if not result.get('success'):
+      raise HTTPException(400, '安全验证失败，请重试')
+
+
+def _validate_captcha(body):
+  """返回 None（Pillow 同步校验完成/开发模式跳过）或 Turnstile 异步协程"""
+  if settings.SMS_DEV_MODE:
+    cap_id = getattr(body, 'captcha_id', '')
+    cap_code = getattr(body, 'captcha_code', '')
+    tt = getattr(body, 'turnstile_token', '')
+    if not cap_id and not cap_code and not tt:
+      return None
+    if settings.CAPTCHA_PROVIDER == 'pillow' and not cap_id:
+      return None
+    if settings.CAPTCHA_PROVIDER == 'turnstile' and not tt:
+      return None
+  if settings.CAPTCHA_PROVIDER == 'turnstile':
+    return _verify_turnstile(body.turnstile_token)
+  _check_captcha(body.captcha_id, body.captcha_code)
+  return None
 
 
 # ==================== 请求/响应模型 ====================
@@ -13,11 +123,31 @@ router = APIRouter(prefix='/auth')
 class LoginRequest(BaseModel):
   phone: str = Field(..., pattern=r'^1[3-9]\d{9}$')
   password: str = Field(..., min_length=1)
+  captcha_id: str = ''
+  captcha_code: str = ''
+  turnstile_token: str = ''
+
+
+PASSWORD_RE = re.compile(
+  r'^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[!@#$%^&*()_+\-=\[\]{};'
+  r"':" r'"\\|,.<>\/?~`]).{8,}$'
+)
+PASSWORD_MSG = '密码至少8位，必须包含大写字母、小写字母、数字和特殊符号'
 
 
 class RegisterRequest(BaseModel):
   phone: str = Field(..., pattern=r'^1[3-9]\d{9}$')
-  password: str = Field(..., min_length=6)
+  password: str = Field(..., min_length=8, description=PASSWORD_MSG)
+  captcha_id: str = ''
+  captcha_code: str = ''
+  turnstile_token: str = ''
+
+  @field_validator('password')
+  @classmethod
+  def validate_password(cls, v: str) -> str:
+    if not PASSWORD_RE.match(v):
+      raise ValueError(PASSWORD_MSG)
+    return v
 
 
 class RefreshRequest(BaseModel):
@@ -47,6 +177,8 @@ class ApplyRoleRequest(BaseModel):
 
 @router.post('/login')
 async def login(body: LoginRequest, request: Request):
+  verify = _validate_captcha(body)
+  if verify: await verify
   ip = request.client.host if request.client else ''
   try:
     result = await auth_service.login(body.phone, body.password, ip)
@@ -60,6 +192,8 @@ async def login(body: LoginRequest, request: Request):
 
 @router.post('/register')
 async def register(body: RegisterRequest, request: Request):
+  verify = _validate_captcha(body)
+  if verify: await verify
   ip = request.client.host if request.client else ''
   try:
     result = await auth_service.register(body.phone, body.password, ip)
@@ -149,12 +283,24 @@ async def my_applications(request: Request):
 
 class ResetPasswordRequest(BaseModel):
   phone: str = Field(..., pattern=r'^1[3-9]\d{9}$')
-  new_password: str = Field(..., min_length=6)
+  new_password: str = Field(..., min_length=8, description=PASSWORD_MSG)
+  captcha_id: str = ''
+  captcha_code: str = ''
+  turnstile_token: str = ''
+
+  @field_validator('new_password')
+  @classmethod
+  def validate_password(cls, v: str) -> str:
+    if not PASSWORD_RE.match(v):
+      raise ValueError(PASSWORD_MSG)
+    return v
 
 
 @router.post('/reset-password')
 async def reset_password(body: ResetPasswordRequest):
   """重置密码 — 直接输入手机号和新密码即可"""
+  verify = _validate_captcha(body)
+  if verify: await verify
   user = await user_service.get_by_phone(body.phone)
   if not user:
     raise HTTPException(400, '该手机号未注册')

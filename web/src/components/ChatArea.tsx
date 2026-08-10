@@ -19,6 +19,9 @@ function fixMermaidBlocks(text: string): string {
       const dir = dirMatch ? dirMatch[1] : 'graph LR';
       if (dirMatch) body = body.slice(dirMatch[0].length);
       body = body.replace(/\["\s+/g, '["').replace(/\s+"\]/g, '"]');
+      // 节点标签含 | 但未加引号，自动加双引号（否则 mermaid 解析报错）
+      body = body.replace(/\[([^\]"]*?[|][^\]"]*?)\]/g, '["$1"]');
+      body = body.replace(/\(([^)"]*?[|][^)"]*?)\)/g, '("$1")');
       body = body
         .replace(/(\)\]?)\s+(\w)/g, '$1\n$2')
         .replace(/]\s+(\w)/g, ']\n$1')

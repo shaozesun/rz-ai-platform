@@ -9,10 +9,31 @@ import { useVideoStore } from '@/stores/videoStore';
 import { getAccessToken } from '@/api/client';
 import type { VideoTask } from '@/types';
 
-function videoUrl(taskId: string) {
+async function downloadVideo(taskId: string, filename: string) {
   const token = getAccessToken();
-  const base = `/api/v1/video/tasks/${taskId}/video`;
-  return token ? `${base}?token=${encodeURIComponent(token)}` : base;
+  const resp = await fetch(`/api/v1/video/tasks/${taskId}/video`, {
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+  });
+  if (!resp.ok) throw new Error('下载失败');
+  const blob = await resp.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+async function loadVideoBlobUrl(taskId: string): Promise<string> {
+  const token = getAccessToken();
+  const resp = await fetch(`/api/v1/video/tasks/${taskId}/video`, {
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+  });
+  if (!resp.ok) throw new Error('加载失败');
+  const blob = await resp.blob();
+  return URL.createObjectURL(blob);
 }
 
 const STATUS_COLOR: Record<string, 'default' | 'primary' | 'success' | 'destructive' | 'warning'> = {
@@ -38,6 +59,29 @@ const TaskCard = React.memo(
   const isFailed = task.status === 'failed';
   const isProcessing = !isDone && !isFailed;
   const [showConfirm, setShowConfirm] = useState(false);
+  const [videoSrc, setVideoSrc] = useState('');
+  const [downloading, setDownloading] = useState(false);
+
+  useEffect(() => {
+    if (isDone && task.result_url) {
+      let revoked = false;
+      loadVideoBlobUrl(task.task_id).then((url) => {
+        if (!revoked) setVideoSrc(url);
+      }).catch(() => {});
+      return () => { revoked = true; };
+    }
+  }, [isDone, task.task_id, task.result_url]);
+
+  const handleDownload = async () => {
+    setDownloading(true);
+    try {
+      await downloadVideo(task.task_id, task.original_filename.replace(/\.[^.]+$/, '') + '.mp4');
+    } catch {
+      // ignore
+    } finally {
+      setDownloading(false);
+    }
+  };
 
   return (
     <Card>
@@ -77,7 +121,7 @@ const TaskCard = React.memo(
             <video
               controls
               className="w-full max-h-[360px] rounded-md bg-black"
-              src={videoUrl(task.task_id)}
+              src={videoSrc}
             />
           </div>
         )}
@@ -85,13 +129,13 @@ const TaskCard = React.memo(
         {/* Bottom actions */}
         <div className="flex items-center justify-between pt-1 border-t border-border">
           {isDone && task.result_url ? (
-            <a
-              href={videoUrl(task.task_id)}
-              download={`${task.original_filename.replace(/\.[^.]+$/, '')}.mp4`}
-              className="inline-flex items-center gap-1 rounded-lg border border-border bg-background px-2.5 h-7 text-[0.8rem] font-medium hover:bg-muted transition-colors"
+            <button
+              onClick={handleDownload}
+              disabled={downloading}
+              className="inline-flex items-center gap-1 rounded-lg border border-border bg-background px-2.5 h-7 text-[0.8rem] font-medium hover:bg-muted transition-colors disabled:opacity-50"
             >
-              <Download className="size-3.5" /> 下载视频
-            </a>
+              <Download className="size-3.5" /> {downloading ? '下载中...' : '下载视频'}
+            </button>
           ) : (
             <span />
           )}

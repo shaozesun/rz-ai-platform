@@ -10,26 +10,30 @@ import type {
   FireSafetyHistoryDetail,
 } from '../types';
 
-// ── 下载辅助：直接 form submit，token 放 URL query param ──
-// 原生 form 提交不会被 Chrome 拦截，后端返回 Content-Disposition: attachment 时页面不跳转
+// ── 下载辅助：fetch + Authorization header + Blob 下载 ──
 
-function submitDownload(path: string, fields: Record<string, string>) {
+async function downloadWithAuth(
+  path: string, body: unknown, filename: string,
+) {
   const token = sessionStorage.getItem('access_token');
-  const form = document.createElement('form');
-  form.method = 'POST';
-  form.action = `/api/v1${path}${token ? `?token=${encodeURIComponent(token)}` : ''}`;
-
-  for (const [name, value] of Object.entries(fields)) {
-    const input = document.createElement('input');
-    input.type = 'hidden';
-    input.name = name;
-    input.value = value;
-    form.appendChild(input);
-  }
-
-  document.body.appendChild(form);
-  form.submit();
-  document.body.removeChild(form);
+  const resp = await fetch(`/api/v1${path}`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+    body: JSON.stringify(body),
+  });
+  if (!resp.ok) throw new Error(`下载失败 (${resp.status})`);
+  const blob = await resp.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
 export async function checkImage(
@@ -67,10 +71,8 @@ export async function fireSafetyRecommend(
   return data;
 }
 
-export function downloadFireSafetyReport(result: FireSafetyResult) {
-  submitDownload('/risk/fire-safety/report', {
-    data: JSON.stringify(result),
-  });
+export async function downloadFireSafetyReport(result: FireSafetyResult) {
+  await downloadWithAuth('/risk/fire-safety/report', { data: JSON.stringify(result) }, '消防配置报告.docx');
 }
 
 export async function generateReport(
@@ -88,14 +90,14 @@ export async function generateReport(
   return data;
 }
 
-export function downloadReportDocx(
+export async function downloadReportDocx(
   results: CheckResult[],
   title: string = '安全隐患检测报告',
 ) {
   const checkIds = results.map((r) => r.check_id);
-  submitDownload('/risk/report', {
+  await downloadWithAuth('/risk/report', {
     data: JSON.stringify({ check_ids: checkIds, results, title, format: 'docx' }),
-  });
+  }, `${title}.docx`);
 }
 
 export async function getRiskHistory(

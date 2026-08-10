@@ -90,12 +90,19 @@ app = FastAPI(
   lifespan=lifespan,
 )
 
+origins = [o.strip() for o in settings.ALLOWED_ORIGINS.split(',') if o.strip()]
+if not origins or origins == ['*']:
+  origins = ['*']
+  allow_creds = False
+else:
+  allow_creds = True
+
 app.add_middleware(
   CORSMiddleware,
-  allow_origins=['*'],
-  allow_credentials=True,
-  allow_methods=['*'],
-  allow_headers=['*'],
+  allow_origins=origins,
+  allow_credentials=allow_creds,
+  allow_methods=['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allow_headers=['Authorization', 'Content-Type', 'X-Trace-Id'],
 )
 
 app.add_middleware(AuthMiddleware)

@@ -187,9 +187,16 @@ class Settings(BaseSettings):
   SCHEDULER_STREAM_SLOT_TIMEOUT: int = 10
 
   # ==================== 部署 ====================
-  ALLOWED_ORIGINS: str = '*'
+  ALLOWED_ORIGINS: str = '*'  # 生产环境应改为具体域名 (逗号分隔)，如 https://fire.whitegiveking.cn
   RATE_LIMIT_PER_MINUTE: int = 60
   RATE_LIMIT_SMS_PER_HOUR: int = 20
+
+  # Cloudflare Turnstile
+  TURNSTILE_SITE_KEY: str = ''
+  TURNSTILE_SECRET_KEY: str = ''
+
+  # 验证码方案: 'pillow' (本地数学算式) | 'turnstile' (Cloudflare)
+  CAPTCHA_PROVIDER: str = 'pillow'
 
   # 受保护的管理员手机号（其他 admin 不能改其角色/权限/状态/密码）
   PROTECTED_ADMIN_PHONE: str = '18888888888'
@@ -210,8 +217,19 @@ class Settings(BaseSettings):
   # ==================== 综合管理平台集成 ====================
   MGMT_ENABLED: bool = False           # 综合管理平台开关，默认关闭
   MGMT_BASE_URL: str = ''              # 综合管理平台 API 基地址
-  MGMT_API_TOKEN: str = ''             # 服务级访问 token
+  MGMT_API_TOKEN: str = ''             # 服务级访问 token（若后端提供，跳过登录）
+  MGMT_USERNAME: str = ''              # 登录账号（服务账号，最高权限）
+  MGMT_PASSWORD: str = ''              # 登录密码
+  MGMT_TOKEN_TTL: int = 3600           # token + deptId 缓存秒数
   MGMT_TIMEOUT: int = 30               # 调用超时（秒）
+
+  # ==================== 安防平台集成 ====================
+  # 占位注册：暂无接口文档，capabilities 为空元组，client.call 直接抛异常。
+  # 接口文档到位后按 mgmt 的接入模式（EndpointSpec 声明式映射）填实即可。
+  SECURITY_ENABLED: bool = False       # 安防平台开关，默认关闭
+  SECURITY_BASE_URL: str = ''          # 安防平台 API 基地址
+  SECURITY_API_TOKEN: str = ''         # 服务级访问 token
+  SECURITY_TIMEOUT: int = 30           # 调用超时（秒）
 
   model_config = {
     'env_file': '.env',

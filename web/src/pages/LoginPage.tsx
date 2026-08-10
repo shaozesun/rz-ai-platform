@@ -1,11 +1,28 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { Lock, Phone, UserPlus, ArrowLeft } from 'lucide-react';
 import { useAuthStore } from '../stores/authStore';
-import { login, register, resetPassword } from '../api/auth';
+import { login, register, resetPassword, fetchCaptcha } from '../api/auth';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Card, CardContent } from '@/components/ui/card';
+
+// 验证码方案切换: 'pillow' | 'turnstile'
+const CAPTCHA_PROVIDER: string = 'pillow';
+const TURNSTILE_SITE_KEY = '0x4AAAAAAEIxMciQ03FoqMNu';
+
+const PASSWORD_RE = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[!@#$%^&*()_+\-=\[\]{};':"\\|,.<>\/?~`]).{8,}$/;
+const PASSWORD_MSG = '密码至少8位，必须包含大写字母、小写字母、数字和特殊符号';
+
+declare global {
+  interface Window {
+    turnstile: {
+      render: (selector: string, options: Record<string, unknown>) => string;
+      reset: (widgetId: string) => void;
+      remove: (widgetId: string) => void;
+    };
+  }
+}
 
 export default function LoginPage() {
   const [phone, setPhone] = useState('');
@@ -17,8 +34,84 @@ export default function LoginPage() {
   const [errorMsg, setErrorMsg] = useState('');
   const [successMsg, setSuccessMsg] = useState('');
 
-  // 忘记密码
+  // Pillow 验证码
+  const [captchaId, setCaptchaId] = useState('');
+  const [captchaImg, setCaptchaImg] = useState('');
+  const [captchaCode, setCaptchaCode] = useState('');
+
+  // Turnstile
+  const [turnstileToken, setTurnstileToken] = useState('');
+  const turnstileWidgetId = useRef('');
+
   const [forgotPw, setForgotPw] = useState(false);
+
+  const loadCaptcha = useCallback(async () => {
+    if (CAPTCHA_PROVIDER !== 'pillow') return;
+    try {
+      const c = await fetchCaptcha();
+      setCaptchaId(c.captcha_id);
+      setCaptchaImg(c.image_base64);
+    } catch {
+      // ignore
+    }
+  }, []);
+
+  const resetTurnstile = useCallback(() => {
+    setTurnstileToken('');
+    if (turnstileWidgetId.current && window.turnstile) {
+      window.turnstile.reset(turnstileWidgetId.current);
+    }
+  }, []);
+
+  const refreshCaptcha = useCallback(() => {
+    setCaptchaCode('');
+    if (CAPTCHA_PROVIDER === 'pillow') loadCaptcha();
+    else resetTurnstile();
+  }, [loadCaptcha, resetTurnstile]);
+
+  // Load Turnstile script
+  useEffect(() => {
+    if (CAPTCHA_PROVIDER !== 'turnstile') return;
+    if (document.getElementById('turnstile-script')) return;
+    const script = document.createElement('script');
+    script.id = 'turnstile-script';
+    script.src = 'https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit';
+    script.async = true;
+    script.defer = true;
+    document.body.appendChild(script);
+  }, []);
+
+  const mountTurnstile = useCallback(() => {
+    if (CAPTCHA_PROVIDER !== 'turnstile') return;
+    const container = document.getElementById('turnstile-widget');
+    if (!container || !window.turnstile) return;
+    if (turnstileWidgetId.current) {
+      window.turnstile.remove(turnstileWidgetId.current);
+    }
+    container.innerHTML = '';
+    turnstileWidgetId.current = window.turnstile.render('#turnstile-widget', {
+      sitekey: TURNSTILE_SITE_KEY,
+      callback: (token: string) => setTurnstileToken(token),
+      'expired-callback': resetTurnstile,
+      'error-callback': resetTurnstile,
+    });
+  }, [resetTurnstile]);
+
+  // Mount Turnstile or load Pillow captcha
+  useEffect(() => {
+    if (CAPTCHA_PROVIDER === 'turnstile') {
+      if (window.turnstile) {
+        mountTurnstile();
+      } else {
+        const check = setInterval(() => {
+          if (window.turnstile) { mountTurnstile(); clearInterval(check); }
+        }, 200);
+        return () => clearInterval(check);
+      }
+    } else {
+      loadCaptcha();
+    }
+  }, [mountTurnstile, loadCaptcha, activeTab, forgotPw]);
 
   const navigate = useNavigate();
   const location = useLocation();
@@ -48,22 +141,32 @@ export default function LoginPage() {
     return fallback;
   };
 
+  const validateCaptcha = (): boolean => {
+    if (CAPTCHA_PROVIDER === 'turnstile') {
+      if (!turnstileToken) { setErrorMsg('请完成安全验证'); return false; }
+    } else {
+      if (!captchaCode.trim()) { setErrorMsg('请输入验证码'); return false; }
+    }
+    return true;
+  };
+
   const doAuth = async () => {
     setErrorMsg('');
     if (!phone.trim()) { setErrorMsg('请输入手机号'); return; }
     if (!PHONE_RE.test(phone)) { setErrorMsg('请输入正确的 11 位手机号'); return; }
     if (!password) { setErrorMsg('请输入密码'); return; }
+    if (!validateCaptcha()) return;
 
     if (activeTab === 'register') {
-      if (password.length < 6) { setErrorMsg('密码不能少于6位'); return; }
+      if (!PASSWORD_RE.test(password)) { setErrorMsg(PASSWORD_MSG); return; }
       if (password !== confirmPassword) { setErrorMsg('两次密码不一致'); return; }
     }
 
     setLogging(true);
     try {
       const res = activeTab === 'login'
-        ? await login(phone, password)
-        : await register(phone, password);
+        ? await login(phone, password, captchaId, captchaCode, turnstileToken)
+        : await register(phone, password, captchaId, captchaCode, turnstileToken);
       if (res.ok) {
         const d = res.data;
         setAuth(d.access_token, d.refresh_token, d.user, d.user.permissions);
@@ -72,6 +175,7 @@ export default function LoginPage() {
       }
     } catch (err: unknown) {
       setErrorMsg(extractError(err, activeTab === 'login' ? '登录失败，请检查手机号或密码' : '注册失败'));
+      refreshCaptcha();
     } finally {
       setLogging(false);
     }
@@ -82,11 +186,12 @@ export default function LoginPage() {
     if (!phone.trim()) { setErrorMsg('请输入手机号'); return; }
     if (!PHONE_RE.test(phone)) { setErrorMsg('请输入正确的 11 位手机号'); return; }
     if (!newPassword) { setErrorMsg('请输入新密码'); return; }
+    if (!PASSWORD_RE.test(newPassword)) { setErrorMsg(PASSWORD_MSG); return; }
     if (newPassword !== confirmPassword) { setErrorMsg('两次密码不一致'); return; }
-    if (newPassword.length < 6) { setErrorMsg('新密码至少 6 位'); return; }
+    if (!validateCaptcha()) return;
     setLogging(true);
     try {
-      const res = await resetPassword(phone, newPassword);
+      const res = await resetPassword(phone, newPassword, captchaId, captchaCode, turnstileToken);
       if (res.ok) {
         setSuccessMsg('密码已重置，请登录');
         setForgotPw(false);
@@ -98,6 +203,7 @@ export default function LoginPage() {
       }
     } catch (err: unknown) {
       setErrorMsg(extractError(err, '重置失败，请确认手机号已注册'));
+      refreshCaptcha();
     } finally {
       setLogging(false);
     }
@@ -110,6 +216,31 @@ export default function LoginPage() {
     setNewPassword('');
     setConfirmPassword('');
   };
+
+  // 验证码 UI 组件
+  const captchaSection = CAPTCHA_PROVIDER === 'turnstile' ? (
+    <div id="turnstile-widget" className="flex justify-center" />
+  ) : (
+    <div className="flex gap-2">
+      {captchaImg ? (
+        <img
+          src={`data:image/png;base64,${captchaImg}`}
+          alt="验证码"
+          className="h-10 w-[120px] cursor-pointer rounded border border-border object-contain bg-white shrink-0"
+          onClick={loadCaptcha}
+          title="点击刷新验证码"
+        />
+      ) : (
+        <div className="h-10 w-[120px] rounded border border-border bg-muted shrink-0 animate-pulse" />
+      )}
+      <Input
+        placeholder="验证码"
+        value={captchaCode}
+        onChange={(e) => setCaptchaCode(e.target.value)}
+        className="flex-1"
+      />
+    </div>
+  );
 
   return (
     <div className="flex min-h-screen items-center justify-center bg-linear-to-br from-[#667eea] to-[#764ba2] p-4">
@@ -164,6 +295,8 @@ export default function LoginPage() {
                 />
               </div>
 
+              {captchaSection}
+
               {errorMsg && (
                 <p className="rounded-lg bg-destructive/10 px-3 py-2 text-sm text-destructive">{errorMsg}</p>
               )}
@@ -190,7 +323,7 @@ export default function LoginPage() {
                       ? 'bg-card text-foreground shadow-xs'
                       : 'text-muted-foreground hover:text-foreground'
                   }`}
-                  onClick={() => { setActiveTab('login'); setErrorMsg(''); setPassword(''); setConfirmPassword(''); }}
+                  onClick={() => { setActiveTab('login'); setErrorMsg(''); setPassword(''); setConfirmPassword(''); refreshCaptcha(); }}
                 >
                   登录
                 </button>
@@ -200,7 +333,7 @@ export default function LoginPage() {
                       ? 'bg-card text-foreground shadow-xs'
                       : 'text-muted-foreground hover:text-foreground'
                   }`}
-                  onClick={() => { setActiveTab('register'); setErrorMsg(''); setPassword(''); setConfirmPassword(''); }}
+                  onClick={() => { setActiveTab('register'); setErrorMsg(''); setPassword(''); setConfirmPassword(''); refreshCaptcha(); }}
                 >
                   注册
                 </button>
@@ -241,6 +374,8 @@ export default function LoginPage() {
                     />
                   </div>
                 )}
+
+                {captchaSection}
 
                 {activeTab === 'login' && (
                   <button

@@ -52,12 +52,24 @@ api/v1/     →  service/    →  core/       →  config/
 
 ### 认证鉴权
 
-- 手机号 + 短信验证码登录，开发模式 `SMS_DEV_MODE=true` 跳过真实发送
+- 手机号 + 密码登录，开发模式 `SMS_DEV_MODE=true` 跳过图形验证码校验
 - 开发模式 `PERMISSION_OPEN_MODE=true` 时认证用户自动获得全部权限（跳过 RBAC 检查）
 - JWT access_token (30min) + refresh_token (7d)，RSA 密钥对签发
 - RBAC: User → Role → Permission (`resource:action`)
 - 新用户默认 `rag_basic` 角色 (仅 `rag:chat`)，其他功能需申请 → Root 审批
 - `@require_permission("risk:check")` 装饰器保护端点，中间件检查登录态后从 MongoDB 加载权限
+
+**图形验证码:** 登录/注册/重置密码需输入验证码，防暴力破解。两种方案通过配置切换：
+
+| 方案 | 配置值 | 说明 |
+|------|--------|------|
+| Pillow 数学算式 (当前) | `CAPTCHA_PROVIDER=pillow` | 本地生成，零外部依赖，Redis 存答案 120s |
+| Cloudflare Turnstile | `CAPTCHA_PROVIDER=turnstile` | 需域名 + `TURNSTILE_SITE_KEY` / `TURNSTILE_SECRET_KEY` |
+
+切换方法：
+- 前端 `web/src/pages/LoginPage.tsx` 第 11 行常量 `CAPTCHA_PROVIDER`
+- 后端 `.env` 中 `CAPTCHA_PROVIDER` + Turnstile 密钥（如用 Turnstile）
+- Pillow 模式无需额外配置，`SMS_DEV_MODE=true` 可跳过验证码
 
 ### 核心模块
 
@@ -137,3 +149,7 @@ React + TypeScript + Vite + Tailwind CSS 4 + shadcn/ui。入口 `ChatPage.tsx`�
 **状态管理：** Zustand — `authStore`, `chatStore`, `appStore`, `videoStore`
 
 **API：** Axios client (`web/src/api/client.ts`)，按模块拆分 `auth.ts`, `chat.ts`, `rag.ts`, `risk.ts`, `video.ts`, `admin.ts`, `stats.ts`
+
+### AI 协作规范
+
+- **新建文件必须 `git add`**：AI 生成的新文件（`??` 状态）默认不进入版本控制，提交前需执行 `git add <新文件或目录>`。提交时检查 Commit 窗口的 Unversioned Files 分组，确保新代码不被遗漏。

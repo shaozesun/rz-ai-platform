@@ -2,6 +2,7 @@
 
 import hashlib
 import os
+import re
 
 import logging
 from core.auth_engine import (
@@ -15,6 +16,12 @@ from service.auth.user_service import user_service
 logger = logging.getLogger(__name__)
 
 HASH_ITERATIONS = 100000
+
+PASSWORD_RE = re.compile(
+  r'^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[!@#$%^&*()_+\-=\[\]{};'
+  r"':" r'"\\|,.<>\/?~`]).{8,}$'
+)
+PASSWORD_MSG = '密码至少8位，必须包含大写字母、小写字母、数字和特殊符号'
 
 
 def _hash_password(password: str, salt: bytes | None = None) -> tuple[str, str]:
@@ -65,8 +72,8 @@ class AuthService:
     if existing:
       raise ValueError('该手机号已注册，请直接登录')
 
-    if len(password) < 6:
-      raise ValueError('密码不能少于6位')
+    if not PASSWORD_RE.match(password):
+      raise ValueError(PASSWORD_MSG)
 
     user = await user_service.create_user(phone, password)
 

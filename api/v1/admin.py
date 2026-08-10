@@ -9,6 +9,16 @@ from config.settings import settings
 router = APIRouter(prefix='/admin')
 
 
+# ==================== 请求模型 ====================
+
+class UpdateRolesBody(BaseModel):
+  roles: list[str] = Field(default_factory=list, max_length=10)
+
+
+class UpdatePermissionsBody(BaseModel):
+  permissions: list[str] = Field(default_factory=list, max_length=20)
+
+
 async def _audit(request: Request, action: str, resource: str, detail: str, ip: str = ''):
   """写审计日志，自动提取操作人信息"""
   await user_service.write_audit(
@@ -94,10 +104,9 @@ async def update_user_status(
 
 @router.put('/users/{user_id}/roles')
 @require_permission('system:admin')
-async def update_user_roles(user_id: str, request: Request):
+async def update_user_roles(user_id: str, body: UpdateRolesBody, request: Request):
   """直接修改用户角色"""
-  body = await request.json()
-  roles = body.get('roles', [])
+  roles = body.roles
   await _assert_can_manage_user(request, user_id, new_roles=roles)
   await user_service.update_user(user_id, {'roles': roles, 'permissions': []})
   await _audit(request, 'admin.update_roles', 'user', f'用户 {user_id} 角色 → {roles}')
@@ -107,10 +116,9 @@ async def update_user_roles(user_id: str, request: Request):
 
 @router.put('/users/{user_id}/permissions')
 @require_permission('system:admin')
-async def update_user_permissions(user_id: str, request: Request):
+async def update_user_permissions(user_id: str, body: UpdatePermissionsBody, request: Request):
   """直接修改用户权限"""
-  body = await request.json()
-  permissions = body.get('permissions', [])
+  permissions = body.permissions
   target = await _assert_can_manage_user(request, user_id)
   # 非 admin 角色不允许持有 system:admin
   if 'admin' not in target.get('roles', []):
