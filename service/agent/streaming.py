@@ -42,6 +42,18 @@ async def stream_agent(
 
   config = {'configurable': {'thread_id': thread_id}}
 
+  # P-1（v1.1）：每请求重置 promoted —— 跨轮累积改为无状态路由（checkpoint 按
+  # thread_id 持久化，promoted 带 union reducer 会跨轮越积越多）。
+  # 注意不能用 {'promoted': None}：merge_promoted reducer 把空值当「节点未触碰」
+  # 保留旧值（实测确认），必须用空 hash 哨兵才能真正清空。当轮内 tool_search →
+  # 调用 的累积（merge_promoted union）不受影响；被重置的工具若被调用，middleware
+  # 会返回「请先 tool_search」，LLM 可重搜恢复。
+  try:
+    agent.update_state(config, {'promoted': {'catalog_hash': '', 'names': []}})
+  except Exception as e:
+    # 首次请求无 checkpoint 等边界：promoted 本为空，重置失败不影响本轮
+    logger.warning('重置 promoted 失败（忽略，继续本轮）: %s', e)
+
   # 合并编排层预置 state（如预 promote 的工具），messages 始终存在
   agent_input = {'messages': [{'role': 'user', 'content': message}]}
   if initial_state:

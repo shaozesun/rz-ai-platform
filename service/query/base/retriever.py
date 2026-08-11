@@ -20,6 +20,8 @@ logger = logging.getLogger(__name__)
 # 能力向量缓存：capability_id -> embedding 向量
 _CACHE: dict[str, list[float]] = {}
 _CACHE_IDS: list[str] = []
+# 桶索引：capability_id -> (platform, category, domain)，供分类/域维度先过滤再余弦（P-4）
+_CACHE_META: dict[str, tuple[str, str, str]] = {}
 
 
 def _cosine(a: list[float], b: list[float]) -> float:
@@ -54,26 +56,49 @@ async def ensure_index() -> None:
   for cap, vec in zip(caps, vectors):
     _CACHE[cap.id] = vec
     _CACHE_IDS.append(cap.id)
+    _CACHE_META[cap.id] = (cap.id.split('.', 1)[0], cap.category, cap.domain)
   logger.info('retriever 索引构建完成 count=%d', len(_CACHE))
 
 
-async def search_capabilities(query: str, k: int = 8) -> list[str]:
+def _match_filter(cid: str, category: str | None, domain: str | None) -> bool:
+  """按桶索引过滤：category/domain 与目标不一致的能力排除在外。"""
+  _, cat, dom = _CACHE_META.get(cid, ('', '', ''))
+  if category is not None and cat != category:
+    return False
+  if domain is not None and dom != domain:
+    return False
+  return True
+
+
+async def search_capabilities(
+  query: str,
+  k: int = 8,
+  *,
+  category: str | None = None,
+  domain: str | None = None,
+) -> list[str]:
   """按查询语义检索最相关的能力 id。
 
   Args:
     query: 用户查询或意图描述。
     k: 返回条数上限。
+    category: 仅检索该 L2 分类下的能力（如 'alarm'）；None 检索全量。
+    domain: 仅检索该 L3 域下的能力（如 'device'）；None 不按域过滤。
 
   Returns:
     capability_id 列表，按相关度降序；能力总数不足 k 时返回全部。
   """
   await ensure_index()
-  if not _CACHE_IDS:
+  ids = _CACHE_IDS
+  if category is not None or domain is not None:
+    # 先按分类/域过滤再余弦：提升跨域准确率，向量数（同分类）远小于全量，计算更省
+    ids = [cid for cid in ids if _match_filter(cid, category, domain)]
+  if not ids:
     return []
   from core.model_gateway import model_gateway
 
   q_vec = (await model_gateway.embedding([query]))[0]
-  scored = [(cid, _cosine(q_vec, _CACHE[cid])) for cid in _CACHE_IDS]
+  scored = [(cid, _cosine(q_vec, _CACHE[cid])) for cid in ids]
   scored.sort(key=lambda x: x[1], reverse=True)
   return [cid for cid, _ in scored[:k]]
 
@@ -82,3 +107,4 @@ def reset_index() -> None:
   """清空索引缓存（平台变更或测试时用）。"""
   _CACHE.clear()
   _CACHE_IDS.clear()
+  _CACHE_META.clear()
