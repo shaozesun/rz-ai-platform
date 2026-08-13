@@ -169,7 +169,16 @@ export default function LoginPage() {
         : await register(phone, password, captchaId, captchaCode, turnstileToken);
       if (res.ok) {
         const d = res.data;
-        setAuth(d.access_token, d.refresh_token, d.user, d.user.permissions);
+        if (activeTab === 'register' && d?.pending) {
+          setSuccessMsg(d.message || '注册申请已提交，请等待管理员审批');
+          setActiveTab('login');
+          setPassword('');
+          setConfirmPassword('');
+          refreshCaptcha();
+          setTimeout(() => setSuccessMsg(''), 5000);
+        } else {
+          setAuth(d.access_token, d.refresh_token, d.user, d.user.permissions);
+        }
       } else {
         setErrorMsg(res.msg || (activeTab === 'login' ? '登录失败' : '注册失败'));
       }
@@ -405,7 +414,7 @@ export default function LoginPage() {
 
                 {activeTab === 'register' && (
                   <p className="text-center text-xs text-muted-foreground">
-                    注册后默认开通知识库问答权限，其他功能需申请
+                    提交后需管理员审批，通过后方可登录；默认开通 AI 对话权限，其他功能需另行申请
                   </p>
                 )}
               </div>

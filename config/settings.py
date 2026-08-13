@@ -171,10 +171,11 @@ class Settings(BaseSettings):
 
   # ==================== MinerU PDF 解析 ====================
   MINERU_ENABLED: bool = True
+  MINERU_LOCAL_API_URL: str = ''  # 自建 mineru-api，如 http://10.102.170.26:18000
   MINERU_API_BASE: str = ''
   MINERU_API_TOKEN: str = ''
   MINERU_BACKEND: str = 'pipeline'
-  MINERU_LANG: str = 'zh'
+  MINERU_LANG: str = 'ch'
   MINERU_TIMEOUT: int = 600
   MINERU_API_POLL_INTERVAL: int = 5
   MINERU_API_MAX_POLL: int = 60

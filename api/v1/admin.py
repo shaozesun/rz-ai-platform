@@ -95,7 +95,9 @@ async def update_user_status(
   user_id: str, request: Request,
   status: str = Query(..., pattern='^(ACTIVE|DISABLED)$'),
 ):
-  await _assert_can_manage_user(request, user_id, new_status=status)
+  target = await _assert_can_manage_user(request, user_id, new_status=status)
+  if target.get('status') == 'PENDING':
+    raise HTTPException(400, '待审批用户请通过审批中心开通，不能在此直接启用')
   await user_service.update_user(user_id, {'status': status})
   await _audit(request, 'admin.update_status', 'user', f'用户 {user_id} 状态 → {status}')
   user = await user_service.get_by_id(user_id)

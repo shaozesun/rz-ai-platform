@@ -48,8 +48,11 @@ class AuthService:
     if not _verify_password(password, user.get('password_salt', ''), user.get('password_hash', '')):
       raise ValueError('密码错误')
 
-    if user.get('status') != 'ACTIVE':
-      raise ValueError('账号已被禁用, 请联系管理员')
+    status = user.get('status')
+    if status == 'PENDING':
+      raise ValueError('账号正在审批中，通过后方可登录')
+    if status != 'ACTIVE':
+      raise ValueError('账号已被禁用，请联系管理员')
 
     await user_service.update_login_info(user['user_id'], ip)
 
@@ -67,29 +70,29 @@ class AuthService:
     }
 
   async def register(self, phone: str, password: str, ip: str = '') -> dict:
-    """手机号 + 密码注册"""
+    """手机号 + 密码注册申请（需管理员审批后才能登录）"""
     existing = await user_service.get_by_phone(phone)
     if existing:
+      status = existing.get('status')
+      if status == 'PENDING':
+        raise ValueError('该手机号正在审批中，请耐心等待')
+      if status == 'DISABLED':
+        raise ValueError('账号已被禁用，请联系管理员')
       raise ValueError('该手机号已注册，请直接登录')
 
     if not PASSWORD_RE.match(password):
       raise ValueError(PASSWORD_MSG)
 
     user = await user_service.create_user(phone, password)
-
-    await user_service.update_login_info(user['user_id'], ip)
-
-    access_token = create_access_token(
-      user['user_id'], user['phone'], user.get('roles', [])
+    await user_service.create_application(
+      user['user_id'], phone, '',
+      requested_roles=['user'],
+      reason='新用户注册申请',
     )
-    refresh_token = create_refresh_token(user['user_id'])
-
-    user_info = await user_service.get_user_public(user)
 
     return {
-      'access_token': access_token,
-      'refresh_token': refresh_token,
-      'user': user_info,
+      'pending': True,
+      'message': '注册申请已提交，请等待管理员审批',
     }
 
   async def refresh_token(self, refresh_token: str) -> dict:

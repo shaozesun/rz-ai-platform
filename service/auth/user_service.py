@@ -108,7 +108,7 @@ class UserService:
     return await self.users.find_one({'user_id': user_id})
 
   async def create_user(self, phone: str, password: str = '') -> dict:
-    """新用户注册, 默认 user 角色"""
+    """新用户注册申请: PENDING，角色待审批通过后授予"""
     now = datetime.utcnow()
     pw_hash, pw_salt = _hash_password(password) if password else ('', '')
     user = {
@@ -118,17 +118,17 @@ class UserService:
       'email': None,
       'company': None,
       'user_type': UserType.UNVERIFIED.value,
-      'status': UserStatus.ACTIVE.value,
-      'roles': ['user'],
+      'status': UserStatus.PENDING.value,
+      'roles': [],
       'permissions': [],
       'password_hash': pw_hash,
       'password_salt': pw_salt,
       'created_at': now,
-      'last_login_at': now,
+      'last_login_at': None,
       'last_login_ip': '',
     }
     await self.users.insert_one(user)
-    logger.info(f'新用户注册: {phone}')
+    logger.info(f'新用户注册申请: {phone} (PENDING)')
     return user
 
   async def update_login_info(self, user_id: str, ip: str):
@@ -325,20 +325,20 @@ class UserService:
         {'$addToSet': user_updates},
       )
 
+    # 注册待审用户：审批通过后激活
+    await self.users.update_one(
+      {'user_id': app['user_id'], 'status': UserStatus.PENDING.value},
+      {'$set': {'status': UserStatus.ACTIVE.value}},
+    )
+
     logger.info(f'审批通过: {app["phone"]} → 角色 {app.get("requested_roles", [])}, 权限 {app.get("requested_permissions", [])}')
     app['_id'] = str(app['_id'])
     return app
 
   async def reject_application(self, application_id: str, reviewer_id: str,
                                reason: str) -> dict:
-    app = await self.applications.find_one(
-      {'application_id': application_id, 'status': ApplicationStatus.PENDING.value}
-    )
-    if not app:
-      raise ValueError('申请不存在或已处理')
-
-    await self.applications.update_one(
-      {'application_id': application_id},
+    app = await self.applications.find_one_and_update(
+      {'application_id': application_id, 'status': ApplicationStatus.PENDING.value},
       {'$set': {
         'status': ApplicationStatus.REJECTED.value,
         'reviewer_id': reviewer_id,
@@ -346,8 +346,23 @@ class UserService:
         'reviewed_at': datetime.utcnow(),
       }}
     )
-    logger.info(f'审批拒绝: {app["phone"]} → {app["requested_roles"]}, 原因: {reason}')
+    if not app:
+      raise ValueError('申请不存在或已处理')
+
+    # 注册待审用户驳回：删除账号，释放手机号以便重新注册
+    deleted = await self.users.delete_one({
+      'user_id': app['user_id'],
+      'status': UserStatus.PENDING.value,
+    })
+    if deleted.deleted_count:
+      logger.info(f'驳回注册申请并释放手机号: {app["phone"]}')
+    else:
+      logger.info(f'审批拒绝: {app["phone"]} → {app.get("requested_roles", [])}, 原因: {reason}')
+
     app['_id'] = str(app['_id'])
+    app['status'] = ApplicationStatus.REJECTED.value
+    app['reviewer_id'] = reviewer_id
+    app['review_reason'] = reason
     return app
 
   # ==================== 审计 ====================

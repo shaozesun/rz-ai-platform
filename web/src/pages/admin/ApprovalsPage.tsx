@@ -233,7 +233,13 @@ export default function ApprovalsPage() {
                             : <span className="text-xs text-muted-foreground">-</span>}
                         </div>
                       </td>
-                      <td className="max-w-[150px] truncate px-4 py-2.5 text-muted-foreground">{a.reason}</td>
+                      <td className="max-w-[180px] px-4 py-2.5 text-muted-foreground">
+                        {a.reason === '新用户注册申请' ? (
+                          <Badge variant="warning">注册申请</Badge>
+                        ) : (
+                          <span className="truncate block max-w-[150px]">{a.reason || '-'}</span>
+                        )}
+                      </td>
                       <td className="px-4 py-2.5">{statusBadge(a.status)}</td>
                       <td className="px-4 py-2.5 text-xs text-muted-foreground">
                         {new Date(a.created_at).toLocaleString('zh-CN')}
