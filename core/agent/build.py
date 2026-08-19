@@ -2,12 +2,17 @@
 
 import logging
 from datetime import datetime
+from typing import TYPE_CHECKING
 
 from langchain.agents import create_agent
 from langgraph.checkpoint.memory import MemorySaver
 
 from core.agent.prompts import SYSTEM_PROMPT
 from core.agent.middlewares import apply_tool_middlewares
+from core.agent.state import RzAgentState
+
+if TYPE_CHECKING:
+  from langgraph.checkpoint.base import BaseCheckpointSaver
 
 logger = logging.getLogger(__name__)
 
@@ -19,6 +24,7 @@ def build_rz_agent(
   middleware: list | None = None,
   extra_prompt: str = '',
   raw_tools: list | None = None,
+  checkpointer: 'BaseCheckpointSaver | None' = None,
 ):
   """构建 RZ Agent 图。
 
@@ -27,9 +33,12 @@ def build_rz_agent(
     tools: 同步 @tool 工具列表，走异常包装中间件
     middleware: AgentMiddleware 列表（如 deferred tool filter）
     extra_prompt: 追加到系统提示词末尾的内容（如 <available-tools> 名单）
-    raw_tools: 不经异常包装的工具（async 工具 / 返回 Command 的 tool_search /
-      自身已有异常捕获的 deferred 工具）。同步 wrapper 会丢 coroutine、破坏
-      Command 语义，故这些走原样通道。
+    raw_tools: 不进「同步」异常包装的工具。analysis 工具在 agent_service 装配时已
+      单独套 async 错误包装（await 原 coroutine，异常转错误串喂回 LLM）；返回 Command
+      的 tool_search / 自身已有异常捕获的 deferred 工具走原样通道——同步 wrapper 会
+      丢 coroutine、破坏 Command 语义，不能包。
+    checkpointer: LangGraph Checkpointer 实例。默认 None→MemorySaver。
+      外部注入（如 AsyncPostgresSaver）以支持持久化/多进程。
 
   Returns:
     编译后的 LangGraph 图
@@ -51,7 +60,8 @@ def build_rz_agent(
   if extra_prompt:
     system_msg = system_msg + extra_prompt
 
-  checkpointer = MemorySaver()
+  if checkpointer is None:
+    checkpointer = MemorySaver()
 
   agent = create_agent(
     model=model,
@@ -59,10 +69,14 @@ def build_rz_agent(
     system_prompt=system_msg,
     middleware=middleware or [],
     checkpointer=checkpointer,
+    state_schema=RzAgentState,
   )
 
   logger.info(
-    'Agent 构建完成 tools=%d(raw=%d) middleware=%d',
-    len(all_tools), len(raw_tools or []), len(middleware or []),
+    'Agent 构建完成 tools=%d(raw=%d) middleware=%d checkpointer=%s',
+    len(all_tools),
+    len(raw_tools or []),
+    len(middleware or []),
+    type(checkpointer).__name__,
   )
   return agent

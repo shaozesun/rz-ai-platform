@@ -5,7 +5,8 @@
 接口就绪后仅需替换同目录 client.py 的实现，本文件与上层皆无需改动。
 
 说明：description 面向语义检索，需覆盖同义词与使用场景，直接影响 tool_search 命中率。
-intent_labels 供多标签编排的绑定表聚合；分类词汇表未定前留空，定了再回填即可。
+category 是 L2 功能分类（alarm/asset/capacity），意图路由与分类清单的统一词汇；
+intent_labels 留空，绑定表自动回退用 category（见 base/intent_bindings.py）。
 """
 
 from service.query.base.capability import Capability
@@ -25,6 +26,7 @@ CAPABILITIES: tuple[Capability, ...] = (
       'room': '机房或楼栋编号，如 A701、B103，也可只填栋号 A7；留空查所有',
       'severity': '告警级别 critical/warning/info；留空查所有级别',
     },
+    category='alarm',
     domain='alarm',
     kind='状态',
   ),
@@ -40,6 +42,7 @@ CAPABILITIES: tuple[Capability, ...] = (
       'start': '起始时间 ISO8601，如 2026-07-01',
       'end': '结束时间 ISO8601',
     },
+    category='alarm',
     domain='alarm',
     kind='状态',
   ),
@@ -55,6 +58,7 @@ CAPABILITIES: tuple[Capability, ...] = (
       'room': '机房或楼栋编号，用于按位置筛选',
       'type': '设备类型，如 UPS/精密空调/PDU',
     },
+    category='asset',
     domain='asset',
     kind='资源',
   ),
@@ -69,6 +73,7 @@ CAPABILITIES: tuple[Capability, ...] = (
       'room': '机房或楼栋编号；留空统计全部',
       'type': '设备类型；留空统计所有类型',
     },
+    category='asset',
     domain='asset',
     kind='资源',
   ),
@@ -82,6 +87,7 @@ CAPABILITIES: tuple[Capability, ...] = (
     params={
       'room': '机房或楼栋编号，如 A701；留空查所有机房汇总',
     },
+    category='capacity',
     domain='capacity',
     kind='资源',
   ),
@@ -96,6 +102,7 @@ CAPABILITIES: tuple[Capability, ...] = (
       'room': '机房或楼栋编号；留空查所有',
       'device_id': '设备编号，用于查单设备功率',
     },
+    category='capacity',
     domain='capacity',
     kind='状态',
   ),

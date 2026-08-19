@@ -2,8 +2,9 @@
 
 思路（B' 方案，融合两家之长）：
 - DeerFlow 的机制：工具是真 BaseTool，全进 ToolNode 供执行；但平时把未 promote 的
-  工具 schema 从 bind_tools 里过滤掉，LLM 只在 prompt 里看到工具名。LLM 调 tool_search
-  发现工具 → 返回完整 schema 并记入 state['promoted'] → 之后才能带强 schema 调用。
+  工具 schema 从 bind_tools 里过滤掉，LLM 只在 prompt 里看到分类清单。LLM 调
+  tool_search 发现工具 → 返回发现卡片并记入 state['promoted'] → 之后才能带强
+  schema 调用。
 - rz 的改进：tool_search 的检索不用 DeerFlow 原生的正则匹配，改用
   service/query/dcim/retriever.py 的 embedding 语义检索（命中同义/意图更准）。
 
@@ -28,6 +29,12 @@ from langgraph.types import Command
 from typing_extensions import TypedDict
 
 logger = logging.getLogger(__name__)
+
+
+def _truncate(text: str, limit: int) -> str:
+  """截断到 limit 字符内（含省略号），超长补 …（发现卡片里描述只留摘要）。"""
+  text = text or ''
+  return text if len(text) <= limit else text[:limit - 1] + '…'
 
 
 class PromotedTools(TypedDict):
@@ -150,11 +157,13 @@ class DeferredToolFilterMiddleware(AgentMiddleware):
 
 
 def build_tool_search(catalog: DeferredCatalog, top_k: int = 8) -> BaseTool:
-  """构建 tool_search 工具：embedding 语义检索 + 返回 schema + promote。
+  """构建 tool_search 工具：embedding 语义检索 + 返回发现卡片 + promote。
 
-  与 DeerFlow 的差异：检索复用 service/query/dcim/retriever.py 的语义检索
-  （embedding + 余弦），而非 DeerFlow 原生正则匹配。命中后返回完整 OpenAI
-  schema 并把工具名写入 state['promoted']，使其对 LLM 可见、可调。
+  与 DeerFlow 的差异：检索复用 service/query/base/retriever.py 的语义检索
+  （embedding + 余弦），而非 DeerFlow 原生正则匹配。命中后返回紧凑「发现卡片」
+  （P-3：不再返回完整 OpenAI schema——被 promote 的工具下一轮 model request 里
+  LangGraph 会自动带上它的完整 schema，这里只需告诉 LLM 发现了什么、可选哪个，
+  避免一次塞 3000-6000 token 进上下文），并把工具名写入 state['promoted']。
   """
   catalog_hash = catalog.hash
 
@@ -162,19 +171,28 @@ def build_tool_search(catalog: DeferredCatalog, top_k: int = 8) -> BaseTool:
   async def tool_search(query: str, tool_call_id: Annotated[str, InjectedToolCallId]) -> Command:
     """根据自然语言查询，发现并加载可用于回答的工具。
 
-    系统提示的 <available-tools> 里只列出工具名。调用本工具按语义检索匹配的工具，
-    返回其完整参数定义；返回后这些工具即可调用。
+    系统提示的 <available-tools> 里列出各平台的分类清单。调用本工具按语义检索
+    匹配的工具，返回其名称/简述/参数名；返回后这些工具即可调用（参数详说明在
+    下一轮模型请求里会随工具 schema 一起提供）。
 
     Args:
       query: 查询意图，如 'A7机房有哪些告警'、'机房容量还剩多少'
     """
+    from core.agent.user_context import get_current_user_id
+    from service.query.base.platform import get_capability
     from service.query.base.retriever import search_capabilities
     from service.query.base.tools_factory import capability_to_tool_name
 
     cap_ids = await search_capabilities(query, k=top_k)
+    current_user = get_current_user_id()
     # capability_id → 工具名 → catalog 里的真工具
     matched = []
     for cid in cap_ids:
+      cap = get_capability(cid)
+      # 用户自建技能只对本人生效：非本人技能在检索结果里过滤掉（不 promote、不进
+      # ToolMessage），实现运行期按用户隔离
+      if cap is not None and cap.owner and cap.owner != current_user:
+        continue
       t = catalog.by_name(capability_to_tool_name(cid))
       if t is not None:
         matched.append(t)
@@ -183,7 +201,11 @@ def build_tool_search(catalog: DeferredCatalog, top_k: int = 8) -> BaseTool:
       content, names = f'未找到匹配 "{query}" 的工具', []
     else:
       content = json.dumps(
-        [convert_to_openai_function(t) for t in matched],
+        [{
+          'name': t.name,
+          'description': _truncate(t.description, 80),
+          'params': list(getattr(t.args_schema, 'model_fields', {}).keys()),
+        } for t in matched],
         indent=2, ensure_ascii=False,
       )
       names = [t.name for t in matched]
@@ -213,14 +235,18 @@ def build_deferred_setup(deferred_tools: list[BaseTool], top_k: int = 8):
   return all_tools, mw, catalog.names, catalog.hash
 
 
-def deferred_tools_prompt(deferred_names: frozenset[str]) -> str:
-  """生成 <available-tools> 提示段，只列工具名，供 LLM 知道有哪些可 tool_search。"""
-  if not deferred_names:
+def deferred_tools_prompt(manifest: str) -> str:
+  """生成 <available-tools> 提示段，渲染分类清单（P-2：不再是全量工具名列表）。
+
+  清单只告诉 LLM「有哪些平台、各有哪些分类、每类覆盖什么」，引导它组织 tool_search
+  的搜索 query（按自然语言描述意图即可命中，无需提前知道确切工具名）。
+  """
+  if not manifest:
     return ''
-  names = '\n'.join(sorted(deferred_names))
   return (
     '\n\n<available-tools>\n'
-    '以下工具可用，但需先调用 tool_search 加载其参数定义后才能调用：\n'
-    f'{names}\n'
+    '平台工具默认隐藏，需先调用 tool_search 加载参数定义后再调用。'
+    '用自然语言描述要查的内容（如「查郭春磊的部门」「A7 机房告警」）。\n'
+    f'{manifest}\n'
     '</available-tools>'
   )

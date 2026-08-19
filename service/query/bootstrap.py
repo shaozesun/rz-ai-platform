@@ -28,6 +28,11 @@ def register_enabled_platforms() -> list[str]:
     from service.query.security.platform import security_platform
     register_platform(security_platform())
 
+  # skills 平台是纯本地文档能力（skills/<name>/SKILL.md 自动发现，无外部 API/连通性依赖），
+  # 无需 _ENABLED 开关，直接注册。接入新 skill 零代码：丢一个目录即可。
+  from service.query.skills.platform import register_skills_platform
+  register_platform(register_skills_platform())
+
   names = registered_platforms()
   logger.info('平台注册完成 platforms=%s', names)
   return names

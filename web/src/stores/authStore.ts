@@ -43,6 +43,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       permissions,
       isAuthenticated: true,
       initialized: true,
+      agentEnabled: user.agent_enabled === true,
     });
   },
 

@@ -68,6 +68,22 @@ class Settings(BaseSettings):
   LLM_MAX_RETRIES: int = 2
   LLM_TEMPERATURE: float = 0.7
 
+  # Agent 容错：事件流最大静默间隔（秒），防整轮挂起「一直调用中」。
+  # 必须大于 AGENT_LLM_TIMEOUT（否则 LLM 允许的慢流会被外层守卫先掐断）。
+  AGENT_EVENT_TIMEOUT: int = 360
+
+  # Agent 模型专属超时：报表流程里 LLM 携带大上下文推理，chunk 间隔远大于
+  # 普通对话的 LLM_TIMEOUT=60。单独配置避免 60s 就 ReadTimeout → 「回复生成中断」。
+  AGENT_LLM_TIMEOUT: int = 300
+  # 超时多是模型慢，重试整个流只会让用户等更久，1 次即止。
+  AGENT_LLM_MAX_RETRIES: int = 1
+
+  # Agent 单轮最大 super-step 数（模型调用 + 工具调用各计一步）。
+  # 默认 25 偏紧：报表流程（数据拉取 → analysis_load → 多次 exec/write/str_replace
+  # 迭代）会超过。放宽到 100 给足余量；真正的死循环由 LoopDetector 拦截
+  # （连续相同调用 ≥5 / 单工具累计 ≥20 即中止），不受此影响。
+  AGENT_RECURSION_LIMIT: int = 100
+
   # ==================== 日志 ====================
   LOG_LEVEL: str = 'INFO'
   LOG_DIR: str = 'logs'
@@ -207,6 +223,63 @@ class Settings(BaseSettings):
   # ==================== Agent ====================
   AGENT_ENABLED: bool = False     # 总开关，默认关闭，开发环境手动开启
 
+  # ==================== Agent Checkpointer (参照 DeerFlow database 块) ====================
+  # 后端类型: 'memory' | 'postgres'
+  AGENT_CHECKPOINT_BACKEND: str = 'memory'
+
+  # PostgreSQL 连接 DSN（仅 postgres 后端需要）
+  AGENT_CHECKPOINT_POSTGRES_URL: str = ''
+
+  # Checkpoint 存储模式（参照 DeerFlow checkpoint_channel_mode）
+  # 'full' — 全量快照（默认）；'delta' — 增量存储，长对话大幅降低存储开销
+  AGENT_CHECKPOINT_CHANNEL_MODE: str = 'full'
+
+  # Delta 模式全量快照间隔（参照 DeerFlow checkpoint_delta_snapshot_frequency）
+  AGENT_CHECKPOINT_DELTA_SNAPSHOT_FREQUENCY: int = 1000
+
+  # ==================== Agent 摘要压缩（参照 DeerFlow summarization 块） ====================
+  # 总开关
+  AGENT_SUMMARIZE_ENABLED: bool = True
+
+  # 触发条件（OR 逻辑，命中任一即触发压缩）
+  # 格式: "type:value"，如 "tokens:32000" / "messages:50" / "fraction:0.8"
+  # 多个条件逗号分隔，示例: "tokens:32000,fraction:0.8"
+  AGENT_SUMMARIZE_TRIGGER: str = 'tokens:32000'
+
+  # 保留近期上下文策略
+  # 格式: "type:value"，如 "messages:10" / "tokens:3000" / "fraction:0.3"
+  AGENT_SUMMARIZE_KEEP: str = 'messages:10'
+
+  # 送给摘要模型的 token 上限（参照 DeerFlow trim_tokens_to_summarize）
+  AGENT_SUMMARIZE_TRIM_TOKENS: int = 4000
+
+  # 自定义摘要 prompt（空 = 使用默认 prompt）
+  AGENT_SUMMARIZE_PROMPT: str = ''
+
+  # 工具输出进上下文前封顶：page_size 上限 + 单条工具结果最大字符数
+  AGENT_MAX_PAGE_SIZE: int = 20
+  AGENT_MAX_TOOL_OUTPUT_CHARS: int = 12000  # ≈6k token；紧凑序列化后正常/较宽 20 条页面全量放得下
+
+  # ==================== Agent 数据分析沙箱（参照 DifySandbox / DeerFlow 模式） ====================
+  AGENT_ANALYSIS_ENABLED: bool = False        # 总开关，默认关闭
+  AGENT_ANALYSIS_DATA_DIR: str = str(Path(__file__).parent.parent / 'data' / 'analysis')
+  AGENT_ANALYSIS_TIMEOUT: int = 30            # 单次代码执行超时（秒）
+  AGENT_ANALYSIS_MAX_ROWS: int = 10000        # 单数据集最大行数（全量拉取上限）
+  AGENT_ANALYSIS_PAGE_SIZE: int = 100         # 拉取平台数据的分页大小
+  AGENT_ANALYSIS_MAX_MEMORY_MB: int = 512     # 沙箱子进程内存上限
+  AGENT_ANALYSIS_MAX_OUTPUT_CHARS: int = 4000 # 单次执行返回结果上限
+  AGENT_ANALYSIS_MAX_DATASETS_PER_SESSION: int = 20
+  AGENT_ANALYSIS_MAX_ARTIFACT_MB: int = 20     # 单产物大小上限（MB），超限剔除
+  AGENT_ANALYSIS_MAX_ARTIFACTS: int = 10       # 单次执行产物数量上限，超限保留最近的
+  # 沙箱内报告中文字体（捆绑的文泉驿微米黑 .ttc，跨平台；经 RZ_CJK_FONT env 传给沙箱脚本）
+  RZ_CJK_FONT: str = str(Path(__file__).parent.parent / 'assets' / 'fonts' / 'wqy-microhei.ttc')
+  # WeasyPrint 依赖的 Pango/Cairo 动态库搜索路径（非系统默认位置时配置，如 conda env 的 lib 目录；
+  # 注入 DYLD_LIBRARY_PATH/LD_LIBRARY_PATH。Linux/Docker 下 apt 装系统库则留空）
+  AGENT_ANALYSIS_EXTRA_LIB_PATH: str = ''
+
+  # ==================== Agent 用户自建技能（复刻 DeerFlow skill-creator） ====================
+  AGENT_SKILL_LLM_SCAN: bool = True  # skill_manage 写盘前 LLM 语义安全扫描开关（fail-closed）
+
   # ==================== DCIM 集成 ====================
   DCIM_ENABLED: bool = False           # DCIM 门面工具开关，默认关闭
   DCIM_BASE_URL: str = ''              # DCIM API 基地址（真实接口就绪后配置）
@@ -217,11 +290,14 @@ class Settings(BaseSettings):
   # ==================== 综合管理平台集成 ====================
   MGMT_ENABLED: bool = False           # 综合管理平台开关，默认关闭
   MGMT_BASE_URL: str = ''              # 综合管理平台 API 基地址
+  MGMT_INSPECTION_BASE_URL: str = ''   # 巡检服务 API 基地址（根路径 /inspection，无 /center 前缀）
   MGMT_API_TOKEN: str = ''             # 服务级访问 token（若后端提供，跳过登录）
   MGMT_USERNAME: str = ''              # 登录账号（服务账号，最高权限）
   MGMT_PASSWORD: str = ''              # 登录密码
   MGMT_TOKEN_TTL: int = 3600           # token + deptId 缓存秒数
   MGMT_TIMEOUT: int = 30               # 调用超时（秒）
+  MGMT_PEN_BASE_URL: str = ''          # pen 流程服务 API 基地址（如 https://api.ddbes.com，mgmt 能力延伸，非新平台）
+  MGMT_PEN_TOKEN_TTL: int = 3600       # pen 人员 token 缓存秒数（失效由 401 重登兜底）
 
   # ==================== 安防平台集成 ====================
   # 占位注册：暂无接口文档，capabilities 为空元组，client.call 直接抛异常。

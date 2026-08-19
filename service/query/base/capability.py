@@ -22,17 +22,24 @@ class Capability:
     name: 简短中文名，用于展示。
     description: 自然语言描述，检索质量的关键——写清「能查什么、什么场景用」。
     params: 参数 schema，{参数名: 说明}，供 Agent 组织调用入参。
-    domain: 业务域（alarm/asset/capacity/...），便于分组与过滤。
+    category: L2 功能分类（org/device/work_order/...，按平台定义的闭合词汇表）。
+      意图路由与分类清单（<available-tools>）的统一词汇；intent_labels 为空时
+      绑定表回退用它。
+    domain: L3 业务域（alarm/asset/capacity/...），分类下的子层，便于分组过滤。
     kind: 能力类型（检索/状态/资源/动作），供编排层区分处理（如动作类需二次确认）。
-    intent_labels: 归属的意图标签（闭合词汇表），供绑定表聚合；分类未定前留空。
+    intent_labels: 归属的意图标签（闭合词汇表），供绑定表聚合；为空则回退 category。
     required_perm: 调用所需权限，留空表示继承门面工具的权限。
+    owner: 归属用户 id，空串 = 公开能力（所有用户可见可调）；非空 = 用户自建能力，
+      仅 owner 本人可见可调（tool_search 过滤 / caller 校验 / 清单路由跳过）。
   """
 
   id: str
   name: str
   description: str
   params: dict[str, str] = field(default_factory=dict)
+  category: str = ''
   domain: str = ''
   kind: str = ''
   intent_labels: tuple[str, ...] = ()
   required_perm: str = ''
+  owner: str = ''

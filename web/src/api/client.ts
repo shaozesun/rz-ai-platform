@@ -157,5 +157,33 @@ function initTokenRefresh(): void {
   }
 }
 
-export { client, setAuth, clearAuth, getAccessToken, initTokenRefresh };
+/**
+ * 流式请求（裸 fetch，绕不过 axios 拦截器）遇到 401 时复用同一套刷新逻辑。
+ * 与拦截器的单飞队列共享，避免并发刷新；刷新失败则登出跳转并返回 null。
+ */
+async function refreshAccessToken(): Promise<string | null> {
+  if (isRefreshing) {
+    return new Promise((resolve) => {
+      pendingQueue.push((token: string) => resolve(token || null));
+    });
+  }
+
+  isRefreshing = true;
+  try {
+    const newToken = await doRefresh();
+    if (!newToken) throw new Error('No refresh token');
+    processQueue(newToken);
+    return newToken;
+  } catch {
+    clearRefreshTimer();
+    clearAuth();
+    rejectQueue('');
+    window.location.replace('/login');
+    return null;
+  } finally {
+    isRefreshing = false;
+  }
+}
+
+export { client, setAuth, clearAuth, getAccessToken, initTokenRefresh, refreshAccessToken };
 export default client;

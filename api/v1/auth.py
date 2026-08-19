@@ -16,6 +16,16 @@ from config.redis_conn import redis_manager
 router = APIRouter(prefix='/auth')
 
 
+def _inject_agent_enabled(user_info: dict) -> dict:
+  """agent 是否对当前用户可用：全局开关开启且该用户有 ai:agent 权限。
+
+  前端按此字段分流（走 Agent 还是 RAG），普通用户无 ai:agent 时保持 RAG。
+  """
+  has_perm = 'ai:agent' in (user_info.get('permissions') or [])
+  user_info['agent_enabled'] = settings.AGENT_ENABLED and has_perm
+  return user_info
+
+
 # ==================== Pillow 图形验证码 ====================
 
 def _generate_captcha_image() -> tuple[str, str]:
@@ -182,6 +192,7 @@ async def login(body: LoginRequest, request: Request):
   ip = request.client.host if request.client else ''
   try:
     result = await auth_service.login(body.phone, body.password, ip)
+    result['user'] = _inject_agent_enabled(result['user'])
     return {
       'ok': True,
       'data': result,
@@ -225,7 +236,7 @@ async def get_me(request: Request):
   """获取当前用户信息 (需登录)"""
   user_id = request.state.user_id
   user_info = await auth_service.get_current_user_info(user_id)
-  user_info['agent_enabled'] = settings.AGENT_ENABLED
+  user_info = _inject_agent_enabled(user_info)
   return {'ok': True, 'data': user_info}
 
 

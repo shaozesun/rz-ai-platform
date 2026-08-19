@@ -9,6 +9,7 @@ export interface User {
   status: 'ACTIVE' | 'DISABLED';
   roles: string[];
   permissions: string[];
+  agent_enabled?: boolean;
   created_at: string;
 }
 
@@ -40,6 +41,30 @@ export interface Message {
   content: string;
   created_at: string;
 }
+
+export interface PlanStep {
+  title: string;
+  description: string;
+}
+
+export interface ExecutionPlan {
+  goal: string;
+  steps: PlanStep[];
+}
+
+export interface InterviewOption {
+  value: string;
+  label: string;
+  recommended?: boolean;
+}
+
+export interface InterviewQuestion {
+  id: string;
+  question: string;
+  options: InterviewOption[];
+}
+
+export type InterviewAnswers = Record<string, string>;
 
 export interface HazardItem {
   category: string;

@@ -14,6 +14,12 @@ numpy>=1.24.0
 Pillow>=10.0.0
 # Report generation
 python-docx>=1.1.0
+# Agent 沙箱产物生成（PDF 报告；CSV/Excel/PPT 由 pandas+openpyxl / python-pptx 提供）
+reportlab>=4.0.0
+# 沙箱内生成图表 PNG，嵌入 PPT/PDF 报告（预渲染图片，参照 DeerFlow）
+matplotlib>=3.8.0
+# 沙箱内 PDF 报告（HTML+CSS→PDF，效果优于 reportlab；需系统库 libpango/cairo/gdk-pixbuf）
+weasyprint>=61.0
 # RAG / Repository
 langchain-core>=0.3.0
 langgraph
@@ -28,3 +34,7 @@ jieba>=0.42
 beautifulsoup4>=4.12
 edge-tts>=6.1
 python-pptx>=0.6.21
+# Agent Checkpoint (PostgreSQL)
+langgraph-checkpoint-postgres>=3.0.0
+psycopg[binary]>=3.2.0
+psycopg-pool>=3.2.0

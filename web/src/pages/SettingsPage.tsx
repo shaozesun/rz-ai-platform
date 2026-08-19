@@ -1,11 +1,14 @@
 import { useState, useRef } from 'react';
-import { User, Bell, Trash2, Save, Camera } from 'lucide-react';
+import { User, Bell, BellRing, Trash2, Save, Camera } from 'lucide-react';
 import { PlatformShell } from '@/components/platform-shell';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { useAuthStore } from '@/stores/authStore';
 import { updateProfile } from '@/api/auth';
+import {
+  BROWSER_NOTIFY_KEY, isNotificationSupported, requestPermission, showNotification,
+} from '@/lib/notifications';
 
 const NOTIFY_KEY = 'rz_notify_enabled';
 
@@ -39,7 +42,6 @@ export default function SettingsPage() {
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const [name, setName] = useState(user?.name || '');
-  const [phone, setPhone] = useState(user?.phone || '');
   const [avatar, setAvatar] = useState(user?.avatar || '');
   const [avatarPreview, setAvatarPreview] = useState(user?.avatar || '');
   const [saving, setSaving] = useState(false);
@@ -51,6 +53,14 @@ export default function SettingsPage() {
     return stored !== 'false';
   });
 
+  const [browserNotifyEnabled, setBrowserNotifyEnabled] = useState(() => {
+    const stored = localStorage.getItem(BROWSER_NOTIFY_KEY);
+    return stored !== 'false';
+  });
+  const [permission, setPermission] = useState<NotificationPermission>(() =>
+    isNotificationSupported() ? Notification.permission : 'denied',
+  );
+
   const showMsg = (text: string, type: 'success' | 'error' = 'success') => {
     setMsg(text);
     setMsgType(type);
@@ -61,7 +71,7 @@ export default function SettingsPage() {
     if (!name.trim()) { showMsg('请输入姓名', 'error'); return; }
     setSaving(true);
     try {
-      const res = await updateProfile({ name: name.trim(), phone: phone.trim(), avatar });
+      const res = await updateProfile({ name: name.trim(), avatar });
       if (res.ok) {
         updateUser(res.data);
         setAvatarPreview(avatar);
@@ -90,6 +100,20 @@ export default function SettingsPage() {
     const next = !notifyEnabled;
     setNotifyEnabled(next);
     localStorage.setItem(NOTIFY_KEY, String(next));
+  };
+
+  const toggleBrowserNotify = () => {
+    const next = !browserNotifyEnabled;
+    setBrowserNotifyEnabled(next);
+    localStorage.setItem(BROWSER_NOTIFY_KEY, String(next));
+  };
+
+  const handleRequestPermission = async () => {
+    setPermission(await requestPermission());
+  };
+
+  const sendTestNotification = () => {
+    showNotification('测试通知', '浏览器通知功能正常');
   };
 
   const handleClearCache = () => {
@@ -154,12 +178,9 @@ export default function SettingsPage() {
             </div>
             <div>
               <label className="text-sm font-medium text-foreground">手机号</label>
-              <Input
-                className="mt-1.5"
-                placeholder="请输入手机号"
-                value={phone}
-                onChange={(e) => setPhone(e.target.value)}
-              />
+              <p className="mt-1.5 rounded-md border border-border bg-muted/50 px-3 py-2 text-sm text-muted-foreground">
+                {user?.phone || '未设置'}
+              </p>
             </div>
             <div className="flex items-center justify-between">
               {msg && (
@@ -207,6 +228,67 @@ export default function SettingsPage() {
                 />
               </button>
             </div>
+          </CardContent>
+        </Card>
+
+        {/* Browser notifications */}
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <BellRing className="size-4" />
+              浏览器通知
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm font-medium text-foreground">任务完成通知</p>
+                <p className="text-xs text-muted-foreground mt-0.5">
+                  切到其它页面后，对话/看板生成完成时通过浏览器发送通知
+                </p>
+              </div>
+              <button
+                onClick={toggleBrowserNotify}
+                className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors ${
+                  browserNotifyEnabled ? 'bg-primary' : 'bg-muted'
+                }`}
+              >
+                <span
+                  className={`inline-block size-4 transform rounded-full bg-white transition-transform ${
+                    browserNotifyEnabled ? 'translate-x-6' : 'translate-x-1'
+                  }`}
+                />
+              </button>
+            </div>
+
+            <div className="flex items-center justify-between border-t border-border pt-4">
+              <div>
+                <p className="text-sm font-medium text-foreground">通知权限</p>
+                <p className="text-xs text-muted-foreground mt-0.5">
+                  {permission === 'granted' && '已授权，可接收浏览器通知'}
+                  {permission === 'denied' && '已拒绝，需在浏览器站点设置中重新开启'}
+                  {permission === 'default' && '尚未设置，点击右侧按钮向浏览器申请'}
+                </p>
+              </div>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={handleRequestPermission}
+                disabled={permission === 'granted' || !isNotificationSupported()}
+              >
+                {permission === 'granted' ? '已授权' : '请求权限'}
+              </Button>
+            </div>
+
+            <Button
+              size="sm"
+              variant="secondary"
+              onClick={sendTestNotification}
+              disabled={permission !== 'granted'}
+            >
+              <BellRing className="size-3.5" />
+              发送测试通知
+            </Button>
           </CardContent>
         </Card>
 

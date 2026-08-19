@@ -4,7 +4,10 @@ import logging
 from langgraph.graph import StateGraph
 
 from core.agent.state import RzAgentState
-from core.agent.middlewares.tool_error import wrap_tool_with_error_handling
+from core.agent.middlewares.tool_error import (
+  wrap_async_tool_with_error_handling,
+  wrap_tool_with_error_handling,
+)
 
 logger = logging.getLogger(__name__)
 

@@ -345,7 +345,7 @@ class ModelGateway:
     )
     return scores
 
-  def as_langchain_model(self, model_name: str | None = None):
+  def as_langchain_model(self, model_name: str | None = None, temperature: float | None = None):
     """返回 LangChain BaseChatModel，供 langgraph Agent 使用"""
     from langchain_openai import ChatOpenAI
 
@@ -354,9 +354,9 @@ class ModelGateway:
       base_url=str(self._chat_client.base_url) if self._chat_client else '',
       api_key=settings.LLM_API_KEY,
       model=name,
-      temperature=settings.LLM_TEMPERATURE,
-      timeout=settings.LLM_TIMEOUT,
-      max_retries=settings.LLM_MAX_RETRIES,
+      temperature=temperature if temperature is not None else settings.LLM_TEMPERATURE,
+      timeout=settings.AGENT_LLM_TIMEOUT,
+      max_retries=settings.AGENT_LLM_MAX_RETRIES,
       extra_body={'chat_template_kwargs': {'enable_thinking': False}},
     )
 

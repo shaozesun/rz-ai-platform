@@ -1,5 +1,20 @@
-import client, { getAccessToken } from './client';
-import type { Session, Message } from '../types';
+import client, { getAccessToken, refreshAccessToken } from './client';
+import type { Session, Message, ExecutionPlan, InterviewAnswers, InterviewQuestion } from '../types';
+
+// 流式请求用裸 fetch（SSE 需 ReadableStream，axios 浏览器端不便流式），绕过了 axios
+// 的 401 拦截器。这里统一走 refreshAccessToken 复用刷新单飞队列：401 时刷新一次重试，
+// 刷新失败由 refreshAccessToken 登出跳转并返回 null，原 401 交上层 onError 兜底。
+async function fetchWithAuth(url: string, init: RequestInit = {}): Promise<Response> {
+  const headers = { ...(init.headers || {}), Authorization: `Bearer ${getAccessToken()}` };
+  let res = await fetch(url, { ...init, headers });
+  if (res.status === 401) {
+    const newToken = await refreshAccessToken();
+    if (newToken) {
+      res = await fetch(url, { ...init, headers: { ...headers, Authorization: `Bearer ${newToken}` } });
+    }
+  }
+  return res;
+}
 
 export async function getSessions(): Promise<Session[]> {
   const { data } = await client.get('/chat/sessions');
@@ -57,17 +72,13 @@ export function chatStream(
   groupId: string = 'default',
 ): AbortController {
   const controller = new AbortController();
-  const token = getAccessToken();
 
   const params = new URLSearchParams({ session_id: sessionId, group_id: groupId });
   const url = `/api/v1/chat?${params}`;
 
-  fetch(url, {
+  fetchWithAuth(url, {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${token}`,
-    },
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ text }),
     signal: controller.signal,
   })
@@ -116,6 +127,16 @@ export function chatStream(
   return controller;
 }
 
+export interface AgentStreamOptions {
+  interactionMode?: string;
+  planConfirmed?: boolean;
+  plan?: ExecutionPlan | null;
+  onPlan?: (plan: ExecutionPlan) => void;
+  interviewAnswers?: InterviewAnswers | null;
+  interviewAction?: string | null;
+  onInterview?: (questions: InterviewQuestion[]) => void;
+}
+
 // Agent 流式对话
 export function agentStream(
   sessionId: string,
@@ -123,23 +144,28 @@ export function agentStream(
   onChunk: (text: string) => void,
   onToolCall: (name: string, args: Record<string, unknown>) => void,
   onToolResult: (name: string, result: string) => void,
+  onStatus: (tool: string, message: string) => void,
   onDone: () => void,
   onError: (err: Error) => void,
   groupId: string = 'default',
+  options?: AgentStreamOptions,
 ): AbortController {
   const controller = new AbortController();
-  const token = getAccessToken();
 
   const params = new URLSearchParams({ session_id: sessionId, group_id: groupId });
   const url = `/api/v1/chat/agent?${params}`;
 
-  fetch(url, {
+  fetchWithAuth(url, {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${token}`,
-    },
-    body: JSON.stringify({ message: text }),
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      message: text,
+      interaction_mode: options?.interactionMode ?? 'trust',
+      plan_confirmed: options?.planConfirmed ?? false,
+      plan: options?.plan ?? null,
+      interview_answers: options?.interviewAnswers ?? null,
+      interview_action: options?.interviewAction ?? null,
+    }),
     signal: controller.signal,
   })
     .then(async (res) => {
@@ -167,6 +193,12 @@ export function agentStream(
               onToolCall(data.name || '', data.args || {});
             } else if (event === 'tool_result') {
               onToolResult(data.name || '', data.result || '');
+            } else if (event === 'status') {
+              onStatus(data.tool || '', data.message || '');
+            } else if (event === 'interview') {
+              options?.onInterview?.(data.questions || []);
+            } else if (event === 'plan') {
+              options?.onPlan?.(data as ExecutionPlan);
             } else if (event === 'error') {
               onChunk(`\n\n> ⚠️ ${data.message || '未知错误'}\n\n`);
             } else if (event === 'done') {
@@ -196,17 +228,13 @@ export function chatNoRagStream(
   onError: (err: Error) => void,
 ): AbortController {
   const controller = new AbortController();
-  const token = getAccessToken();
 
   const params = new URLSearchParams({ session_id: sessionId });
   const url = `/api/v1/chat/no-rag?${params}`;
 
-  fetch(url, {
+  fetchWithAuth(url, {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${token}`,
-    },
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ text }),
     signal: controller.signal,
   })

@@ -81,6 +81,10 @@ async def lifespan(app: FastAPI):
   yield
   mongodb_manager.close()
   redis_manager.close()
+  # Agent Checkpointer 清理（PostgreSQL 模式需关闭连接池）
+  if settings.AGENT_ENABLED:
+    from service.agent.agent_service import AgentService
+    await AgentService().teardown()
   logger.info('服务关闭')
 
 
