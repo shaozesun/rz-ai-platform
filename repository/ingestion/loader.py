@@ -516,18 +516,120 @@ def _load_pdf_cached(file_path: str) -> list[Document]:
 
 
 def _load_pdf_uncached(file_path: str) -> list[Document]:
-    """加载 PDF：优先使用 MinerU API，其次 CLI，失败降级到 pypdf"""
+    """加载 PDF：优先本地 mineru-api，其次云端，再 CLI，失败降级 pypdf"""
     if settings.MINERU_ENABLED:
+        if settings.MINERU_LOCAL_API_URL:
+            try:
+                return _load_pdf_mineru_local_api(file_path)
+            except Exception as e:
+                logger.warning("MinerU 本地 API 解析失败，尝试其他方式: %s", e)
         if settings.MINERU_API_BASE:
             try:
                 return _load_pdf_mineru_api(file_path)
             except Exception as e:
-                logger.warning("MinerU API 解析失败，尝试 CLI: %s", e)
+                logger.warning("MinerU 云端 API 解析失败，尝试 CLI: %s", e)
         try:
             return _load_pdf_mineru(file_path)
         except Exception as e:
             logger.warning("MinerU 解析失败，降级到 pypdf: %s", e)
     return _load_pdf_pypdf(file_path)
+
+
+def _mineru_api_lang() -> str:
+    """mineru-api / CLI 语言码：zh 映射为 ch。"""
+    lang = (settings.MINERU_LANG or "ch").strip()
+    return "ch" if lang == "zh" else lang
+
+
+def _mineru_local_file_parse_data() -> dict:
+    """构建本地 mineru-api /file_parse 表单字段。"""
+    data = {
+        "return_md": "true",
+        "return_images": "true",
+        "backend": settings.MINERU_BACKEND,
+    }
+    # lang_list 仅 pipeline 后端需要；vlm-engine 传 zh 会 400
+    if settings.MINERU_BACKEND == "pipeline":
+        data["lang_list"] = _mineru_api_lang()
+    return data
+
+
+def _load_pdf_mineru_local_api(file_path: str) -> list[Document]:
+    """通过自建 mineru-api (POST /file_parse) 解析 PDF（对齐云端 vlm + 图片后处理）。"""
+    import base64
+    import tempfile
+    import requests
+
+    api_base = settings.MINERU_LOCAL_API_URL.rstrip("/")
+    file_name = Path(file_path).name
+    file_size = Path(file_path).stat().st_size
+
+    logger.info(
+        "MinerU 本地 API 开始解析: %s (%.1f MB) -> %s backend=%s",
+        file_name, file_size / 1024 / 1024, api_base, settings.MINERU_BACKEND,
+    )
+
+    with open(file_path, "rb") as f:
+        files = [("files", (file_name, f, "application/pdf"))]
+        data = _mineru_local_file_parse_data()
+        resp = requests.post(
+            f"{api_base}/file_parse",
+            files=files,
+            data=data,
+            timeout=settings.MINERU_TIMEOUT,
+        )
+
+    if resp.status_code != 200:
+        raise RuntimeError(
+            f"本地 mineru-api 失败: HTTP {resp.status_code} {resp.text[:300]}"
+        )
+
+    payload = resp.json()
+    results = payload.get("results") or {}
+    if not results:
+        raise RuntimeError(f"本地 mineru-api 无 results: {str(payload)[:300]}")
+
+    first = next(iter(results.values()))
+    markdown_text = first.get("md_content") or first.get("md") or ""
+    if not markdown_text:
+        raise RuntimeError("本地 mineru-api 未返回 md_content")
+
+    _debug_dir = Path(settings.UPLOAD_DIR).parent / "debug_mineru_output"
+    _debug_dir.mkdir(exist_ok=True)
+    _debug_stem = Path(file_path).stem
+    (_debug_dir / f"{_debug_stem}_01_raw.md").write_text(markdown_text, encoding="utf-8")
+
+    with tempfile.TemporaryDirectory(prefix="mineru_local_") as tmpdir:
+        md_dir = Path(tmpdir)
+        images_dir = md_dir / "images"
+        images_dir.mkdir(parents=True, exist_ok=True)
+
+        for img_name, img_data in (first.get("images") or {}).items():
+            raw = img_data
+            if isinstance(raw, str) and "," in raw and raw.startswith("data:"):
+                raw = raw.split(",", 1)[1]
+            try:
+                safe_name = Path(str(img_name)).name
+                (images_dir / safe_name).write_bytes(base64.b64decode(raw))
+            except Exception as e:
+                logger.warning("写入 MinerU 图片失败 %s: %s", img_name, e)
+
+        processed_md = _process_markdown_images(markdown_text, md_dir=md_dir)
+        (_debug_dir / f"{_debug_stem}_02_processed.md").write_text(
+            processed_md, encoding="utf-8"
+        )
+        cleaned = clean_text(processed_md)
+        (_debug_dir / f"{_debug_stem}_03_cleaned.md").write_text(cleaned, encoding="utf-8")
+
+    docs = [Document(
+        page_content=cleaned,
+        metadata={"source": file_path, "parser": "mineru_local_api"},
+    )]
+    logger.info(
+        "MinerU 本地 API 解析完成: %s → markdown %d chars",
+        file_name, len(cleaned),
+    )
+    return docs
 
 
 def _load_pdf_mineru_api(file_path: str) -> list[Document]:
@@ -710,7 +812,7 @@ def _load_pdf_mineru(file_path: str) -> list[Document]:
             "-p", file_path,
             "-o", tmpdir,
             "-b", settings.MINERU_BACKEND,
-            "-l", settings.MINERU_LANG,
+            "-l", _mineru_api_lang(),
         ]
         result = subprocess.run(
             cmd,

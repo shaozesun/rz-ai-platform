@@ -43,11 +43,13 @@ export default function UsersPage() {
   const isSelf = (u: AdminUser) => u.user_id === currentUser?.user_id;
 
   const canEditUser = (u: AdminUser) => {
+    if (u.status === 'PENDING') return false;
     if (isProtected(u) && !isProtectedOperator) return false;
     return true;
   };
 
   const canChangeStatus = (u: AdminUser) => {
+    if (u.status === 'PENDING') return false; // 待审批用户须走审批中心
     if (isSelf(u)) return false;
     if (isProtected(u) && !isProtectedOperator) return false;
     return true;
@@ -125,6 +127,7 @@ export default function UsersPage() {
           onChange={(e) => { setStatusFilter(e.target.value); setPage(1); }}
         >
           <option value="">全部状态</option>
+          <option value="PENDING">待审批</option>
           <option value="ACTIVE">正常</option>
           <option value="DISABLED">已禁用</option>
         </select>
@@ -165,8 +168,12 @@ export default function UsersPage() {
                         </Badge>
                       </td>
                       <td className="px-4 py-2.5">
-                        <Badge variant={u.status === 'ACTIVE' ? 'success' : 'destructive'}>
-                          {u.status === 'ACTIVE' ? '正常' : '已禁用'}
+                        <Badge variant={
+                          u.status === 'ACTIVE' ? 'success'
+                            : u.status === 'PENDING' ? 'warning'
+                              : 'destructive'
+                        }>
+                          {u.status === 'ACTIVE' ? '正常' : u.status === 'PENDING' ? '待审批' : '已禁用'}
                         </Badge>
                       </td>
                       <td className="px-4 py-2.5">
@@ -187,23 +194,29 @@ export default function UsersPage() {
                       </td>
                       <td className="px-4 py-2.5">
                         <div className="flex gap-1.5">
-                          {canEditUser(u) ? (
-                            <Button size="xs" variant="outline" onClick={() => setEditModal({
-                              user: u,
-                              roles: [...u.roles],
-                              permissions: [...(u.direct_permissions || [])],
-                            })}>
-                              编辑权限
-                            </Button>
+                          {u.status === 'PENDING' ? (
+                            <span className="text-xs text-muted-foreground">请至审批中心处理</span>
                           ) : (
-                            <span className="text-xs text-muted-foreground">—</span>
-                          )}
-                          {canChangeStatus(u) && (
-                            u.status === 'ACTIVE' ? (
-                              <Button size="xs" variant="destructive" onClick={() => handleStatusChange(u.user_id, 'DISABLED')}>禁用</Button>
-                            ) : (
-                              <Button size="xs" onClick={() => handleStatusChange(u.user_id, 'ACTIVE')}>启用</Button>
-                            )
+                            <>
+                              {canEditUser(u) ? (
+                                <Button size="xs" variant="outline" onClick={() => setEditModal({
+                                  user: u,
+                                  roles: [...u.roles],
+                                  permissions: [...(u.direct_permissions || [])],
+                                })}>
+                                  编辑权限
+                                </Button>
+                              ) : (
+                                <span className="text-xs text-muted-foreground">—</span>
+                              )}
+                              {canChangeStatus(u) && (
+                                u.status === 'ACTIVE' ? (
+                                  <Button size="xs" variant="destructive" onClick={() => handleStatusChange(u.user_id, 'DISABLED')}>禁用</Button>
+                                ) : (
+                                  <Button size="xs" onClick={() => handleStatusChange(u.user_id, 'ACTIVE')}>启用</Button>
+                                )
+                              )}
+                            </>
                           )}
                         </div>
                       </td>

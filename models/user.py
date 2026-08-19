@@ -14,8 +14,9 @@ class UserType(str, Enum):
 
 
 class UserStatus(str, Enum):
-  ACTIVE = 'ACTIVE'
-  DISABLED = 'DISABLED'
+  PENDING = 'PENDING'    # 注册待审批
+  ACTIVE = 'ACTIVE'      # 已通过，可登录
+  DISABLED = 'DISABLED'  # 启用后被禁用
 
 
 class ApplicationStatus(str, Enum):
@@ -52,8 +53,8 @@ class User(BaseModel):
   email: Optional[str] = None
   company: Optional[str] = None
   user_type: UserType = UserType.UNVERIFIED
-  status: UserStatus = UserStatus.ACTIVE
-  roles: list[str] = ['user']
+  status: UserStatus = UserStatus.PENDING
+  roles: list[str] = []
   permissions: list[str] = []
   created_at: datetime = Field(default_factory=datetime.utcnow)
   last_login_at: Optional[datetime] = None
