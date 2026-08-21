@@ -7,7 +7,7 @@ import logging
 from pathlib import Path
 from urllib.parse import quote
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 
 from core.rbac import require_permission
@@ -93,6 +93,7 @@ async def agent_chat(
       plan=body.plan,
       interview_answers=body.interview_answers,
       interview_action=body.interview_action,
+      uploaded_filenames=body.uploaded_filenames,
     ),
     media_type='text/event-stream; charset=utf-8',
     headers={
@@ -101,6 +102,67 @@ async def agent_chat(
       'X-Accel-Buffering': 'no',
     },
   )
+
+
+@router.post('/agent/uploads')
+@require_permission('ai:agent')
+async def upload_agent_files(
+  request: Request,
+  session_id: str = Query(..., description='会话 ID'),
+  files: list[UploadFile] = File(...),
+):
+  """上传文件到 Agent 对话（会话级持久化，不跨会话共享）。
+
+  鉴权：登录（全局 AuthMiddleware）+ `ai:agent` 权限 + 会话归属校验（同 agent_chat）。
+  返回的 filename 供下一条消息的 AgentRequest.uploaded_filenames 引用，触发
+  <current_uploads> 自动注入（见 streaming.py）。
+  """
+  if not files:
+    return JSONResponse(status_code=400, content={'ok': False, 'msg': '未提供文件'})
+
+  user_id = request.state.user_id
+
+  # 会话归属校验：与 agent_chat 一致，不存在或属于他人均拒绝（上传不负责建会话）
+  from service.rag.conversation.session_service import session_service
+  session = await session_service.get_session(session_id)
+  if session is None:
+    return JSONResponse(status_code=404, content={'ok': False, 'msg': '会话不存在'})
+  if session.user_id != user_id:
+    return JSONResponse(status_code=403, content={'ok': False, 'msg': '无权访问该会话'})
+
+  thread_id = f'rz-agent-{session_id}'
+
+  from core.sandbox import uploads as upload_storage
+  from core.sandbox import upload_extract
+
+  results = []
+  for file in files:
+    if not file.filename:
+      continue
+    content = await file.read()
+    try:
+      info = upload_storage.save_upload(thread_id, file.filename, content)
+    except upload_storage.UploadError as e:
+      results.append({'filename': file.filename, 'error': str(e)})
+      continue
+
+    upload_path = upload_storage.get_upload_path(thread_id, info['filename'])
+    outline = []
+    extract_error = None
+    if upload_path is not None:
+      extracted = upload_extract.extract_content(upload_path)
+      outline = extracted.get('outline') or []
+      extract_error = extracted.get('error')
+
+    results.append({
+      'filename': info['filename'],
+      'size': info['size'],
+      'extension': info['extension'],
+      'outline': outline,
+      'extract_error': extract_error,
+    })
+
+  return JSONResponse(content={'ok': True, 'files': results})
 
 
 @router.get('/agent/artifacts/{thread_id}/{dataset_id}/{filename}')

@@ -3,26 +3,13 @@ import { Download, FileCode2, X } from 'lucide-react';
 import { useChatStore } from '../stores/chatStore';
 import { HtmlPreview } from './HtmlPreview';
 import client from '../api/client';
+import { downloadArtifact } from '@/lib/artifact-download';
 import { cn } from '@/lib/utils';
 
 // 从看板 HTML 里提取 <title> 作为区分标题（模板/生成内容均带 title 标签）
 function extractHtmlTitle(html: string): string {
   const m = /<title>([\s\S]*?)<\/title>/i.exec(html);
   return m ? m[1].trim() : '';
-}
-
-/** 拉 blob 下载（带 token，与 FileCard 同一套鉴权逻辑） */
-async function downloadArtifact(url: string, name: string) {
-  const rel = url.replace(/^\/api\/v1/, '');
-  const resp = await client.get(rel, { responseType: 'blob' });
-  const objectUrl = URL.createObjectURL(resp.data);
-  const a = document.createElement('a');
-  a.href = objectUrl;
-  a.download = name;
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
 }
 
 /**
@@ -39,7 +26,7 @@ export function ArtifactPanel() {
   const active = artifacts.find((a) => a.url === activeArtifactUrl) ?? null;
 
   const handleDownload = useCallback(() => {
-    if (active) downloadArtifact(active.url, active.name);
+    if (active) downloadArtifact(active.url.replace(/^\/api\/v1/, ''), active.name);
   }, [active]);
 
   // 提取每个看板 HTML 的 <title> 作区分标题（失败回退文件名）

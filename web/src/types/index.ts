@@ -40,6 +40,7 @@ export interface Message {
   role: 'user' | 'assistant';
   content: string;
   created_at: string;
+  uploaded_filenames?: string[];
 }
 
 export interface PlanStep {

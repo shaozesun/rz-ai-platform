@@ -38,3 +38,5 @@ python-pptx>=0.6.21
 langgraph-checkpoint-postgres>=3.0.0
 psycopg[binary]>=3.2.0
 psycopg-pool>=3.2.0
+# 可观测性追踪（Langfuse，自建部署，LANGFUSE_ENABLED 默认关闭）
+langfuse>=2.0.0

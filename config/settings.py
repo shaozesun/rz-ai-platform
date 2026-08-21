@@ -278,8 +278,18 @@ class Settings(BaseSettings):
   # 注入 DYLD_LIBRARY_PATH/LD_LIBRARY_PATH。Linux/Docker 下 apt 装系统库则留空）
   AGENT_ANALYSIS_EXTRA_LIB_PATH: str = ''
 
+  # ==================== Agent 对话文件上传（会话级，不跨会话持久化） ====================
+  AGENT_UPLOAD_MAX_FILES_PER_SESSION: int = 20  # 单会话最大上传文件数，超限拒绝新上传
+  AGENT_UPLOAD_MAX_FILE_MB: int = 20            # 单文件大小上限（MB），超限拒绝
+
   # ==================== Agent 用户自建技能（复刻 DeerFlow skill-creator） ====================
   AGENT_SKILL_LLM_SCAN: bool = True  # skill_manage 写盘前 LLM 语义安全扫描开关（fail-closed）
+
+  # ==================== 可观测性追踪（Langfuse，自建部署，数据不出内网） ====================
+  LANGFUSE_ENABLED: bool = False       # 默认关闭；未装 langfuse 包时也不影响 Agent 主链路
+  LANGFUSE_PUBLIC_KEY: str = ''        # 自建 Langfuse 实例创建项目后获取
+  LANGFUSE_SECRET_KEY: str = ''        # 自建 Langfuse 实例创建项目后获取
+  LANGFUSE_HOST: str = 'http://langfuse:3000'  # 自建实例内网地址（docker 服务名），不出内网
 
   # ==================== DCIM 集成 ====================
   DCIM_ENABLED: bool = False           # DCIM 门面工具开关，默认关闭

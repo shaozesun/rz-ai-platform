@@ -35,6 +35,7 @@ _CATEGORY_LABELS = {
   'document': '文档',
   'config': '配置',
   'skill': '技能',
+  'review': '评审',
 }
 
 # 域中文名（L3，仅展示用；未登记则回退用 domain 原值）
@@ -55,6 +56,7 @@ _DOMAIN_LABELS = {
   'document': '文档',
   'config': '配置',
   'skill': '技能',
+  'review': '评审',
 }
 
 

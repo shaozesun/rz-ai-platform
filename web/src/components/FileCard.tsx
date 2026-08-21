@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { Download, Eye, File as FileIcon, X } from 'lucide-react';
 import client from '../api/client';
 import { cn } from '@/lib/utils';
+import { downloadArtifact } from '@/lib/artifact-download';
 import { useChatStore, normalizeArtifactUrl } from '../stores/chatStore';
 
 // 图片产物内联预览，其余走下载（后端经鉴权端点返回，需带 token）
@@ -59,15 +60,7 @@ export function FileCard({ url, name, size }: FileCardProps) {
   }, [rel, isImage]);
 
   async function handleDownload() {
-    const resp = await client.get(rel, { responseType: 'blob' });
-    const objectUrl = URL.createObjectURL(resp.data);
-    const a = document.createElement('a');
-    a.href = objectUrl;
-    a.download = name;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
+    await downloadArtifact(rel, name);
   }
 
   // PDF 预览：带 token 拉 blob → objectURL → 全屏覆盖层 iframe 渲染（Esc 关闭）
@@ -99,7 +92,7 @@ export function FileCard({ url, name, size }: FileCardProps) {
 
   return (
     <>
-    <div className="my-2 flex max-w-sm items-start gap-3 rounded-lg border border-border bg-card/60 p-3">
+    <div className="my-2 flex max-w-sm items-start gap-3 rounded-lg border border-border bg-card/60 p-3 shadow-sm">
       <div className="flex flex-col gap-2 overflow-hidden">
         {isImage && imgUrl ? (
           <img
@@ -141,7 +134,7 @@ export function FileCard({ url, name, size }: FileCardProps) {
           )}
           {isHtml && (
             <button
-              onClick={() => pushArtifact(safeUrl, name)}
+              onClick={() => pushArtifact(safeUrl, name, true)}
               className="flex items-center gap-1.5 rounded bg-muted px-2 py-1 text-xs hover:bg-muted/70 transition-colors"
             >
               <Eye className="size-3.5" />

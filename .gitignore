@@ -1,4 +1,11 @@
 .env
+.env.*
+!.env.example
+*.pem
+*.key
+*.crt
+*.sql
+*.dump
 .venv/
 venv/
 __pycache__/

@@ -54,6 +54,8 @@ class MessageService:
             "user_id": message.user_id,
             "created_at": message.created_at,
         }
+        if message.uploaded_filenames:
+            message_doc["uploaded_filenames"] = message.uploaded_filenames
 
         result = await self.messages.insert_one(message_doc)
 
@@ -83,6 +85,7 @@ class MessageService:
                     role=cast(str, msg.get("role")),
                     content=cast(str, msg.get("content")),
                     created_at=cast(Optional[datetime], msg.get("created_at")),
+                    uploaded_filenames=msg.get("uploaded_filenames"),
                 ))
             return messages
         except Exception as e:
@@ -115,6 +118,7 @@ class MessageService:
             content=cast(str, doc.get("content")),
             user_id=doc.get("user_id"),
             created_at=cast(datetime, created_at),
+            uploaded_filenames=doc.get("uploaded_filenames"),
         )
 
 

@@ -37,6 +37,7 @@ class AgentService:
     self._checkpointer_closer = None
     self._fingerprint = None
     self._build_lock = None
+    self._tracing_callbacks: list = []
 
   async def _ensure_agent(self):
     """确保 Agent 已初始化：按「图构建指纹」判断是否重建。
@@ -86,6 +87,7 @@ class AgentService:
       settings.MGMT_ENABLED,
       settings.SECURITY_ENABLED,
       settings.AGENT_CHECKPOINT_BACKEND,
+      settings.LANGFUSE_ENABLED,
       get_skills_version(),
     )
 
@@ -121,6 +123,13 @@ class AgentService:
     # （不依赖任何平台开关），按用户隔离，写盘后 bump skills_version 触发重建。
     skill_manage_tool = wrap_async_tool_with_error_handling(skill_manage)
 
+    # 上传文件工具（async，走 raw_tools）：列出/读取本会话已上传文件、把上传表格物化为
+    # 沙箱数据集。始终注入（不依赖任何平台开关），文件上传是基础能力，不隐藏在 tool_search 后面。
+    from tools.upload_tools import build_upload_tools
+    upload_tools = [
+      wrap_async_tool_with_error_handling(t) for t in build_upload_tools()
+    ]
+
     # 平台 deferred 工具：任一 <PLATFORM>_ENABLED 开关开启时，把已注册平台的能力
     # 生成为真工具（带 schema 强校验），交给 deferred filter 隐藏 schema，LLM 经
     # tool_search（语义检索）按需加载。
@@ -149,14 +158,14 @@ class AgentService:
         platform_tools, top_k=settings.DCIM_RETRIEVAL_TOP_K,
       )
       # deferred 工具 + tool_search 是 async / 返回 Command，走 raw 通道不包装
-      raw_tools = deferred_tools + analysis_tools + [skill_manage_tool]
+      raw_tools = deferred_tools + analysis_tools + [skill_manage_tool] + upload_tools
       middleware.append(deferred_mw)
       # P-2：<available-tools> 从全量工具名改为分类清单（build_category_manifest），
       # 每轮省 ~2.7k token；deferred_names 不再进 prompt。
       extra_prompt = deferred_tools_prompt(build_category_manifest())
       self._catalog_hash = catalog_hash
     else:
-      raw_tools = list(analysis_tools) + [skill_manage_tool]
+      raw_tools = list(analysis_tools) + [skill_manage_tool] + upload_tools
       self._catalog_hash = None
 
     # 权限不触发重建：RBAC 走 stream() 里 set_current_permissions 设置的运行时
@@ -168,6 +177,11 @@ class AgentService:
       middleware=middleware, extra_prompt=extra_prompt, raw_tools=raw_tools,
       checkpointer=self._checkpointer,
     )
+
+    # 可观测性追踪回调（Langfuse，自建部署）：handler 本身无状态，构建期初始化一次，
+    # 缓存到 self 上，每次请求（stream()）复用，避免每请求重复构造 CallbackHandler。
+    from core.agent.tracing import build_tracing_callbacks
+    self._tracing_callbacks = build_tracing_callbacks()
 
   async def stream(
     self,
@@ -181,6 +195,7 @@ class AgentService:
     plan: dict | None = None,
     interview_answers: dict | None = None,
     interview_action: str | None = None,
+    uploaded_filenames: list[str] | None = None,
   ) -> AsyncIterator[str]:
     """Agent 流式对话。
 
@@ -195,6 +210,7 @@ class AgentService:
       plan: 已确认的执行计划（前端编辑后回传）
       interview_answers: 计划模式下访谈轮用户回答（{问题 id: 值}）
       interview_action: 访谈轮固定动作（answer/skip/chat），chat 退出计划走对话
+      uploaded_filenames: 本轮消息关联的已上传文件名，触发 <current_uploads> 自动注入
 
     Yields:
       SSE 格式的字符串
@@ -225,7 +241,7 @@ class AgentService:
 
         plan_obj = await generate_plan(message, build_category_manifest(), interview_answers)
         yield format_sse('plan', plan_obj.model_dump())
-        await save_messages(session_id, user_id, message, plan_to_markdown(plan_obj))
+        await save_messages(session_id, user_id, message, plan_to_markdown(plan_obj), uploaded_filenames)
         yield format_sse('done', {
           'session_id': session_id,
           'thread_id': thread_id,
@@ -244,6 +260,7 @@ class AgentService:
           await save_messages(
             session_id, user_id, message,
             f'（正在确认需求：{len(interview.questions)} 个问题待回答）',
+            uploaded_filenames,
           )
           yield format_sse('done', {
             'session_id': session_id,
@@ -253,7 +270,7 @@ class AgentService:
           return
         plan_obj = await generate_plan(message, manifest)
         yield format_sse('plan', plan_obj.model_dump())
-        await save_messages(session_id, user_id, message, plan_to_markdown(plan_obj))
+        await save_messages(session_id, user_id, message, plan_to_markdown(plan_obj), uploaded_filenames)
         yield format_sse('done', {
           'session_id': session_id,
           'thread_id': thread_id,
@@ -284,6 +301,8 @@ class AgentService:
       session_id=session_id,
       initial_state=initial_state,
       plan_instruction=plan_instruction,
+      uploaded_filenames=uploaded_filenames,
+      tracing_callbacks=self._tracing_callbacks,
     ):
       yield sse_chunk
 

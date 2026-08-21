@@ -1,9 +1,10 @@
 """综合管理平台真实接口的声明式映射（method/path/参数位置/取值路径）。
 
-33 条 EndpointSpec（与 capabilities.py 的 38 条能力对应：33 条单接口一一映射，
-另 5 条 query_pending_ticket / query_change_ticket / query_breakdown_ticket_detail
-/ query_question_ticket_detail / query_event_ticket_detail 为组合能力，无
-EndpointSpec，走 client.call 特判；30 条经联调核实，另 3 条文档登记待实测）：
+35 条 EndpointSpec（与 capabilities.py 的 43 条能力对应：35 条单接口一一映射，
+另 8 条 query_pending_ticket / query_change_ticket / query_breakdown_ticket /
+query_question_ticket / query_breakdown_ticket_detail / query_question_ticket_detail
+/ query_event_ticket_detail / query_change_ticket_detail 为组合能力，无
+EndpointSpec，走 client.call 特判）：
 - query_person_by_name：GET /user/info/v2/{name}，data 即用户对象数组，原样返回。
 - query_person_by_id：POST /user/records/v2，body {uid,deptId,companyId}，
   result_path 取 user；deptId/companyId 走服务账号默认上下文兜底。
@@ -112,6 +113,16 @@ EndpointSpec，走 client.call 特判；30 条经联调核实，另 3 条文档�
   body {page,size,tagId,title}（MyBatis-Plus 信封 current/pages/records/size/total，
   page+size 风格，page_size_alt），title 按标题关键字模糊过滤、tagId 按标签过滤，
   均可选；不传返回全部，分页元数据 total/current/pages/size 保留。
+- query_review_appointment（实测）：POST /review_appointments/list/v1，body {type,
+  deptId,companyId,startTime,endTime,isAll,page,pageSize}。评审预约（变更工单审批
+  前的评审会议预约记录）。deptId/companyId 走服务账号默认部门/公司兜底；
+  startTime/endTime 毫秒 long（time_to_ms 转换）；type/isAll 观察值 "0"/false 可用，
+  具体枚举含义待核实。信封 {pageSize,pageCounts,count,reviewAppointmentVOS}，
+  result_path 取 reviewAppointmentVOS，page_meta 保留 count/pageSize/pageCounts；
+  分页 page+pageSize 平铺。
+- query_review_appointment_detail：GET /review_appointments/detail/v1/{id}，id 在
+  path 占位符（appointment_id 经 param_map 反查填充，同 query_mindmap）。data 即
+  单条评审预约完整详情对象，原样返回，无分页。
 
 其余接口（部门树/隐患/周报等）已移除。`client.py` 只做「查 EndpointSpec →
 组装请求 → 调 http.request → 按 result_path 摘取」，不含任何接口相关的硬编码逻辑，
@@ -713,5 +724,42 @@ ENDPOINTS: dict[str, EndpointSpec] = {
     default_params={'page': '1', 'size': '10'},
     result_path='',  # data 即 MyBatis-Plus 信封
     page_meta=('total', 'current', 'pages', 'size'),
+  ),
+  # query_review_appointment（实测）：POST /review_appointments/list/v1，body {type,
+  # deptId,companyId,startTime,endTime,isAll,page,pageSize}。评审预约（变更工单审批
+  # 前的评审会议预约记录，changeName/changeSpecialty/changeType/level 与
+  # query_change_ticket 字段高度对应）。deptId/companyId 走服务账号默认部门/公司
+  # 兜底（defaults）；startTime/endTime 接口要求毫秒 long，可读日期串经 time_to_ms
+  # 转换；type/isAll 观察值 "0"/false 实测可正常返回数据，具体枚举含义待业务方核实。
+  # 信封 {pageSize,pageCounts,count,reviewAppointmentVOS}，result_path 取
+  # reviewAppointmentVOS，page_meta 保留 count/pageSize/pageCounts；分页
+  # page+pageSize 平铺。
+  'mgmt.query_review_appointment': EndpointSpec(
+    method='POST',
+    path='/review_appointments/list/v1',
+    param_location='json',
+    param_map={
+      'dept_id': 'deptId', 'company_id': 'companyId',
+      'start_time': 'startTime', 'end_time': 'endTime',
+      'is_all': 'isAll', 'page_size': 'pageSize',
+    },
+    page_style='page_pagesize',  # page + pageSize 平铺
+    defaults={'deptId': 'own_dept_id', 'companyId': 'company_id'},
+    default_params={'type': '0', 'isAll': 'false', 'page': '1', 'pageSize': '20'},
+    time_to_ms=('startTime', 'endTime'),
+    result_path='reviewAppointmentVOS',
+    page_meta=('count', 'pageSize', 'pageCounts'),
+  ),
+  # query_review_appointment_detail：GET /review_appointments/detail/v1/{id}，id 在
+  # path 占位符（appointment_id 经 param_map 反查填充，同 query_mindmap/query_dept_by_name）。
+  # data 即单条评审预约完整详情对象，原样返回，无分页。id 从 query_review_appointment
+  # 列表结果（reviewAppointmentVOS 里每条记录的 id 字段）获取。
+  'mgmt.query_review_appointment_detail': EndpointSpec(
+    method='GET',
+    path='/review_appointments/detail/v1/{id}',
+    param_location='query',
+    param_map={'appointment_id': 'id'},
+    page_style='none',
+    result_path='',
   ),
 }

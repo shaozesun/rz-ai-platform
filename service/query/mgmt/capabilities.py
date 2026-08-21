@@ -1,8 +1,9 @@
 """综合管理平台能力数据（真实接口，Phase 2）。
 
-38 条能力（30 条单接口经联调核实可用、且当前需求内；另 5 条组合能力
-query_pending_ticket / query_change_ticket / query_breakdown_ticket_detail /
-query_question_ticket_detail / query_event_ticket_detail 已实测；还有 3 条接口文档
+43 条能力（32 条单接口经联调核实可用、且当前需求内；另 8 条组合能力
+query_pending_ticket / query_change_ticket / query_breakdown_ticket /
+query_question_ticket / query_breakdown_ticket_detail / query_question_ticket_detail /
+query_event_ticket_detail / query_change_ticket_detail 均已实测；还有 3 条接口文档
 登记待实测）：
 - mgmt.query_person_by_name（按姓名查人）
 - mgmt.query_dept_by_name（按部门名称模糊查询部门）
@@ -35,13 +36,18 @@ query_question_ticket_detail / query_event_ticket_detail 已实测；还有 3 �
 - mgmt.query_inspection_ticket（巡检工单列表，按工单编号/名称/状态/类型筛选）
 - mgmt.query_inspection_ticket_detail（巡检工单明细，按 id 查单张工单详情）
 - mgmt.query_kb_standard（标准规范列表，按标题关键字/标签过滤）
-- mgmt.query_pending_ticket（查询待办工单，组合能力：查人→换 token→调 pen）
+- mgmt.query_pending_ticket（查询我的工单，组合能力：查人→换 token→调 pen）
 - mgmt.query_change_ticket（查询变更工单，组合能力：公司维度 POST，默认润泽科技）
+- mgmt.query_breakdown_ticket（查询故障工单列表，组合能力：公司维度 POST，默认润泽科技）
+- mgmt.query_question_ticket（查询问题工单列表，组合能力：公司维度 POST，默认润泽科技）
 - mgmt.query_breakdown_ticket_detail（查询故障工单详情，按待办列表 id 查单张工单）
 - mgmt.query_question_ticket_detail（查询问题工单详情，按待办列表 id 查单张工单）
 - mgmt.query_event_ticket_detail（查询事件工单详情，按待办列表 id 查单张工单）
+- mgmt.query_change_ticket_detail（查询变更工单详情，按变更工单列表 ticketId 查单张工单，已实测）
 - mgmt.query_config_template_list（查询配置管理列表，配置模板/专项检查表）
 - mgmt.query_task_list（查询任务列表，配置模板生成的任务工单）
+- mgmt.query_review_appointment（查询评审预约列表，变更工单审批前的评审会议预约）
+- mgmt.query_review_appointment_detail（查询评审预约详情，按列表 id 查单条预约）
 
 其余接口（部门树/隐患/周报等）已全部移除——既有平台侧 bug、又不在当前
 需求范围，保留只会让 agent 选错工具。设备信息接口按需新接入，见 query_device_info。
@@ -89,14 +95,25 @@ promote 它们；两者联动——系统类型树节点的 id 即下钻子系�
 query_device_major / query_device_type 为 'device'：设备类型相关查询 promote 它们；
 两者联动——query_device_major 返回的专业类别 id 即 query_device_type 按专业过滤要
 传的 parentId，链路（专业大类 → 该专业下设备类型）对 LLM 全可见。
-query_pending_ticket 为 'work_order'：待办工单/流程单查询 promote 它；组合能力内部
+query_pending_ticket 为 'work_order'：我的工单/流程单查询 promote 它；组合能力内部
 自动完成查人（按姓名拿 kingdeeUid，不传 name 用服务账号本人）→ 换人员 token → 调
-pen 流程服务三步，与巡检工单（query_inspection_ticket，台账）区分——本工具查的是
-流程平台待处理的流程单（待办），返回工单编号/名称/级别/类型/状态/部门/创建人等。
+pen 流程服务三步。pen 的巡检工单是单独接口 /pen/pending/list/inspection/v1（当前
+未接入），与 mgmt 巡检台账（query_inspection_ticket）区分——本工具查的是流程平台
+「我的工单」（token 归属人相关），返回工单编号/名称/级别/类型/状态/部门/创建人等；
+type 按工单类别过滤：1=变更/4=问题/5=故障/6=事件/7=阈值。
 query_change_ticket 亦为 'work_order'：变更工单查询 promote 它；组合能力内部公司维度
 POST（默认服务账号所属润泽科技+技术保障部，company_id 可选跨公司），与待办区分——
 变更工单是**公司维度**（token 只鉴权，不区分人，实测同 body 不同人结果相同），
 所以无 name 参数，返回工单编号/项目名称/专业/状态/发起人/时间等。
+query_breakdown_ticket 亦为 'work_order'：故障工单列表查询 promote 它；与
+query_change_ticket 同构（公司维度 POST，默认润泽科技+技术保障部，company_id 可选
+跨公司），区别仅端点 /ticket/wiporder/ticketlist/breakdown 与筛选项——变更的
+specialty/modifyType 换成 breakDownLevel（故障级别），key_word 支持故障名称/工单号
+模糊查询。
+query_question_ticket 亦为 'work_order'：问题工单列表查询 promote 它；与
+query_change_ticket 同构（公司维度 POST），区别仅端点 /ticket/wiporder/ticketlist/question
+与筛选项——换成 severityLevel（问题级别）+ specialty（专业），无 ticketType/modifyType/
+onlyTimeOut，key_word 支持问题名称/工单号模糊查询。
 query_breakdown_ticket_detail 亦为 'work_order'：故障工单详情查询 promote 它；按
 ticket_id 查单张故障工单完整详情（描述/受理人/现场图片/审批流/操作记录等），与待办
 列表、变更列表区分——本能力是列表之后的单张详情下钻，id 从 query_pending_ticket
@@ -109,6 +126,12 @@ query_event_ticket_detail 亦为 'work_order'：事件工单详情查询 promote
 ticket_id 查单张事件工单完整详情（事件名称/描述/原因分析/处理流程/影响范围与时长/
 关联工单等），与故障/问题工单详情区分——id 均从 query_pending_ticket 待办列表
 返回的 id 获取，按工单类型选对应工具。
+query_change_ticket_detail 亦为 'work_order'：变更工单详情查询 promote 它；按
+ticket_id 查单张变更工单完整详情，与故障/问题/事件工单详情区分——四者详情端点各不
+相同，本能力的 id 从 query_change_ticket（变更工单列表）返回的 **ticketId** 字段
+获取（注意不是 id），其余三个从 query_pending_ticket 待办列表的 id 字段获取，按
+工单类型选对应工具。实测确认：不按 token 归属人区分，任意有效 token 可查任意人
+发起的工单详情，与其余三个详情接口同构。
 query_config_template_list 为 'config'：配置管理相关查询 promote 它；配置管理模板
 （专项检查表/固定模板）是独立 L2 分类，与巡检（inspection，巡检项模板
 query_inspection_item）区分——本工具查配置管理侧的检查表模板，templateName 模糊、
@@ -117,6 +140,15 @@ query_task_list 亦为 'config'：配置任务查询 promote 它；任务由配�
 固定模板）生成，与 query_config_template_list（查模板）联动——模板是任务的定义，
 本工具查任务的实际执行（taskTicketNo 形如 RZKJ-RW-…，含执行人/起止时间/状态）。
 type 必填（默认 1=全部，2/3/4 空），deptId 走服务账号默认部门兜底。
+query_review_appointment 为独立分类 'review'：评审预约查询 promote 它；与变更工单
+（query_change_ticket，work_order）是业务链路上的前后环节——变更发起后先约评审会议，
+评审通过再走变更审批流程，两者字段高度对应（changeName/changeSpecialty/changeType/
+level）。单独建分类而非归入 work_order，是为了让 Step1 意图识别时"评审"能直接命中
+候选词，不需要先联想到"工单"再间接关联（词汇表规模小，新增分类成本低）。
+query_review_appointment_detail 亦为 'review'：评审预约详情查询 promote 它；按列表
+返回的 id 查单条预约完整详情，与 query_review_appointment（列表）联动。
+deptId/companyId 走服务账号默认部门/公司兜底，兜底时需告知用户默认查询范围；
+type/isAll 观察值可用，具体枚举含义待业务方核实。
 """
 
 from service.query.base.capability import Capability
@@ -773,17 +805,18 @@ CAPABILITIES: tuple[Capability, ...] = (
   ),
   Capability(
     id='mgmt.query_pending_ticket',
-    name='查询待办工单',
+    name='查询我的工单',
     description=(
-      '查询指定人员的流程平台待办工单（待处理流程单），返回每条待办的工单编号、名称、'
-      '级别、类型、状态、部门、创建人等。适用于「XX 的待办工单」「我的待办」「待处理的'
-      '流程单」「有没有待办」等场景。不传 name 查当前账号本人（服务账号）的待办；'
-      'company_id / type（工单类型）均可选。'
+      '查询流程平台「我的工单」（当前账号本人，或指定人员经换 token 查其工单），返回'
+      '每条工单的编号、名称、级别、类型、状态、部门、创建人等。type 区分工单类别'
+      '（1=变更 / 4=问题 / 5=故障 / 6=事件 / 7=阈值，不传查全部类别）；is_done 区分'
+      '状态（1=待办 / 2=已办 / 3=已发起 / 4=抄送给我，默认待办）。适用于「我的工单」'
+      '「我的待办/已办」「XX 的工单」「有哪些变更/故障/问题工单」等场景。'
     ),
     params={
-      'name': '人员姓名，可选。传了查该人员的待办工单；不传默认查当前账号本人的待办',
-      'is_done': '待办状态，可选，默认 1（待办）；2=已办/已完成（实测 isDone=2 返回已办）',
-      'type': '工单类型，可选（数字 code，如 6）',
+      'name': '人员姓名，可选。传了查该人员的工单；不传默认查当前账号本人的工单',
+      'is_done': '状态筛选，可选，默认 1=待办：1=待办 / 2=已办 / 3=已发起 / 4=抄送给我',
+      'type': '工单类别，可选：1=变更 / 4=问题 / 5=故障 / 6=事件 / 7=阈值；不传查全部类别',
       'company_id': '公司 id，可选',
       'page': '页码，可选，默认 1',
       'page_size': '每页条数，可选，默认 20',
@@ -796,11 +829,14 @@ CAPABILITIES: tuple[Capability, ...] = (
     id='mgmt.query_change_ticket',
     name='查询变更工单',
     description=(
-      '查询 pen 流程平台的变更工单列表（公司维度，非按人），返回工单编号、项目名称、'
-      '专业、状态、发起人、时间等。适用于「查变更工单」「有哪些变更单」'
-      '「XX 公司的变更工单」「我发起的变更单」等。默认查服务账号所属公司（润泽科技）'
-      '技术保障部；company_id 可选，跨公司时用 mgmt 公司 id（从 query_company_list '
-      '获取）。type 1=全部/2=我发起的/4=我处理的/5=我验收的/6=我监督的；ticket_type '
+      '查询 pen 流程平台的变更工单列表，返回工单编号、项目名称、专业、状态、发起人、'
+      '时间等。适用于「查变更工单」「有哪些变更单」「XX 公司的变更工单」「XX 部门的'
+      '变更工单」「我发起的变更单」等。**支持按部门筛选**：dc 参数即部门 id，传了就'
+      '按该部门查，不限于默认部门——用户问「其他部门」「XX 部门」的变更工单时，先用 '
+      'query_dept_by_name 按部门名解析出 dept_id，再作为 dc 传入即可，不要以为只能查'
+      '默认部门或需要事后过滤。dc 不传时默认技术保障部；company_id 可选，跨公司时用 '
+      'mgmt 公司 id（从 query_company_list 获取），跨公司且未指明部门时 dc 留空查全公司。'
+      'type 1=全部/2=我发起的/4=我处理的/5=我验收的/6=我监督的；ticket_type '
       '专业码 1=供配电/2=制冷/4=智能化。'
     ),
     params={
@@ -812,10 +848,73 @@ CAPABILITIES: tuple[Capability, ...] = (
       'key_word': '关键字，可选',
       'modify_type': '变更类型，可选',
       'stage': '阶段，可选',
-      'dc': '部门 id，可选；默认技术保障部（跨公司时省略则查全公司）',
+      'dc': '部门 id，可选；用于按部门筛选（不限于默认部门），用户指明部门时先用 query_dept_by_name 解析出 dept_id 传入；不传默认技术保障部，跨公司未指明部门时留空查全公司',
       'start_time': '开始时间，可选，YYYY-MM-DD',
       'end_time': '结束时间，可选，YYYY-MM-DD',
       'only_time_out': '只看超时，可选',
+      'page': '页码，默认 1',
+      'page_size': '每页条数，默认 20',
+    },
+    category='work_order',
+    domain='work_order',
+    kind='资源',
+  ),
+  Capability(
+    id='mgmt.query_breakdown_ticket',
+    name='查询故障工单列表',
+    description=(
+      '查询 pen 流程平台的故障工单列表，返回工单编号、故障名称、级别、状态、发起人、'
+      '时间等。适用于「查故障工单」「有哪些故障单」「XX 公司的故障工单」「XX 部门的'
+      '故障工单」等。**支持按部门筛选**：dc 参数即部门 id，传了就按该部门查，不限于'
+      '默认部门——用户问「其他部门」「XX 部门」的故障工单时，先用 query_dept_by_name '
+      '按部门名解析出 dept_id 再作为 dc 传入。dc 不传时默认技术保障部；company_id 可选，'
+      '跨公司时用 mgmt 公司 id（从 query_company_list 获取），跨公司且未指明部门时 dc '
+      '留空查全公司。key_word 支持故障名称/工单号模糊查询；break_down_level 故障级别'
+      '筛选，可选。与 query_change_ticket（变更工单列表）同构，仅端点与故障级别筛选项不同。'
+    ),
+    params={
+      'company_id': '公司 id，可选；默认润泽科技，跨公司时从 query_company_list 获取',
+      'type': '查询范围，可选，默认 1=全部（与变更工单列表一致）',
+      'ticket_type': '专业码，可选：1=供配电 / 2=制冷 / 4=智能化',
+      'break_down_level': '故障级别，可选',
+      'ticket_no': '工单编号，可选',
+      'project_name': '项目名称，可选（模糊）',
+      'key_word': '关键字，可选（支持故障名称/工单号模糊查询）',
+      'stage': '阶段，可选',
+      'dc': '部门 id，可选；用于按部门筛选（不限于默认部门），用户指明部门时先用 query_dept_by_name 解析出 dept_id 传入；不传默认技术保障部，跨公司未指明部门时留空查全公司',
+      'start_time': '开始时间，可选，YYYY-MM-DD',
+      'end_time': '结束时间，可选，YYYY-MM-DD',
+      'only_time_out': '只看超时，可选',
+      'page': '页码，默认 1',
+      'page_size': '每页条数，默认 20',
+    },
+    category='work_order',
+    domain='work_order',
+    kind='资源',
+  ),
+  Capability(
+    id='mgmt.query_question_ticket',
+    name='查询问题工单列表',
+    description=(
+      '查询 pen 流程平台的问题工单列表，返回工单编号、问题名称、级别、状态、发起人、'
+      '时间等。适用于「查问题工单」「有哪些问题单」「XX 公司的问题工单」「XX 部门的'
+      '问题工单」等。**支持按部门筛选**（dc 参数，同变更/故障工单列表）；company_id '
+      '可选跨公司；key_word 支持问题名称/工单号模糊查询；severity_level 问题级别筛选，'
+      '可选。与 query_change_ticket（变更工单列表）同构，仅端点与问题级别/专业筛选项'
+      '不同（无 ticketType/modifyType/onlyTimeOut）。'
+    ),
+    params={
+      'company_id': '公司 id，可选；默认润泽科技，跨公司时从 query_company_list 获取',
+      'type': '查询范围，可选，默认 1=全部（与变更工单列表一致）',
+      'severity_level': '问题级别，可选',
+      'specialty': '专业，可选',
+      'ticket_no': '工单编号，可选',
+      'project_name': '项目名称，可选（模糊）',
+      'key_word': '关键字，可选（支持问题名称/工单号模糊查询）',
+      'stage': '阶段，可选',
+      'dc': '部门 id，可选；用于按部门筛选（不限于默认部门），用户指明部门时先用 query_dept_by_name 解析出 dept_id 传入；不传默认技术保障部，跨公司未指明部门时留空查全公司',
+      'start_time': '开始时间，可选，YYYY-MM-DD',
+      'end_time': '结束时间，可选，YYYY-MM-DD',
       'page': '页码，默认 1',
       'page_size': '每页条数，默认 20',
     },
@@ -877,6 +976,26 @@ CAPABILITIES: tuple[Capability, ...] = (
     kind='资源',
   ),
   Capability(
+    id='mgmt.query_change_ticket_detail',
+    name='查询变更工单详情',
+    description=(
+      '按工单 id 查询单张变更工单的完整详情（工单编号、项目名称、专业、状态、发起人、'
+      '执行人、审批流程、涉及设备、操作记录、原因/方案/风险识别与控制措施等）。适用于'
+      '「查看 XX 变更单的详情」「这张变更工单的具体情况」等。id 从 query_change_ticket'
+      '（变更工单列表）返回的 ticketId 字段获取（注意不是 id）；与'
+      'query_breakdown_ticket_detail/query_question_ticket_detail/'
+      'query_event_ticket_detail 区分——本能力查的是变更类工单详情，其余三个查'
+      '故障/问题/事件类工单详情，四者详情端点各不相同，按工单类型选对应工具。'
+      '实测确认：不按 token 归属人区分，任意有效 token 可查任意人发起的工单详情。'
+    ),
+    params={
+      'ticket_id': '变更工单 id，必填（从 query_change_ticket 列表结果的 ticketId 字段获取）',
+    },
+    category='work_order',
+    domain='work_order',
+    kind='资源',
+  ),
+  Capability(
     id='mgmt.query_config_template_list',
     name='查询配置管理列表',
     description=(
@@ -916,6 +1035,49 @@ CAPABILITIES: tuple[Capability, ...] = (
     },
     category='config',
     domain='config',
+    kind='资源',
+  ),
+  Capability(
+    id='mgmt.query_review_appointment',
+    name='查询评审预约列表',
+    description=(
+      '按类型、部门、公司、时间范围查询综合管理平台的评审预约列表（变更评审会议预约'
+      '安排），返回每条预约的编号、变更名称、变更专业、变更类型、级别、申请人、'
+      '预约评审时间、改期时间、状态等。适用于「查评审预约」「XX 的变更评审安排在'
+      '什么时候」「有哪些待评审的变更」等查询。是变更工单（query_change_ticket）'
+      '审批流程中「评审会议预约」这一环节的记录，两者可结合查看变更全流程。'
+      'dept_id/company_id 留空时用服务账号默认部门/公司（技术保障部/润泽科技），'
+      '此时必须明确告知用户「默认查询的是技术保障部」，并提示可指定其他部门/公司。'
+      'start_time/end_time 可选，格式 YYYY-MM-DD，不传查全部时间范围。'
+    ),
+    params={
+      'type': '预约类型编码，可选，含义待核实，默认 0',
+      'dept_id': '部门 id，可选；留空用服务账号默认部门（技术保障部），需告知用户默认范围',
+      'company_id': '公司 id，可选；留空用服务账号默认公司（润泽科技），需告知用户默认范围',
+      'start_time': '开始时间（格式 YYYY-MM-DD），可选，不传查全部时间范围',
+      'end_time': '结束时间（格式 YYYY-MM-DD），可选，不传查全部时间范围',
+      'is_all': '是否查全部（不分页），可选，含义待核实，默认 false',
+      'page': '页码，默认 1',
+      'page_size': '每页条数，默认 20',
+    },
+    category='review',
+    domain='review',
+    kind='资源',
+  ),
+  Capability(
+    id='mgmt.query_review_appointment_detail',
+    name='查询评审预约详情',
+    description=(
+      '按预约 id 查询综合管理平台单条评审预约的完整详情（变更名称、变更专业、变更'
+      '类型、级别、申请人、预约评审时间、改期时间、状态等完整字段）。适用于「查看 '
+      'XX 评审预约的详情」「这条评审预约的具体安排」等。appointment_id 从 '
+      'query_review_appointment（评审预约列表）结果里每条记录的 id 字段获取。'
+    ),
+    params={
+      'appointment_id': '评审预约 id，必填（从 query_review_appointment 列表结果的 id 字段获取）',
+    },
+    category='review',
+    domain='review',
     kind='资源',
   ),
 )

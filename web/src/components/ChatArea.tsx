@@ -1,7 +1,7 @@
 import { useState, useCallback, useEffect, useRef, useMemo, memo } from 'react';
 import type { ReactNode } from 'react';
 import {
-  Bot, User, Sparkles, Trash2, Search, Wrench, ChevronDown,
+  Bot, User, Sparkles, Trash2, Search, Wrench, ChevronDown, FileText,
 } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -319,6 +319,20 @@ const MessageBubble = memo(function MessageBubble({
         <p className="mb-1 text-xs font-medium text-muted-foreground">
           {msg.role === 'user' ? userName : 'AI 助手'}
         </p>
+        {msg.role === 'user' && msg.uploaded_filenames && msg.uploaded_filenames.length > 0 && (
+          <div className="mb-1.5 flex flex-wrap justify-end gap-1.5">
+            {msg.uploaded_filenames.map((name) => (
+              <span
+                key={name}
+                className="flex items-center gap-1.5 rounded-lg border border-border bg-secondary/60 px-2 py-1 text-xs text-secondary-foreground"
+                title={name}
+              >
+                <FileText className="size-3.5 shrink-0 text-primary" />
+                <span className="max-w-40 truncate">{name}</span>
+              </span>
+            ))}
+          </div>
+        )}
         <div
           className={cn(
             'rounded-2xl px-4 py-2.5 text-sm leading-relaxed',

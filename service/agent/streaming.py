@@ -21,6 +21,47 @@ def format_sse(event: str, data: dict) -> str:
   return f'data: {payload}\n\n'
 
 
+_UPLOADS_OPEN = '<current_uploads>'
+_UPLOADS_CLOSE = '</current_uploads>'
+
+
+def _build_current_uploads_block(thread_id: str, uploaded_filenames: list[str] | None) -> str:
+  """把本轮消息关联的已上传文件大纲/预览拼成 <current_uploads> 文本块。
+
+  仅覆盖本轮 uploaded_filenames 指定的文件，不包含历史轮次上传过的文件（避免每轮
+  重复占用上下文）；提取失败的文件仍列出文件名，附带失败原因，不静默丢弃。
+  """
+  if not uploaded_filenames:
+    return ''
+
+  from core.sandbox import uploads as upload_storage
+  from core.sandbox import upload_extract
+
+  parts = []
+  for filename in uploaded_filenames:
+    path = upload_storage.get_upload_path(thread_id, filename)
+    if path is None:
+      parts.append(f'### {filename}\n（文件不存在或已失效）')
+      continue
+    extracted = upload_extract.extract_content(path)
+    if extracted.get('error'):
+      parts.append(f'### {filename}\n（内容解析失败：{extracted["error"]}）')
+      continue
+    outline = extracted.get('outline') or []
+    outline_text = '\n'.join(f'- {o}' for o in outline) if outline else '（无大纲）'
+    preview = extracted.get('text_preview') or ''
+    parts.append(f'### {filename}\n大纲：\n{outline_text}\n\n内容摘要：\n{preview}')
+
+  if not parts:
+    return ''
+  return (
+    f'{_UPLOADS_OPEN}\n'
+    '以下是用户本轮消息上传的文件内容摘要，请据此理解用户意图并回答：\n\n'
+    + '\n\n'.join(parts) +
+    f'\n{_UPLOADS_CLOSE}'
+  )
+
+
 _FILE_TAG_RE = re.compile(r'<file\b([^>]*)/>')
 _FILE_URL_RE = re.compile(r'url="([^"]*)"')
 _FILE_NAME_RE = re.compile(r'name="([^"]*)"')
@@ -82,8 +123,13 @@ async def save_messages(
   user_id: str,
   user_content: str,
   assistant_content: str | None = None,
+  uploaded_filenames: list[str] | None = None,
 ) -> None:
-  """落库会话消息（user + 可选 assistant），供计划轮与执行轮共用。"""
+  """落库会话消息（user + 可选 assistant），供计划轮与执行轮共用。
+
+  uploaded_filenames: 本轮用户消息关联的已上传文件名（结构化字段，不进 content 纯文本——
+  前端历史消息按 role='user' 直接渲染 content，不会解析标签，塞进文本反而会显示成裸标签）。
+  """
   from models.rag.message_models import MessageCreate
   from service.rag.conversation.message_service import message_service
 
@@ -92,6 +138,7 @@ async def save_messages(
     await message_service.create_message(MessageCreate(
       session_id=session_id, message_id=uuid.uuid4().hex, role='user',
       content=user_content, user_id=user_id, created_at=now,
+      uploaded_filenames=uploaded_filenames,
     ))
     if assistant_content:
       await message_service.create_message(MessageCreate(
@@ -160,6 +207,8 @@ async def stream_agent(
   session_id: str,
   initial_state: dict | None = None,
   plan_instruction: str | None = None,
+  uploaded_filenames: list[str] | None = None,
+  tracing_callbacks: list | None = None,
 ):
   """执行 Agent 并将事件转为 SSE chunks。
 
@@ -168,6 +217,13 @@ async def stream_agent(
       合并后传入 agent。为空则仅传 messages（原行为）。
     plan_instruction: 计划模式确认后的执行指令文本；非空时替换本轮 user 消息
       （落库仍用 message，即前端确认时传的简短文案）。
+    uploaded_filenames: 本轮消息关联的已上传文件名（上传接口返回值）。非空时自动把
+      文件大纲/预览摘要拼成 <current_uploads> 块附加到用户消息前，LLM 无需先调
+      list_uploaded_files 就能感知本轮上传的内容；历史轮次上传的文件不在此注入，
+      靠 list_uploaded_files/read_uploaded_file 工具按需回忆（对齐 DeerFlow
+      「当前消息自动可见 + 历史消息工具化检索」的分层设计）。
+    tracing_callbacks: 可观测性追踪回调列表（Langfuse，agent_service.py 构建期初始化
+      一次并缓存传入）。为空（未启用 Langfuse）时不影响现有行为。
 
   Yields:
     SSE 格式的字符串
@@ -184,6 +240,11 @@ async def stream_agent(
     'recursion_limit': settings.AGENT_RECURSION_LIMIT,
     'configurable': {'thread_id': thread_id},
   }
+  if tracing_callbacks:
+    config['callbacks'] = tracing_callbacks
+    config['metadata'] = {
+      'session_id': session_id, 'user_id': user_id, 'thread_id': thread_id,
+    }
 
   # P-1（v1.1）：每请求重置 promoted —— 跨轮累积改为无状态路由（checkpoint 按
   # thread_id 持久化，promoted 带 union reducer 会跨轮越积越多）。
@@ -202,6 +263,9 @@ async def stream_agent(
   # 保证（或 MemorySaver 单进程内存）。
   # 计划模式确认轮：用渲染后的执行指令替换本轮 user 消息，让 LLM 首轮即按计划执行。
   content = plan_instruction if plan_instruction else message
+  uploads_block = _build_current_uploads_block(thread_id, uploaded_filenames)
+  if uploads_block:
+    content = f'{uploads_block}\n\n{content}'
   agent_input = {'messages': [{'role': 'user', 'content': content}]}
   if initial_state:
     agent_input.update(initial_state)
@@ -389,7 +453,7 @@ async def stream_agent(
     # answer_parts（final_answer），审计日志用。
     final_answer = ''.join(answer_parts)
     display_answer = ''.join(display_parts) or final_answer
-    await save_messages(session_id, user_id, message, display_answer)
+    await save_messages(session_id, user_id, message, display_answer, uploaded_filenames)
 
     # 写入审计日志（fire-and-forget）。
     # 注意：函数内不能再出现局部 `import asyncio` —— 那会把 asyncio 变成函数局部

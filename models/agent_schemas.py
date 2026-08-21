@@ -18,6 +18,9 @@ class AgentRequest(BaseModel):
   interview_action: Optional[str] = Field(
     None, description='访谈轮固定动作：answer 提交回答 / skip 跳过提问直接计划 / chat 聊点别的（退出计划走对话）',
   )
+  uploaded_filenames: Optional[list[str]] = Field(
+    None, description='本轮消息关联的已上传文件名（上传接口返回的 filename），触发 <current_uploads> 自动注入',
+  )
 
 
 class AgentEvent(BaseModel):

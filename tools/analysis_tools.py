@@ -15,6 +15,11 @@
 
 import json
 import logging
+import os
+import re
+import shutil
+import subprocess
+import tempfile
 from urllib.parse import quote
 
 from langchain.tools import tool
@@ -57,6 +62,56 @@ def _extract_records(resp) -> tuple[list, str | None]:
       if isinstance(value, list) and value:
         return value, None
   return [], None
+
+
+_SCRIPT_RE = re.compile(r'<script\b([^>]*)>([\s\S]*?)</script>', re.IGNORECASE)
+
+
+def _validate_html_artifact(html_text: str) -> str | None:
+  """校验自包含 HTML 看板的内联脚本语法，返回首个错误描述（无错返回 None）。
+
+  JSON 块（type="application/json"）用 json.loads 校验；内联 JS 用 node --check 只查语法
+  （不执行，故 echarts/document 未定义不会被误报）。node 不可用时降级跳过（返回 None）。
+  校验失败的信息会经 analysis_exec 返回给 LLM，触发其重写修复（自愈闭环）。
+  """
+  node = shutil.which('node')
+  for idx, (attrs, body) in enumerate(_SCRIPT_RE.findall(html_text), 1):
+    attrs_lower = attrs.lower()
+    if 'src=' in attrs_lower:
+      return f'第 {idx} 个 <script> 引用了外部脚本（禁止外部 src，看板必须自包含）'
+    body_stripped = body.strip()
+    if not body_stripped:
+      continue
+    if 'application/json' in attrs_lower:
+      try:
+        json.loads(body_stripped)
+      except Exception as e:
+        return f'第 {idx} 个 <script>（JSON 数据块）解析失败：{e}'
+      continue
+    if node is None:
+      continue
+    try:
+      with tempfile.NamedTemporaryFile(
+        mode='w', suffix='.js', encoding='utf-8', delete=False
+      ) as f:
+        f.write(body_stripped)
+        tmp = f.name
+      try:
+        proc = subprocess.run(
+          [node, '--check', tmp], capture_output=True, text=True, timeout=10
+        )
+        if proc.returncode != 0:
+          err = (proc.stderr or '').strip() or (proc.stdout or '').strip()
+          snippet = body_stripped[:400]
+          return f'第 {idx} 个 <script> JS 语法错误：\n{err}\n\n代码片段：\n{snippet}'
+      finally:
+        try:
+          os.unlink(tmp)
+        except OSError:
+          pass
+    except (OSError, subprocess.SubprocessError) as e:
+      logger.warning('node --check 校验 HTML 脚本失败：%s', e)
+  return None
 
 
 def _extract_total(resp) -> int | None:
@@ -191,6 +246,35 @@ async def analysis_exec(
       return json.dumps({
         'error': f'脚本 {file} 不存在，请先用 analysis_write_file 落盘',
       }, ensure_ascii=False)
+    # 非 .py 文件（如 dashboard.html）本身就是交付产物，直接返回鉴权下载 URL，
+    # 不再当 Python 执行（否则 HTML 当脚本跑 → SyntaxError → 产物被吞）。
+    if script.suffix.lower() != '.py':
+      if script.suffix.lower() == '.html':
+        try:
+          html_text = script.read_text(encoding='utf-8', errors='replace')
+        except OSError as e:
+          return json.dumps({'error': f'读取产物失败：{e}'}, ensure_ascii=False)
+        invalid = _validate_html_artifact(html_text)
+        if invalid:
+          return json.dumps({
+            'error': f'看板 HTML 内联脚本有语法错误，请用 analysis_write_file 修正后重试：\n{invalid}',
+          }, ensure_ascii=False)
+      try:
+        size = script.stat().st_size
+      except OSError as e:
+        return json.dumps({'error': f'读取产物失败：{e}'}, ensure_ascii=False)
+      max_mb = settings.AGENT_ANALYSIS_MAX_ARTIFACT_MB
+      if max_mb and size > max_mb * 1024 * 1024:
+        return json.dumps({'error': f'产物 {file} 超过 {max_mb}MB 上限'}, ensure_ascii=False)
+      await _emit_status('analysis_exec', '正在生成产物…')
+      url = (
+        f'/api/v1/chat/agent/artifacts/{quote(thread_id)}/{quote(dataset_id)}/'
+        f'{quote(script.name)}'
+      )
+      return json.dumps({
+        'result': f'文件 {file} 已就绪',
+        'artifacts': [{'name': script.name, 'url': url, 'size': size}],
+      }, ensure_ascii=False)
     try:
       python_code = script.read_text(encoding='utf-8', errors='replace')
     except OSError as e:
@@ -221,7 +305,7 @@ async def analysis_exec(
 
   if result['timed_out']:
     return json.dumps({'error': result['error']}, ensure_ascii=False)
-  if result['error'] and not result['stdout'].strip():
+  if result['error'] and not result['stdout'].strip() and not result.get('artifacts'):
     detail = result['stderr'].strip()[-1500:]
     return json.dumps({'error': result['error'], 'stderr': detail}, ensure_ascii=False)
 

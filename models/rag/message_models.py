@@ -13,6 +13,9 @@ class MessageBase(BaseModel):
     content: str = Field(..., description="消息内容")
     user_id: Optional[str] = Field(None, description="用户 ID")
     created_at: datetime = Field(..., description="消息创建时间")
+    uploaded_filenames: Optional[list[str]] = Field(
+        None, description="user 消息关联的已上传文件名（结构化字段，不进 content 纯文本）",
+    )
 
 
 class MessageCreate(MessageBase):
@@ -27,6 +30,9 @@ class MessageListItem(BaseModel):
     role: str = Field(..., description="消息角色 (user/assistant)")
     content: str = Field(..., description="消息内容")
     created_at: Optional[datetime] = None
+    uploaded_filenames: Optional[list[str]] = Field(
+        None, description="user 消息关联的已上传文件名",
+    )
 
 
 class MessageListResponse(BaseModel):

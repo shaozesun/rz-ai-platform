@@ -182,6 +182,16 @@ export function collectHtmlArtifacts(
   return items;
 }
 
+export type PendingUploadStatus = 'uploading' | 'ready' | 'error';
+
+export interface PendingUpload {
+  key: string; // 前端本地临时 key（文件加入时生成），非后端 filename
+  displayName: string; // 用户选择时的原始文件名（用于卡片展示）
+  status: PendingUploadStatus;
+  filename?: string; // 上传成功后后端返回的真实 filename（可能因重名被改写）
+  error?: string;
+}
+
 interface ChatState {
   sessions: Session[];
   currentSessionId: string | null;
@@ -197,6 +207,7 @@ interface ChatState {
   interview: InterviewQuestion[];
   pendingMessage: string | null;
   sessionPanelOpen: boolean;
+  pendingUploads: PendingUpload[];
 
   loadSessions: () => Promise<void>;
   createSession: () => Promise<string>;
@@ -214,12 +225,14 @@ interface ChatState {
   clearToolStatus: () => void;
   setTaskMode: (mode: TaskMode) => void;
   setInteractionMode: (mode: InteractionMode) => void;
-  pushArtifact: (url: string, name: string) => void;
+  pushArtifact: (url: string, name: string, open?: boolean) => void;
   selectArtifact: (url: string) => void;
   closePanel: () => void;
   openSessionPanel: () => void;
   closeSessionPanel: () => void;
   stopStreaming: () => void;
+  addPendingUploadFiles: (files: File[]) => Promise<void>;
+  removePendingUpload: (key: string) => void;
 }
 
 export const useChatStore = create<ChatState>((set, get) => ({
@@ -237,6 +250,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   interview: [],
   pendingMessage: null,
   sessionPanelOpen: false,
+  pendingUploads: [],
 
   loadSessions: async () => {
     try {
@@ -331,12 +345,17 @@ export const useChatStore = create<ChatState>((set, get) => ({
       chatApi.updateSession(sessionId, newTitle).catch(() => {});
     }
 
+    // 本轮关联的已上传文件（仅取上传成功、拿到后端 filename 的），随消息一起清空预览卡片
+    const readyUploads = get().pendingUploads.filter((u) => u.status === 'ready' && u.filename);
+    const uploadedFilenames = readyUploads.map((u) => u.filename!);
+
     const userMsg: Message = {
       message_id: `user-${Date.now()}`,
       session_id: sessionId,
       role: 'user',
       content: text,
       created_at: new Date().toISOString(),
+      uploaded_filenames: uploadedFilenames.length ? uploadedFilenames : undefined,
     };
 
     const aiMsg: Message = {
@@ -350,6 +369,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     set((s) => ({
       messages: [...s.messages, userMsg, aiMsg],
       isStreaming: true,
+      pendingUploads: [],
     }));
 
     const introAnswer = findIntro(text);
@@ -368,6 +388,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         ? startAgentStream(get, set, sessionId, text, groupId, {
           interactionMode: get().interactionMode,
           onPlan: (plan) => get().appendChunk(`<plan>${JSON.stringify(plan)}</plan>`),
+          uploadedFilenames: uploadedFilenames.length ? uploadedFilenames : null,
         })
         : chatApi.chatStream(
         sessionId,
@@ -469,15 +490,16 @@ export const useChatStore = create<ChatState>((set, get) => ({
   setTaskMode: (mode) => set({ taskMode: mode }),
   setInteractionMode: (mode) => set({ interactionMode: mode }),
 
-  pushArtifact: (url, name) => {
+  pushArtifact: (url, name, open = false) => {
     set((s) => {
-      // 已存在（历史会话预填/流式重推）时不再重复入列，但仍切到该看板并打开面板——
-      // 否则历史记录里点 FileCard 的「在看板中查看」会因短路而打不开面板（原 bug）。
+      // 已存在（历史会话预填/流式重推）时不再重复入列，但仍切到该看板。
+      // open=true 时打开面板（历史记录里点 FileCard 的「在看板中查看」用）；
+      // 流式自动收集默认不打开，避免生成看板时强制弹窗。
       const exists = s.artifacts.some((a) => a.url === url);
       return {
         artifacts: exists ? s.artifacts : [{ url, name }, ...s.artifacts],
         activeArtifactUrl: url,
-        panelOpen: true,
+        panelOpen: open ? true : s.panelOpen,
       };
     });
   },
@@ -495,5 +517,48 @@ export const useChatStore = create<ChatState>((set, get) => ({
       streamAbort.abort();
       set({ isStreaming: false, streamAbort: null });
     }
+  },
+
+  addPendingUploadFiles: async (files: File[]) => {
+    if (!files.length) return;
+    let sessionId = get().currentSessionId;
+    if (!sessionId) {
+      sessionId = await get().createSession();
+    }
+
+    // 先以 uploading 状态插入预览卡片（本地 key，与后端 filename 无关），逐个上传
+    const entries: PendingUpload[] = files.map((f) => ({
+      key: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+      displayName: f.name,
+      status: 'uploading',
+    }));
+    set((s) => ({ pendingUploads: [...s.pendingUploads, ...entries] }));
+
+    try {
+      const results = await chatApi.uploadAgentFiles(sessionId, files);
+      set((s) => ({
+        pendingUploads: s.pendingUploads.map((u, _i) => {
+          const idx = entries.findIndex((e) => e.key === u.key);
+          if (idx === -1) return u;
+          const result = results[idx];
+          if (!result) {
+            return { ...u, status: 'error', error: '上传失败' };
+          }
+          return { ...u, status: 'ready', filename: result.filename };
+        }),
+      }));
+    } catch (err) {
+      console.error('Upload failed:', err);
+      const failedKeys = new Set(entries.map((e) => e.key));
+      set((s) => ({
+        pendingUploads: s.pendingUploads.map((u) =>
+          failedKeys.has(u.key) ? { ...u, status: 'error', error: '上传失败，请重试' } : u,
+        ),
+      }));
+    }
+  },
+
+  removePendingUpload: (key: string) => {
+    set((s) => ({ pendingUploads: s.pendingUploads.filter((u) => u.key !== key) }));
   },
 }));

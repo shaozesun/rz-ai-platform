@@ -53,12 +53,13 @@ export async function updateSession(sessionId: string, title: string): Promise<v
 export async function getMessages(sessionId: string): Promise<Message[]> {
   const { data } = await client.get(`/chat/sessions/${sessionId}/messages`);
   const list = data.messages ?? data.data ?? [];
-  return list.map((m: { role: string; content: string; created_at?: string }, i: number) => ({
+  return list.map((m: { role: string; content: string; created_at?: string; uploaded_filenames?: string[] }, i: number) => ({
     message_id: `${sessionId}-${i}`,
     session_id: sessionId,
     role: m.role,
     content: m.content,
     created_at: m.created_at || new Date().toISOString(),
+    uploaded_filenames: m.uploaded_filenames,
   }));
 }
 
@@ -135,6 +136,32 @@ export interface AgentStreamOptions {
   interviewAnswers?: InterviewAnswers | null;
   interviewAction?: string | null;
   onInterview?: (questions: InterviewQuestion[]) => void;
+  uploadedFilenames?: string[] | null;
+}
+
+export interface UploadedFileInfo {
+  filename: string;
+  size: number;
+  extension: string;
+  outline: string[];
+  extract_error: string | null;
+}
+
+// 上传文件到 Agent 对话（会话级持久化，不跨会话共享）。返回的 filename 供下一条
+// 消息的 AgentStreamOptions.uploadedFilenames 引用，触发后端 <current_uploads> 注入。
+export async function uploadAgentFiles(
+  sessionId: string,
+  files: File[],
+): Promise<UploadedFileInfo[]> {
+  const form = new FormData();
+  for (const file of files) {
+    form.append('files', file);
+  }
+  const params = new URLSearchParams({ session_id: sessionId });
+  const { data } = await client.post(`/chat/agent/uploads?${params}`, form, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+  });
+  return data.files ?? [];
 }
 
 // Agent 流式对话
@@ -165,6 +192,7 @@ export function agentStream(
       plan: options?.plan ?? null,
       interview_answers: options?.interviewAnswers ?? null,
       interview_action: options?.interviewAction ?? null,
+      uploaded_filenames: options?.uploadedFilenames ?? null,
     }),
     signal: controller.signal,
   })

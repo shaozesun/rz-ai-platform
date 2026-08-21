@@ -158,11 +158,20 @@ except Exception:
 import pandas as pd
 df = pd.read_csv('data.csv')
 
+# 3.4 预热 WeasyPrint（HTML→PDF 报告依赖）：其底层用 cffi dlopen Pango/Cairo，
+# 首次 import 时会触发 `import ctypes.util`。这发生在下面 3.5 给 ctypes 打桩*之前*，
+# 让 cffi 拿到真实 ctypes 完成 dlopen；用户代码后续 import weasyprint 时模块已在
+# sys.modules 缓存里，不会重新触发 ctypes.util 导入。不装 weasyprint 的环境静默跳过。
+try:
+    import weasyprint  # noqa: F401
+except Exception:
+    pass
+
 # 3.5 禁用原生/进程模块：ctypes 可经 libc 的 system/fork/execve 绕过上面所有
 # Python 级封锁（CDLL(None).system(...)），multiprocessing 可经 pickle+exec 起子进程。
 # 用 sys.modules 打桩而非改 __import__：importlib.import_module('ctypes') 也绕不过
-# sys.modules。已 import 的库（pandas/matplotlib/reportlab 等）早已持有真实引用，
-# 打桩只影响用户代码的新 import，不破坏报告生成。
+# sys.modules。已 import 的库（pandas/matplotlib/reportlab/weasyprint 等）早已持有
+# 真实引用，打桩只影响用户代码的新 import，不破坏报告生成。
 class _NoNativeModule:
     def __getattr__(self, name):
         raise ImportError('沙箱禁止导入 ctypes/_ctypes/multiprocessing（可逃逸沙箱）')

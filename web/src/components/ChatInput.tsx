@@ -1,6 +1,6 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import {
-  Send, StopCircle, Paperclip, Layers, Workflow, type LucideIcon,
+  Send, StopCircle, Paperclip, Layers, Workflow, FileText, X, Loader2, AlertCircle, type LucideIcon,
 } from 'lucide-react';
 import { Menu } from '@base-ui/react/menu';
 import { useChatStore, type TaskMode, type InteractionMode } from '../stores/chatStore';
@@ -71,11 +71,48 @@ function ModeSelect({
   );
 }
 
+function UploadCard({
+  displayName,
+  status,
+  error,
+  onRemove,
+}: {
+  displayName: string;
+  status: 'uploading' | 'ready' | 'error';
+  error?: string;
+  onRemove: () => void;
+}) {
+  return (
+    <div
+      className="flex items-center gap-1.5 rounded-lg border border-border bg-secondary/60 px-2 py-1 text-xs"
+      title={status === 'error' ? error : displayName}
+    >
+      {status === 'uploading' ? (
+        <Loader2 className="size-3.5 shrink-0 animate-spin text-muted-foreground" />
+      ) : status === 'error' ? (
+        <AlertCircle className="size-3.5 shrink-0 text-destructive" />
+      ) : (
+        <FileText className="size-3.5 shrink-0 text-primary" />
+      )}
+      <span className="max-w-32 truncate">{displayName}</span>
+      <button
+        onClick={onRemove}
+        aria-label="移除附件"
+        className="rounded p-0.5 text-muted-foreground hover:bg-muted/70"
+      >
+        <X className="size-3" />
+      </button>
+    </div>
+  );
+}
+
 export default function ChatInput({ suggestions }: ChatInputProps) {
   const [text, setText] = useState('');
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const {
     sendMessage, stopStreaming, isStreaming,
     taskMode, interactionMode, setTaskMode, setInteractionMode,
+    pendingUploads, addPendingUploadFiles, removePendingUpload,
   } = useChatStore();
 
   const handleSend = (inputText?: string) => {
@@ -83,6 +120,12 @@ export default function ChatInput({ suggestions }: ChatInputProps) {
     if (!trimmed || isStreaming) return;
     setText('');
     sendMessage(trimmed);
+  };
+
+  const handleFilesSelected = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(e.target.files || []);
+    if (files.length) addPendingUploadFiles(files);
+    e.target.value = ''; // 允许重复选择同一文件
   };
 
   return (
@@ -102,9 +145,32 @@ export default function ChatInput({ suggestions }: ChatInputProps) {
         </div>
       )}
 
+      {/* Pending upload preview cards */}
+      {pendingUploads.length > 0 && (
+        <div className="mb-2 flex flex-wrap gap-1.5">
+          {pendingUploads.map((u) => (
+            <UploadCard
+              key={u.key}
+              displayName={u.displayName}
+              status={u.status}
+              error={u.error}
+              onRemove={() => removePendingUpload(u.key)}
+            />
+          ))}
+        </div>
+      )}
+
       {/* Input bar */}
       <div className="flex items-end gap-2 rounded-2xl border border-border bg-card p-2 shadow-lg transition-all focus-within:border-ring focus-within:shadow-xl">
+        <input
+          ref={fileInputRef}
+          type="file"
+          multiple
+          className="hidden"
+          onChange={handleFilesSelected}
+        />
         <button
+          onClick={() => fileInputRef.current?.click()}
           className="rounded-md p-2 text-muted-foreground hover:bg-secondary shrink-0"
           aria-label="附件"
         >
