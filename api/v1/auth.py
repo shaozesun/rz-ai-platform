@@ -10,6 +10,9 @@ import re
 from pydantic import BaseModel, Field, field_validator
 from PIL import Image, ImageDraw, ImageFont
 from service.auth import auth_service, user_service
+from service.auth.user_service import mask_mgmt_username
+from service.query.mgmt import http as mgmt_http
+from core.mgmt_credentials import encrypt_password
 from config.settings import settings
 from config.redis_conn import redis_manager
 
@@ -318,3 +321,67 @@ async def reset_password(body: ResetPasswordRequest):
 
   await user_service.reset_password(user['user_id'], body.new_password)
   return {'ok': True, 'message': '密码已重置，请重新登录'}
+
+
+# ==================== 认证中心（综合管理平台账号绑定） ====================
+
+class BindMgmtRequest(BaseModel):
+  username: str = Field(..., min_length=1)
+  password: str = Field(..., min_length=1)
+
+
+@router.get('/mgmt/status')
+async def mgmt_status(request: Request):
+  """查看当前用户综合管理平台账号绑定状态"""
+  user = await user_service.get_by_id(request.state.user_id)
+  if not user:
+    raise HTTPException(404, '用户不存在')
+  username = user.get('mgmt_username', '')
+  return {
+    'ok': True,
+    'data': {'bound': bool(username), 'username_masked': mask_mgmt_username(username)},
+  }
+
+
+@router.post('/mgmt/bind')
+async def mgmt_bind(body: BindMgmtRequest, request: Request):
+  """绑定综合管理平台账号（先真实登录校验，成功后加密落库）"""
+  user_id = request.state.user_id
+  username = body.username.strip()
+  password = body.password
+  if not username or not password:
+    raise HTTPException(400, '账号和密码不能为空')
+
+  # 真实校验：调 mgmt 登录接口，失败说明账号/密码错（此时不会缓存 token）
+  try:
+    await mgmt_http.login_user(user_id, username, password)
+  except mgmt_http.MgmtError:
+    raise HTTPException(400, '综合管理平台账号或密码错误，请核对后重试')
+
+  try:
+    password_enc = encrypt_password(password)
+  except Exception:
+    raise HTTPException(500, '加密服务未就绪，请联系管理员')
+
+  await user_service.update_user(user_id, {
+    'mgmt_username': username,
+    'mgmt_password_enc': password_enc,
+  })
+  mgmt_http.clear_user_token(user_id)  # 重绑时清旧 token 缓存，强制用新账号
+
+  user = await user_service.get_by_id(user_id)
+  await user_service.write_audit(
+    user_id, user.get('phone', ''), 'user.mgmt_bind', 'mgmt_account',
+    f'绑定综合管理平台账号 {username}', '',
+    operator_name=user.get('name', ''),
+  )
+  return {'ok': True, 'message': '绑定成功'}
+
+
+@router.post('/mgmt/unbind')
+async def mgmt_unbind(request: Request):
+  """解绑综合管理平台账号，恢复默认平台账号（手机号 + 默认密码）"""
+  user_id = request.state.user_id
+  await user_service.update_user(user_id, {'mgmt_username': '', 'mgmt_password_enc': ''})
+  mgmt_http.clear_user_token(user_id)
+  return {'ok': True, 'message': '已解绑'}

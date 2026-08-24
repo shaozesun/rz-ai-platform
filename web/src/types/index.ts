@@ -11,6 +11,8 @@ export interface User {
   permissions: string[];
   agent_enabled?: boolean;
   created_at: string;
+  mgmt_bound?: boolean;
+  mgmt_username_masked?: string;
 }
 
 export interface AuthTokens {

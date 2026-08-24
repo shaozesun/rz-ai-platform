@@ -14,8 +14,9 @@
   `_query_question_ticket` / `_query_breakdown_ticket_detail` /
   `_query_question_ticket_detail` / `_query_event_ticket_detail` /
   `_query_change_ticket_detail`（仅此八处硬编码）。
-- `on_behalf_of` 目前未使用（mgmt 侧长期用单一服务账号，暂无按用户区分身份的
-  需求，见项目反馈：不强行做身份透传预留设计，等真有需要再加）。
+- `on_behalf_of` 为认证中心身份透传：单接口路径按其 user_id 用该用户自己的
+  mgmt token 查询，8 个 pen 组合能力也用该用户身份换发 token/公司部门上下文，
+  实现 mgmt/pen 侧数据权限按人生效（user_id 为空才回退服务账号）。
 """
 
 import logging
@@ -106,28 +107,29 @@ def _extract_result(data: dict, result_path: str, page_meta: tuple[str, ...] = (
   return result
 
 
-async def _query_change_ticket(params: dict) -> dict:
+async def _query_change_ticket(params: dict, user_id: str | None = None) -> dict:
   """查询 pen 流程平台的变更工单列表（组合能力：公司维度 POST）。
 
   与待办不同——变更工单是**公司维度**（实测同 body 换不同人 token 结果相同，
-  token 只鉴权），故不加 name。默认查服务账号所属「润泽科技（kingdeeCompanyId，
-  登录缓存）+ 技术保障部（ownDeptId）」；company_id 传了则按 mgmt 内部 id 映射
-  到 pen 的 kingdee 格式（跨公司）。
+  token 只鉴权），故不加 name。默认查当前用户所属公司（kingdeeCompanyId）与部门
+  （ownDeptId，user_id 为空回退服务账号）；company_id 传了则按 mgmt 内部 id 映射
+  到 pen 的 kingdee 格式（跨公司，按当前账号可见范围）。
   """
-  kingdee_uid = await http.get_service_kingdee_uid()
-  if not kingdee_uid:
-    raise MgmtError('服务账号本人 kingdeeUid 未取到，无法查变更工单')
-
   # companyId：pen 只认 kingdee 格式（sA8...，内部格式返回 0），跨公司需映射
   company_id = params.get('company_id')
   if company_id:
-    kingdee_company = await http.get_pen_company_kingdee_id(str(company_id))
+    kingdee_company = await http.get_pen_company_kingdee_id(
+      str(company_id), auth_user_id=user_id,
+    )
     if not kingdee_company:
-      raise MgmtError(f'公司 {company_id} 不在服务账号可见范围，无法映射到 pen 公司 id')
+      raise MgmtError(f'公司 {company_id} 不在当前账号可见范围，无法映射到 pen 公司 id')
   else:
-    kingdee_company = await http.get_service_pen_company_id()
+    kingdee_company = (
+      await http.get_user_pen_company_id(user_id) if user_id
+      else await http.get_service_pen_company_id()
+    )
     if not kingdee_company:
-      raise MgmtError('服务账号 kingdeeCompanyId 未取到，无法查变更工单')
+      raise MgmtError('当前账号 kingdeeCompanyId 未取到，无法查变更工单')
 
   body = {
     'isPubilc': 0,
@@ -137,13 +139,16 @@ async def _query_change_ticket(params: dict) -> dict:
     'page': params.get('page', 1),
     'size': params.get('page_size', 20),
   }
-  # dc：显式传了用它；否则默认技术保障部 ownDeptId；跨公司且没传 → 省略（查全公司，
-  # 避免把润泽科技的部门带到别的公司）
+  # dc：显式传了用它；否则默认当前部门 ownDeptId；跨公司且没传 → 省略（查全公司，
+  # 避免把当前公司的部门带到别的公司）
   dc = params.get('dc')
   if dc:
     body['dc'] = dc
   elif not company_id:
-    context = await http.get_default_context()
+    context = (
+      await http.get_user_context(user_id) if user_id
+      else await http.get_default_context()
+    )
     if context.get('own_dept_id'):
       body['dc'] = context['own_dept_id']
 
@@ -168,7 +173,7 @@ async def _query_change_ticket(params: dict) -> dict:
         body[dst] = int(dt.timestamp() * 1000)
 
   data = await http.pen_request(
-    '/ticket/wiporder/ticketlist/modify', json_body=body, kingdee_uid=kingdee_uid,
+    '/ticket/wiporder/ticketlist/modify', json_body=body, auth_user_id=user_id,
   )
   # 信封 {simpleTicketVOList,total,page,size,approveCount,...}：列表键不在 analysis_load
   # _RECORD_KEYS，显式归一化成 records（保留 total 与各阶段计数）
@@ -177,27 +182,28 @@ async def _query_change_ticket(params: dict) -> dict:
   return data
 
 
-async def _query_breakdown_ticket(params: dict) -> dict:
+async def _query_breakdown_ticket(params: dict, user_id: str | None = None) -> dict:
   """查询 pen 流程平台的故障工单列表（组合能力：公司维度 POST）。
 
   同 _query_change_ticket——故障工单列表也是公司维度（token 只鉴权不区分人），
-  默认查服务账号所属「润泽科技 + 技术保障部」；company_id 传了则跨公司映射。
-  与变更列表的区别仅：端点换 /ticket/wiporder/ticketlist/breakdown，筛选项把
-  specialty/modifyType 换成 breakDownLevel（故障级别）。
+  默认查当前用户所属公司/部门（user_id 为空回退服务账号）；company_id 传了则
+  跨公司映射。与变更列表的区别仅：端点换 /ticket/wiporder/ticketlist/breakdown，
+  筛选项把 specialty/modifyType 换成 breakDownLevel（故障级别）。
   """
-  kingdee_uid = await http.get_service_kingdee_uid()
-  if not kingdee_uid:
-    raise MgmtError('服务账号本人 kingdeeUid 未取到，无法查故障工单')
-
   company_id = params.get('company_id')
   if company_id:
-    kingdee_company = await http.get_pen_company_kingdee_id(str(company_id))
+    kingdee_company = await http.get_pen_company_kingdee_id(
+      str(company_id), auth_user_id=user_id,
+    )
     if not kingdee_company:
-      raise MgmtError(f'公司 {company_id} 不在服务账号可见范围，无法映射到 pen 公司 id')
+      raise MgmtError(f'公司 {company_id} 不在当前账号可见范围，无法映射到 pen 公司 id')
   else:
-    kingdee_company = await http.get_service_pen_company_id()
+    kingdee_company = (
+      await http.get_user_pen_company_id(user_id) if user_id
+      else await http.get_service_pen_company_id()
+    )
     if not kingdee_company:
-      raise MgmtError('服务账号 kingdeeCompanyId 未取到，无法查故障工单')
+      raise MgmtError('当前账号 kingdeeCompanyId 未取到，无法查故障工单')
 
   body = {
     'isPubilc': 0,
@@ -211,7 +217,10 @@ async def _query_breakdown_ticket(params: dict) -> dict:
   if dc:
     body['dc'] = dc
   elif not company_id:
-    context = await http.get_default_context()
+    context = (
+      await http.get_user_context(user_id) if user_id
+      else await http.get_default_context()
+    )
     if context.get('own_dept_id'):
       body['dc'] = context['own_dept_id']
 
@@ -231,34 +240,35 @@ async def _query_breakdown_ticket(params: dict) -> dict:
         body[dst] = int(dt.timestamp() * 1000)
 
   data = await http.pen_request(
-    '/ticket/wiporder/ticketlist/breakdown', json_body=body, kingdee_uid=kingdee_uid,
+    '/ticket/wiporder/ticketlist/breakdown', json_body=body, auth_user_id=user_id,
   )
   if isinstance(data, dict) and 'simpleTicketVOList' in data:
     data['records'] = data.pop('simpleTicketVOList')
   return data
 
 
-async def _query_question_ticket(params: dict) -> dict:
+async def _query_question_ticket(params: dict, user_id: str | None = None) -> dict:
   """查询 pen 流程平台的问题工单列表（组合能力：公司维度 POST）。
 
-  同 _query_change_ticket——问题工单列表也是公司维度，默认查服务账号所属
-  「润泽科技 + 技术保障部」；company_id 传了则跨公司映射。与变更列表的区别：
+  同 _query_change_ticket——问题工单列表也是公司维度，默认查当前用户所属公司/部门
+  （user_id 为空回退服务账号）；company_id 传了则跨公司映射。与变更列表的区别：
   端点换 /ticket/wiporder/ticketlist/question，筛选项换成 severityLevel（问题级别）
   + specialty（专业），无 ticketType/modifyType/onlyTimeOut。
   """
-  kingdee_uid = await http.get_service_kingdee_uid()
-  if not kingdee_uid:
-    raise MgmtError('服务账号本人 kingdeeUid 未取到，无法查问题工单')
-
   company_id = params.get('company_id')
   if company_id:
-    kingdee_company = await http.get_pen_company_kingdee_id(str(company_id))
+    kingdee_company = await http.get_pen_company_kingdee_id(
+      str(company_id), auth_user_id=user_id,
+    )
     if not kingdee_company:
-      raise MgmtError(f'公司 {company_id} 不在服务账号可见范围，无法映射到 pen 公司 id')
+      raise MgmtError(f'公司 {company_id} 不在当前账号可见范围，无法映射到 pen 公司 id')
   else:
-    kingdee_company = await http.get_service_pen_company_id()
+    kingdee_company = (
+      await http.get_user_pen_company_id(user_id) if user_id
+      else await http.get_service_pen_company_id()
+    )
     if not kingdee_company:
-      raise MgmtError('服务账号 kingdeeCompanyId 未取到，无法查问题工单')
+      raise MgmtError('当前账号 kingdeeCompanyId 未取到，无法查问题工单')
 
   body = {
     'isPubilc': 0,
@@ -272,7 +282,10 @@ async def _query_question_ticket(params: dict) -> dict:
   if dc:
     body['dc'] = dc
   elif not company_id:
-    context = await http.get_default_context()
+    context = (
+      await http.get_user_context(user_id) if user_id
+      else await http.get_default_context()
+    )
     if context.get('own_dept_id'):
       body['dc'] = context['own_dept_id']
 
@@ -292,23 +305,25 @@ async def _query_question_ticket(params: dict) -> dict:
         body[dst] = int(dt.timestamp() * 1000)
 
   data = await http.pen_request(
-    '/ticket/wiporder/ticketlist/question', json_body=body, kingdee_uid=kingdee_uid,
+    '/ticket/wiporder/ticketlist/question', json_body=body, auth_user_id=user_id,
   )
   if isinstance(data, dict) and 'simpleTicketVOList' in data:
     data['records'] = data.pop('simpleTicketVOList')
   return data
 
 
-async def _query_pending_ticket(params: dict) -> dict:
+async def _query_pending_ticket(params: dict, user_id: str | None = None) -> dict:
   """查询流程平台「我的工单」（组合能力：查人 → 换 token → 调 pen）。
 
-  name 传了先用 query_person_by_name 拿首个匹配人员的 kingdeeUid，查该人员的工单；
-  不传用服务账号本人（登录缓存的 kingdeeUid）。换 token 接口只在内部调用，不透出
-  LLM（能拿任意用户 token = 身份冒充）。
+  name 传了先用 query_person_by_name 拿首个匹配人员的 kingdeeUid，按当前用户身份
+  授权换发该人员的 token 查工单；不传用当前用户本人（登录缓存的 kingdeeUid），
+  user_id 为空回退服务账号本人。换 token 接口只在内部调用，不透出 LLM。
   """
   kingdee_uid = ''
   if params.get('name'):
-    persons = await call('mgmt.query_person_by_name', {'name': params['name']})
+    persons = await call(
+      'mgmt.query_person_by_name', {'name': params['name']}, on_behalf_of=user_id,
+    )
     persons = persons if isinstance(persons, list) else (persons.get('list') or [])
     for person in persons or []:
       if person.get('kingdeeUid'):
@@ -318,10 +333,6 @@ async def _query_pending_ticket(params: dict) -> dict:
       raise MgmtError(
         f"未找到人员「{params['name']}」或其 kingdeeUid（query_person_by_name 返回空）"
       )
-  else:
-    kingdee_uid = await http.get_service_kingdee_uid()
-    if not kingdee_uid:
-      raise MgmtError('服务账号本人 kingdeeUid 未取到，无法查待办')
 
   query = {
     'isDone': params.get('is_done', 1),   # 1=待办(默认)/2=已办/3=已发起/4=抄送给我
@@ -335,59 +346,70 @@ async def _query_pending_ticket(params: dict) -> dict:
     query['companyId'] = params['company_id']
 
   # 返回 pen 信封 {records,total,current,size,pages}，analysis_load 可直接物化
-  return await http.pen_request('/pen/pending/list/v1', query, kingdee_uid=kingdee_uid)
+  return await http.pen_request(
+    '/pen/pending/list/v1', query, kingdee_uid=kingdee_uid or None,
+    auth_user_id=user_id,
+  )
 
 
-async def _query_breakdown_ticket_detail(params: dict) -> dict:
+async def _query_breakdown_ticket_detail(params: dict, user_id: str | None = None) -> dict:
   """查询单张故障工单的完整详情（组合能力：按待办列表 id 查 pen）。
 
   详情端点 `GET /ticket/wiporder/query/breakdown/{id}` 实测不按 token 归属人区分
-  （自 token 与别人 token 查到同一张单，仅按钮/审计等视图字段不同），故直接用服务
-  账号本人 token（pen_request 的 kingdee_uid 留空默认）。id 来自 query_pending_ticket
+  （自 token 与别人 token 查到同一张单，仅按钮/审计等视图字段不同），仍用当前用户
+  身份（auth_user_id），user_id 为空回退服务账号。id 来自 query_pending_ticket
   待办列表返回的 id 字段（用户确认「里面返回的 id 就是工单 id」）。
   """
   ticket_id = params.get('ticket_id')
   if not ticket_id:
     raise MgmtError('查询故障工单详情缺 ticket_id（从 query_pending_ticket 待办列表返回的 id 获取）')
-  return await http.pen_request(f'/ticket/wiporder/query/breakdown/{ticket_id}')
+  return await http.pen_request(
+    f'/ticket/wiporder/query/breakdown/{ticket_id}', auth_user_id=user_id,
+  )
 
 
-async def _query_question_ticket_detail(params: dict) -> dict:
+async def _query_question_ticket_detail(params: dict, user_id: str | None = None) -> dict:
   """查询单张问题工单的完整详情（组合能力：按待办列表 id 查 pen）。
 
   同 _query_breakdown_ticket_detail：详情端点 `/ticket/wiporder/question/{id}` 不按
-  token 归属人区分（实测自 token 与别人 token 查到同一张单），用服务账号本人 token。
+  token 归属人区分（实测自 token 与别人 token 查到同一张单），用当前用户身份。
   """
   ticket_id = params.get('ticket_id')
   if not ticket_id:
     raise MgmtError('查询问题工单详情缺 ticket_id（从 query_pending_ticket 待办列表返回的 id 获取）')
-  return await http.pen_request(f'/ticket/wiporder/question/{ticket_id}')
+  return await http.pen_request(
+    f'/ticket/wiporder/question/{ticket_id}', auth_user_id=user_id,
+  )
 
 
-async def _query_event_ticket_detail(params: dict) -> dict:
+async def _query_event_ticket_detail(params: dict, user_id: str | None = None) -> dict:
   """查询单张事件工单的完整详情（组合能力：按待办列表 id 查 pen）。
 
   同 _query_breakdown_ticket_detail：详情端点 `/ticket/wiporder/event/{id}` 不按
-  token 归属人区分（与故障/问题详情同结构同认证），用服务账号本人 token。
+  token 归属人区分（与故障/问题详情同结构同认证），用当前用户身份。
   """
   ticket_id = params.get('ticket_id')
   if not ticket_id:
     raise MgmtError('查询事件工单详情缺 ticket_id（从 query_pending_ticket 待办列表返回的 id 获取）')
-  return await http.pen_request(f'/ticket/wiporder/event/{ticket_id}')
+  return await http.pen_request(
+    f'/ticket/wiporder/event/{ticket_id}', auth_user_id=user_id,
+  )
 
 
-async def _query_change_ticket_detail(params: dict) -> dict:
+async def _query_change_ticket_detail(params: dict, user_id: str | None = None) -> dict:
   """查询单张变更工单的完整详情（组合能力：按变更工单列表 ticketId 查 pen）。
 
   实测确认：与 _query_breakdown_ticket_detail 等三个详情接口同构，不按 token
   归属人区分（服务账号本人 token 查到了他人「施光楠」发起的工单完整详情），用
-  服务账号本人 token 即可。id 来自 query_change_ticket 列表返回的 **ticketId**
-  字段（注意不是 `id`——变更工单列表信封字段名与故障/问题/事件的待办列表不同）。
+  当前用户身份。id 来自 query_change_ticket 列表返回的 **ticketId** 字段（注意
+  不是 `id`——变更工单列表信封字段名与故障/问题/事件的待办列表不同）。
   """
   ticket_id = params.get('ticket_id')
   if not ticket_id:
     raise MgmtError('查询变更工单详情缺 ticket_id（从 query_change_ticket 列表返回的 ticketId 字段获取）')
-  return await http.pen_request(f'/ticket/wiporder/query/modify/{ticket_id}')
+  return await http.pen_request(
+    f'/ticket/wiporder/query/modify/{ticket_id}', auth_user_id=user_id,
+  )
 
 
 async def call(
@@ -401,7 +423,7 @@ async def call(
   Args:
     capability_id: 能力 id，如 'mgmt.query_person_by_name'。
     params: 调用参数，键对应 Capability.params（snake_case）。
-    on_behalf_of: 目前未使用，见模块 docstring。
+    on_behalf_of: 代表哪个用户发起（rz user_id），单接口与 pen 组合能力都按该用户身份查。
 
   Returns:
     结构化 dict 结果。
@@ -417,28 +439,28 @@ async def call(
   # 查找之前分流。
   if capability_id == 'mgmt.query_pending_ticket':
     logger.info('mgmt.call id=%s params=%s', capability_id, params)
-    return await _query_pending_ticket(params)
+    return await _query_pending_ticket(params, on_behalf_of)
   if capability_id == 'mgmt.query_change_ticket':
     logger.info('mgmt.call id=%s params=%s', capability_id, params)
-    return await _query_change_ticket(params)
+    return await _query_change_ticket(params, on_behalf_of)
   if capability_id == 'mgmt.query_breakdown_ticket':
     logger.info('mgmt.call id=%s params=%s', capability_id, params)
-    return await _query_breakdown_ticket(params)
+    return await _query_breakdown_ticket(params, on_behalf_of)
   if capability_id == 'mgmt.query_question_ticket':
     logger.info('mgmt.call id=%s params=%s', capability_id, params)
-    return await _query_question_ticket(params)
+    return await _query_question_ticket(params, on_behalf_of)
   if capability_id == 'mgmt.query_breakdown_ticket_detail':
     logger.info('mgmt.call id=%s params=%s', capability_id, params)
-    return await _query_breakdown_ticket_detail(params)
+    return await _query_breakdown_ticket_detail(params, on_behalf_of)
   if capability_id == 'mgmt.query_question_ticket_detail':
     logger.info('mgmt.call id=%s params=%s', capability_id, params)
-    return await _query_question_ticket_detail(params)
+    return await _query_question_ticket_detail(params, on_behalf_of)
   if capability_id == 'mgmt.query_event_ticket_detail':
     logger.info('mgmt.call id=%s params=%s', capability_id, params)
-    return await _query_event_ticket_detail(params)
+    return await _query_event_ticket_detail(params, on_behalf_of)
   if capability_id == 'mgmt.query_change_ticket_detail':
     logger.info('mgmt.call id=%s params=%s', capability_id, params)
-    return await _query_change_ticket_detail(params)
+    return await _query_change_ticket_detail(params, on_behalf_of)
 
   spec = ENDPOINTS.get(capability_id)
   if spec is None:
@@ -466,10 +488,14 @@ async def call(
         mapped_params[field_name] = mapping[value]
 
   # defaults 兜底：records/v2 之类需要部门/公司上下文的 json 接口，LLM 不会传
-  # deptId/companyId，用服务账号登录缓存的 own_dept_id/company_id 补上（实测
-  # 只传 uid 会报「部门不存在/公司不存在」）。
+  # deptId/companyId，用登录缓存里的 own_dept_id/company_id 补上（实测只传 uid
+  # 会报「部门不存在/公司不存在」）。on_behalf_of 有值时用该用户自己的上下文，
+  # 否则用服务账号上下文。
   if spec.defaults:
-    context = await http.get_default_context()
+    context = (
+      await http.get_user_context(on_behalf_of)
+      if on_behalf_of else await http.get_default_context()
+    )
     for field_name, ctx_key in spec.defaults.items():
       if field_name not in mapped_params or not mapped_params[field_name]:
         mapped_params[field_name] = context.get(ctx_key, '')
@@ -507,12 +533,12 @@ async def call(
     if spec.param_location == 'json':
       data = await http.request(
         spec.method, path, json_body=mapped_params, dept_id=dept_id,
-        base_url=spec.base_url,
+        base_url=spec.base_url, user_id=on_behalf_of,
       )
     else:
       data = await http.request(
         spec.method, path, params=mapped_params, dept_id=dept_id,
-        base_url=spec.base_url,
+        base_url=spec.base_url, user_id=on_behalf_of,
       )
   except http.MgmtError as e:
     raise MgmtError(str(e)) from e

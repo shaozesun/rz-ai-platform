@@ -81,3 +81,18 @@ export async function updateProfile(updates: {
   const { data } = await client.put('/auth/profile', updates);
   return data;
 }
+
+export async function getMgmtStatus() {
+  const { data } = await client.get('/auth/mgmt/status');
+  return data.data as { bound: boolean; username_masked: string };
+}
+
+export async function bindMgmtAccount(username: string, password: string) {
+  const { data } = await client.post('/auth/mgmt/bind', { username, password });
+  return data;
+}
+
+export async function unbindMgmtAccount() {
+  const { data } = await client.post('/auth/mgmt/unbind');
+  return data;
+}

@@ -1,14 +1,15 @@
-import { useState, useRef } from 'react';
-import { User, Bell, BellRing, Trash2, Save, Camera } from 'lucide-react';
+import { useState, useRef, useEffect } from 'react';
+import { User, Bell, BellRing, Trash2, Save, Camera, Moon, KeyRound } from 'lucide-react';
 import { PlatformShell } from '@/components/platform-shell';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { useAuthStore } from '@/stores/authStore';
-import { updateProfile } from '@/api/auth';
+import { updateProfile, getMgmtStatus, bindMgmtAccount, unbindMgmtAccount } from '@/api/auth';
 import {
   BROWSER_NOTIFY_KEY, isNotificationSupported, requestPermission, showNotification,
 } from '@/lib/notifications';
+import { getTheme, applyTheme } from '@/lib/theme';
 
 const NOTIFY_KEY = 'rz_notify_enabled';
 
@@ -57,14 +58,69 @@ export default function SettingsPage() {
     const stored = localStorage.getItem(BROWSER_NOTIFY_KEY);
     return stored !== 'false';
   });
+
+  const [darkMode, setDarkMode] = useState(() => getTheme() === 'dark');
   const [permission, setPermission] = useState<NotificationPermission>(() =>
     isNotificationSupported() ? Notification.permission : 'denied',
   );
+
+  const [mgmtBound, setMgmtBound] = useState(false);
+  const [mgmtUsernameMasked, setMgmtUsernameMasked] = useState('');
+  const [mgmtUsername, setMgmtUsername] = useState('');
+  const [mgmtPassword, setMgmtPassword] = useState('');
+  const [mgmtLoading, setMgmtLoading] = useState(false);
 
   const showMsg = (text: string, type: 'success' | 'error' = 'success') => {
     setMsg(text);
     setMsgType(type);
     setTimeout(() => setMsg(''), 3000);
+  };
+
+  useEffect(() => {
+    let cancelled = false;
+    getMgmtStatus()
+      .then((s) => {
+        if (cancelled) return;
+        setMgmtBound(s.bound);
+        setMgmtUsernameMasked(s.username_masked);
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, []);
+
+  const handleBindMgmt = async () => {
+    if (!mgmtUsername.trim() || !mgmtPassword) {
+      showMsg('请输入综合管理平台账号和密码', 'error');
+      return;
+    }
+    setMgmtLoading(true);
+    try {
+      await bindMgmtAccount(mgmtUsername.trim(), mgmtPassword);
+      const s = await getMgmtStatus();
+      setMgmtBound(s.bound);
+      setMgmtUsernameMasked(s.username_masked);
+      setMgmtUsername('');
+      setMgmtPassword('');
+      showMsg('绑定成功');
+    } catch (e) {
+      showMsg((e as { response?: { data?: { detail?: string } } })?.response?.data?.detail || '绑定失败', 'error');
+    } finally {
+      setMgmtLoading(false);
+    }
+  };
+
+  const handleUnbindMgmt = async () => {
+    setMgmtLoading(true);
+    try {
+      await unbindMgmtAccount();
+      setMgmtBound(false);
+      setMgmtUsernameMasked('');
+      showMsg('已解绑');
+    } catch {
+      showMsg('解绑失败', 'error');
+    } finally {
+      setMgmtLoading(false);
+    }
   };
 
   const handleSave = async () => {
@@ -106,6 +162,12 @@ export default function SettingsPage() {
     const next = !browserNotifyEnabled;
     setBrowserNotifyEnabled(next);
     localStorage.setItem(BROWSER_NOTIFY_KEY, String(next));
+  };
+
+  const toggleTheme = () => {
+    const next = !darkMode;
+    setDarkMode(next);
+    applyTheme(next ? 'dark' : 'light');
   };
 
   const handleRequestPermission = async () => {
@@ -199,6 +261,64 @@ export default function SettingsPage() {
           </CardContent>
         </Card>
 
+        {/* mgmt 账号绑定 */}
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <KeyRound className="size-4" />
+              综合管理平台账号
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            {mgmtBound ? (
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-sm font-medium text-foreground">
+                    已绑定账号：{mgmtUsernameMasked}
+                  </p>
+                  <p className="text-xs text-muted-foreground mt-0.5">
+                    Agent 查询综合管理平台数据时将使用该账号身份
+                  </p>
+                </div>
+                <Button size="sm" variant="outline" onClick={handleUnbindMgmt} disabled={mgmtLoading}>
+                  {mgmtLoading ? '处理中…' : '解绑'}
+                </Button>
+              </div>
+            ) : (
+              <div className="space-y-3">
+                <p className="text-sm text-muted-foreground">
+                  未绑定则默认使用「手机号 + 初始密码」登录；若密码已修改，请在此绑定自己的账号。
+                </p>
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <div>
+                    <label className="text-sm font-medium text-foreground">账号</label>
+                    <Input
+                      className="mt-1.5"
+                      placeholder="综合管理平台账号"
+                      value={mgmtUsername}
+                      onChange={(e) => setMgmtUsername(e.target.value)}
+                    />
+                  </div>
+                  <div>
+                    <label className="text-sm font-medium text-foreground">密码</label>
+                    <Input
+                      className="mt-1.5"
+                      type="password"
+                      placeholder="综合管理平台密码"
+                      value={mgmtPassword}
+                      onChange={(e) => setMgmtPassword(e.target.value)}
+                    />
+                  </div>
+                </div>
+                <Button size="sm" onClick={handleBindMgmt} disabled={mgmtLoading}>
+                  <KeyRound className="size-3.5" />
+                  {mgmtLoading ? '绑定中…' : '绑定'}
+                </Button>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+
         {/* Preferences */}
         <Card>
           <CardHeader>
@@ -207,7 +327,7 @@ export default function SettingsPage() {
               偏好设置
             </CardTitle>
           </CardHeader>
-          <CardContent>
+          <CardContent className="space-y-4">
             <div className="flex items-center justify-between">
               <div>
                 <p className="text-sm font-medium text-foreground">动态通知</p>
@@ -224,6 +344,30 @@ export default function SettingsPage() {
                 <span
                   className={`inline-block size-4 transform rounded-full bg-white transition-transform ${
                     notifyEnabled ? 'translate-x-6' : 'translate-x-1'
+                  }`}
+                />
+              </button>
+            </div>
+
+            <div className="flex items-center justify-between border-t border-border pt-4">
+              <div>
+                <p className="flex items-center gap-1.5 text-sm font-medium text-foreground">
+                  <Moon className="size-3.5" />
+                  深色模式
+                </p>
+                <p className="text-xs text-muted-foreground mt-0.5">
+                  切换界面深色 / 浅色外观
+                </p>
+              </div>
+              <button
+                onClick={toggleTheme}
+                className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors ${
+                  darkMode ? 'bg-primary' : 'bg-muted'
+                }`}
+              >
+                <span
+                  className={`inline-block size-4 transform rounded-full bg-white transition-transform ${
+                    darkMode ? 'translate-x-6' : 'translate-x-1'
                   }`}
                 />
               </button>

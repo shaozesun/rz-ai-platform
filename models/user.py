@@ -59,6 +59,9 @@ class User(BaseModel):
   created_at: datetime = Field(default_factory=datetime.utcnow)
   last_login_at: Optional[datetime] = None
   last_login_ip: Optional[str] = None
+  # 认证中心：绑定的综合管理平台账号（空 = 未绑定，查询时走默认平台账号）
+  mgmt_username: str = ''
+  mgmt_password_enc: str = ''
 
 
 class UserPublic(BaseModel):

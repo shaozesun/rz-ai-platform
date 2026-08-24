@@ -212,8 +212,8 @@ LLM 需要做全量/统计/聚合/报告时，数据先物化到沙箱（原始�
 
 ### 外部系统
 
-- DCIM / 综合管理平台(mgmt) / 安防平台(security) — Agent 平台工具后端，走服务账号登录（`/center/user/login/v1`，Redis 缓存 token + ownDeptId + companyId），请求带 `token` + `Deptid` 头
-- pen 流程服务（`api.ddbes.com`，mgmt 能力延伸，非新平台）— 待办/变更/故障/问题/事件工单后端，`Authorization: Bearer` 认证。待办按人（token 归属人，内部用服务账号换发指定人员 token，`/user/dandang/user/token/{kingdeeUid}`，path 参数区分人）；变更工单按公司（`POST /ticket/wiporder/ticketlist/modify`，companyId 认 kingdee 格式，跨公司经 `/pen/pending/list/company` 映射）；各类工单详情 `GET /ticket/wiporder/query/breakdown/{id}` / `/ticket/wiporder/question/{id}` / `/ticket/wiporder/event/{id}`（id 取待办列表返回的 id，任意有效 token 可查，端点按工单类型区分）。token 换发接口不暴露为 LLM 工具
+- DCIM / 综合管理平台(mgmt) / 安防平台(security) — Agent 平台工具后端。mgmt 走**认证中心**：用户绑定自己的 mgmt 账号密码（Fernet 加密落库，`core/mgmt_credentials.py`，密钥由 `JWT_PRIVATE_KEY` 派生）后按用户 token 查询，mgmt 侧数据权限按人生效；未绑定用户默认用「rz 手机号 + `MGMT_DEFAULT_PASSWORD`」登录，登录失败提示去【设置 → 综合管理平台账号】绑定。登录接口 `/user/login/v1`，token + ownDeptId + companyId 按 user_id 缓存 Redis，请求带 `token` + `Deptid` 头。DCIM / security 仍走服务账号 token
+- pen 流程服务（`api.ddbes.com`，mgmt 能力延伸，非新平台）— 待办/变更/故障/问题/事件工单后端，`Authorization: Bearer` 认证。待办按人（token 归属人，内部用该用户自己的 mgmt token 换发指定人员 token，`/user/dandang/user/token/{kingdeeUid}`，path 参数区分人；user_id 为空才回退服务账号）；变更工单按公司（`POST /ticket/wiporder/ticketlist/modify`，companyId 认 kingdee 格式，跨公司经 `/pen/pending/list/company` 映射）；各类工单详情 `GET /ticket/wiporder/query/breakdown/{id}` / `/ticket/wiporder/question/{id}` / `/ticket/wiporder/event/{id}`（id 取待办列表返回的 id，任意有效 token 可查，端点按工单类型区分）。token 换发接口不暴露为 LLM 工具
 - skills — 纯本地文档能力（`skills/` 目录），无外部 API 依赖；用户自建技能运行期写入 `skills/users/`
 - Coze Studio — 独立 Go 服务，后台 API 代理调用 (配置了但 `service/coze_proxy/` 未实现)
 - LLM — OpenAI 兼容 API，视觉模型默认 `qwen3.5-vl`，对话模型默认 `qwen3.5`

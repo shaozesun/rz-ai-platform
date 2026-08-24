@@ -309,6 +309,8 @@ class Settings(BaseSettings):
   MGMT_TIMEOUT: int = 30               # 调用超时（秒）
   MGMT_PEN_BASE_URL: str = ''          # pen 流程服务 API 基地址（如 https://api.ddbes.com，mgmt 能力延伸，非新平台）
   MGMT_PEN_TOKEN_TTL: int = 3600       # pen 人员 token 缓存秒数（失效由 401 重登兜底）
+  MGMT_PASSWORD_KEY: str = ''          # 认证中心密码加密 Fernet 密钥（空则从 JWT_PRIVATE_KEY 派生）
+  MGMT_DEFAULT_PASSWORD: str = '666666'  # 未绑定用户的默认 mgmt 账号密码（默认平台账号）
 
   # ==================== 安防平台集成 ====================
   # 占位注册：暂无接口文档，capabilities 为空元组，client.call 直接抛异常。

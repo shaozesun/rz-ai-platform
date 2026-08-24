@@ -38,6 +38,13 @@ def _escape_regex(keyword: str) -> str:
 logger = logging.getLogger(__name__)
 
 
+def mask_mgmt_username(username: str) -> str:
+  """脱敏展示 mgmt 账号：保留前 3 位，其余用 *** 替代。"""
+  if not username:
+    return ''
+  return username[:3] + '***' if len(username) > 3 else username[:1] + '***'
+
+
 class UserService:
 
   @property
@@ -144,6 +151,7 @@ class UserService:
     direct_perms = set(user.get('permissions', []))
     # 有效权限 = 角色权限 + 直接权限
     effective_perms = role_perms | direct_perms
+    mgmt_username = user.get('mgmt_username', '')
     return {
       'user_id': user['user_id'],
       'phone': user['phone'],
@@ -157,6 +165,8 @@ class UserService:
       'direct_permissions': sorted(direct_perms),
       'avatar': user.get('avatar', ''),
       'created_at': user.get('created_at', datetime.utcnow()),
+      'mgmt_bound': bool(mgmt_username),
+      'mgmt_username_masked': mask_mgmt_username(mgmt_username),
     }
 
   async def update_user(self, user_id: str, updates: dict):

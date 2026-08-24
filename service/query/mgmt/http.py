@@ -1,12 +1,14 @@
 """综合管理平台 HTTP 层 —— 登录换 token、token/deptId 缓存、统一请求封装。
 
-身份策略（已与用户确认，见 docs/ 或方案记录）：综合管理平台无服务级 token，只有
-`POST /user/login/v1`（账号密码）。用一个最高权限服务账号登录，`deptId` 取登录
-响应里该账号自带的部门作为默认上下文——不建 rz User 到 mgmt deptId 的映射表。
-折衷：mgmt 侧数据权限对所有 rz 用户一视同仁，仅适合只读查询。
+身份策略（认证中心）：综合管理平台无服务级 token，只有 `POST /user/login/v1`
+（账号密码）。每个 rz 用户绑定自己的 mgmt 账号密码（Fernet 加密落库，见
+core/mgmt_credentials.py）后，Agent 查询 mgmt/pen 接口用**该用户自己的 token**
+身份（`mgmt:token:{uid}` 按 user_id 缓存），mgmt 侧数据权限按人生效；未绑定用户
+默认用「rz 手机号 + MGMT_DEFAULT_PASSWORD」登录。用户通道（auth_user_id）优先，
+服务账号仅在非用户通道（user_id 为空）兜底。
 
 pen 流程服务（MGMT_PEN_BASE_URL，mgmt 能力延伸非新平台）：认证头是
-`Authorization: Bearer` 且认 token 归属人。用服务账号 token 调
+`Authorization: Bearer` 且认 token 归属人。用该用户自己的 mgmt token 调
 `/user/dandang/user/token/{kingdeeUid}` 换发指定人员的 token（path 参数区分人），
 按人缓存后查询（get_person_token / pen_request）。
 
@@ -23,6 +25,8 @@ import httpx
 
 from config.redis_conn import redis_manager
 from config.settings import settings
+from core.mgmt_credentials import decrypt_password
+from service.auth.user_service import user_service
 
 logger = logging.getLogger(__name__)
 
@@ -35,29 +39,48 @@ _KINGDEE_COMPANY_KEY = 'mgmt:kingdeecompany'
 _PEN_TOKEN_PREFIX = 'pen:token:'
 _PEN_COMPANY_MAP_KEY = 'pen:companymap'
 
+# 用户 mgmt 认证失败时的引导文案（默认账号密码无效/已绑定密码被改时返回给用户）
+_BIND_PROMPT = (
+  '综合管理平台账号认证失败（默认账号或已绑定账号密码无效，可能已修改密码）。'
+  '请前往【设置 → 综合管理平台账号】绑定您的 mgmt 账号密码授权'
+)
+
 
 class MgmtError(Exception):
   """综合管理平台调用异常。"""
 
 
-async def _login() -> tuple[str, str]:
-  """调用登录接口换取 token + 默认 deptId，写入 Redis 缓存。
+def _user_ctx_keys(user_id: str) -> tuple[str, str, str, str, str, str]:
+  """按用户 id 生成专属的 6 个 Redis key（token/dept/own_dept/company/kingdee...）。"""
+  suffix = f':{user_id}'
+  return (
+    f'{_TOKEN_KEY}{suffix}', f'{_DEPTID_KEY}{suffix}', f'{_OWN_DEPTID_KEY}{suffix}',
+    f'{_COMPANYID_KEY}{suffix}', f'{_KINGDEEUID_KEY}{suffix}', f'{_KINGDEE_COMPANY_KEY}{suffix}',
+  )
 
-  Returns:
-    (token, dept_id)
 
-  Raises:
-    MgmtError: 登录失败或响应里缺 token。
-  """
-  if not settings.MGMT_USERNAME or not settings.MGMT_PASSWORD:
-    raise MgmtError('未配置 MGMT_USERNAME/MGMT_PASSWORD，无法登录综合管理平台')
+def _cache_context(keys: tuple[str, str, str, str, str, str], ctx: dict) -> None:
+  """把登录返回的账号上下文写入指定的一组 Redis key。"""
+  token_key, dept_key, own_key, company_key, kingdee_key, kingdee_company_key = keys
+  ttl = settings.MGMT_TOKEN_TTL
+  redis_manager.client.setex(redis_manager.key(token_key), ttl, ctx['token'])
+  redis_manager.client.setex(redis_manager.key(dept_key), ttl, ctx['dept_id'])
+  redis_manager.client.setex(redis_manager.key(own_key), ttl, ctx['own_dept_id'])
+  redis_manager.client.setex(redis_manager.key(company_key), ttl, ctx['company_id'])
+  if ctx['kingdee_uid']:
+    redis_manager.client.setex(redis_manager.key(kingdee_key), ttl, ctx['kingdee_uid'])
+  if ctx['kingdee_company_id']:
+    redis_manager.client.setex(redis_manager.key(kingdee_company_key), ttl, ctx['kingdee_company_id'])
+
+
+async def _login_with_credentials(username: str, password: str) -> dict:
+  """调用登录接口，返回解析后的账号上下文（token/dept/own_dept/company/kingdee...）。"""
+  if not username or not password:
+    raise MgmtError('综合管理平台账号或密码为空，无法登录')
 
   url = f'{settings.MGMT_BASE_URL}/user/login/v1'
   async with httpx.AsyncClient(timeout=settings.MGMT_TIMEOUT) as client:
-    resp = await client.post(url, json={
-      'user': settings.MGMT_USERNAME,
-      'password': settings.MGMT_PASSWORD,
-    })
+    resp = await client.post(url, json={'user': username, 'password': password})
     resp.raise_for_status()
     body = resp.json()
 
@@ -75,31 +98,135 @@ async def _login() -> tuple[str, str]:
   # 是 mgmt 内部公司 id；kingdeeUid 是换发人员 token 用的金蝶用户 id；kingdeeCompanyId
   # 是 pen 变更工单接口 companyId 认的格式（sA8...，与内部 companyId 27Wq... 不同）。
   user_info = data.get('user') or {}
-  dept_id = user_info.get('deptId', '')
-  own_dept_id = user_info.get('ownDeptId', '')
-  company_id = user_info.get('companyId', '')
-  kingdee_uid = user_info.get('kingdeeUid', '')
-  kingdee_company_id = user_info.get('kingdeeCompanyId', '')
-  if not dept_id or not own_dept_id:
+  ctx = {
+    'token': token,
+    'dept_id': user_info.get('deptId', ''),
+    'own_dept_id': user_info.get('ownDeptId', ''),
+    'company_id': user_info.get('companyId', ''),
+    'kingdee_uid': user_info.get('kingdeeUid', ''),
+    'kingdee_company_id': user_info.get('kingdeeCompanyId', ''),
+  }
+  if not ctx['dept_id'] or not ctx['own_dept_id']:
     logger.warning(
       'mgmt 登录成功但未取到 deptId/ownDeptId，user 字段结构: %s（需核对真实字段名）',
       list(user_info.keys()),
     )
+  return ctx
 
-  ttl = settings.MGMT_TOKEN_TTL
-  redis_manager.client.setex(redis_manager.key(_TOKEN_KEY), ttl, token)
-  redis_manager.client.setex(redis_manager.key(_DEPTID_KEY), ttl, dept_id)
-  redis_manager.client.setex(redis_manager.key(_OWN_DEPTID_KEY), ttl, own_dept_id)
-  redis_manager.client.setex(redis_manager.key(_COMPANYID_KEY), ttl, company_id)
-  if kingdee_uid:
-    redis_manager.client.setex(redis_manager.key(_KINGDEEUID_KEY), ttl, kingdee_uid)
-  if kingdee_company_id:
-    redis_manager.client.setex(redis_manager.key(_KINGDEE_COMPANY_KEY), ttl, kingdee_company_id)
+
+async def _login() -> tuple[str, str]:
+  """服务账号登录换取 token + 默认 deptId，写入 Redis 缓存。
+
+  Returns:
+    (token, dept_id)
+
+  Raises:
+    MgmtError: 登录失败或响应里缺 token。
+  """
+  if not settings.MGMT_USERNAME or not settings.MGMT_PASSWORD:
+    raise MgmtError('未配置 MGMT_USERNAME/MGMT_PASSWORD，无法登录综合管理平台')
+
+  ctx = await _login_with_credentials(settings.MGMT_USERNAME, settings.MGMT_PASSWORD)
+  _cache_context((_TOKEN_KEY, _DEPTID_KEY, _OWN_DEPTID_KEY, _COMPANYID_KEY,
+                  _KINGDEEUID_KEY, _KINGDEE_COMPANY_KEY), ctx)
   logger.info(
     'mgmt 登录成功，token 已缓存 ttl=%ds dept_id=%s own_dept_id=%s kingdee_uid=%s',
-    ttl, dept_id or '-', own_dept_id or '-', kingdee_uid or '-',
+    settings.MGMT_TOKEN_TTL, ctx['dept_id'] or '-', ctx['own_dept_id'] or '-',
+    ctx['kingdee_uid'] or '-',
   )
-  return token, dept_id
+  return ctx['token'], ctx['dept_id']
+
+
+async def login_user(user_id: str, username: str, password: str) -> tuple[str, str]:
+  """指定用户登录 mgmt，token/上下文按 user_id 缓存（认证中心绑定校验也用）。
+
+  Returns:
+    (token, dept_id)
+
+  Raises:
+    MgmtError: 登录失败或响应里缺 token。
+  """
+  ctx = await _login_with_credentials(username, password)
+  _cache_context(_user_ctx_keys(user_id), ctx)
+  logger.info('mgmt 用户登录成功 user_id=%s account=%s dept_id=%s',
+              user_id, username, ctx['dept_id'] or '-')
+  return ctx['token'], ctx['dept_id']
+
+
+async def get_user_token_and_dept(user_id: str) -> tuple[str, str]:
+  """取指定用户的有效 (token, dept_id)；缓存 miss 时用绑定账号或默认账号登录。
+
+  绑定用户用解密后的 mgmt 账号密码；未绑定用户用「手机号 + MGMT_DEFAULT_PASSWORD」
+  兜底（默认平台账号）。登录/解密失败抛 MgmtError（引导用户去认证中心绑定）。
+  """
+  token_key, dept_key = _user_ctx_keys(user_id)[:2]
+  token = redis_manager.client.get(redis_manager.key(token_key))
+  dept_id = redis_manager.client.get(redis_manager.key(dept_key))
+  if token:
+    return token, dept_id or ''
+
+  user = await user_service.get_by_id(user_id)
+  if not user:
+    raise MgmtError(_BIND_PROMPT)
+  username = user.get('mgmt_username', '')
+  password_enc = user.get('mgmt_password_enc', '')
+  if username and password_enc:
+    try:
+      password = decrypt_password(password_enc)
+    except Exception:
+      logger.warning('解密用户 mgmt 密码失败 user_id=%s', user_id)
+      raise MgmtError(_BIND_PROMPT) from None
+  else:
+    username = user.get('phone', '')
+    password = settings.MGMT_DEFAULT_PASSWORD
+
+  try:
+    return await login_user(user_id, username, password)
+  except MgmtError as e:
+    logger.warning('用户 mgmt 登录失败 user_id=%s account=%s: %s', user_id, username, e)
+    raise MgmtError(_BIND_PROMPT) from e
+
+
+async def get_user_context(user_id: str) -> dict:
+  """取指定用户的 {own_dept_id, company_id}（供 spec.defaults 兜底），缓存 miss 触发登录。"""
+  if not user_id:
+    return {'own_dept_id': '', 'company_id': ''}
+  token_key, _dept_key, own_key, company_key = _user_ctx_keys(user_id)[:4]
+  if not redis_manager.client.get(redis_manager.key(token_key)):
+    await get_user_token_and_dept(user_id)
+  return {
+    'own_dept_id': redis_manager.client.get(redis_manager.key(own_key)) or '',
+    'company_id': redis_manager.client.get(redis_manager.key(company_key)) or '',
+  }
+
+
+def clear_user_token(user_id: str) -> None:
+  """清除指定用户的 mgmt token/上下文缓存（解绑/重绑时调用）。"""
+  if not user_id:
+    return
+  for key in _user_ctx_keys(user_id):
+    redis_manager.client.delete(redis_manager.key(key))
+  redis_manager.client.delete(redis_manager.key(f'{_PEN_COMPANY_MAP_KEY}:{user_id}'))
+
+
+async def get_user_kingdee_uid(user_id: str) -> str:
+  """取指定用户本人的 kingdeeUid（pen 换发本人 token 用），缓存 miss 触发登录。"""
+  if not user_id:
+    return ''
+  token_key, _dept_key, _own_key, _company_key, kingdee_key, _c_key = _user_ctx_keys(user_id)
+  if not redis_manager.client.get(redis_manager.key(token_key)):
+    await get_user_token_and_dept(user_id)
+  return redis_manager.client.get(redis_manager.key(kingdee_key)) or ''
+
+
+async def get_user_pen_company_id(user_id: str) -> str:
+  """取指定用户默认公司在 pen 平台的 kingdeeCompanyId（变更工单 companyId 认的格式）。"""
+  if not user_id:
+    return ''
+  token_key, _dept_key, _own_key, _company_key, _kingdee_key, c_key = _user_ctx_keys(user_id)
+  if not redis_manager.client.get(redis_manager.key(token_key)):
+    await get_user_token_and_dept(user_id)
+  return redis_manager.client.get(redis_manager.key(c_key)) or ''
 
 
 async def _get_token_and_dept() -> tuple[str, str]:
@@ -149,12 +276,14 @@ async def get_service_pen_company_id() -> str:
   return redis_manager.client.get(redis_manager.key(_KINGDEE_COMPANY_KEY)) or ''
 
 
-async def get_person_token(kingdee_uid: str) -> str:
-  """用服务账号授权，按 kingdeeUid 换发指定人员的 token（按人缓存）。
+async def get_person_token(kingdee_uid: str, *, auth_user_id: str | None = None) -> str:
+  """按 kingdeeUid 换发指定人员的 token（按人缓存）。
 
-  换发接口 GET /user/dandang/user/token/{kingdeeUserId}：header 带服务账号 token
-  只是「签发授权」，path 里的 kingdeeUserId 才是人员区分点——不同 id 换出不同
-  人的 token（已实测对照：本人 id vs 别人 id 换出的 token 不同，pen 查询各归各人）。
+  换发接口 GET /user/dandang/user/token/{kingdeeUserId}：header 带一个有效 mgmt
+  token 只是「签发授权」，path 里的 kingdeeUserId 才是人员区分点——不同 id 换出
+  不同人的 token（已实测对照：本人 id vs 别人 id 换出的 token 不同，pen 查询各归
+  各人）。`auth_user_id` 有值时用该用户自己的 mgmt token 授权（认证中心，不再走
+  服务账号），否则用服务账号 token 授权（非用户通道兜底）。
   """
   if not kingdee_uid:
     raise MgmtError('get_person_token 缺 kingdee_uid')
@@ -163,7 +292,10 @@ async def get_person_token(kingdee_uid: str) -> str:
   if cached:
     return cached
 
-  token, _dept = await _get_token_and_dept()
+  if auth_user_id:
+    token, _dept = await get_user_token_and_dept(auth_user_id)
+  else:
+    token, _dept = await _get_token_and_dept()
   url = f'{settings.MGMT_BASE_URL}/user/dandang/user/token/{quote(str(kingdee_uid), safe="")}'
   async with httpx.AsyncClient(timeout=settings.MGMT_TIMEOUT) as client:
     resp = await client.get(url, headers={'token': token})
@@ -192,20 +324,24 @@ async def pen_request(
   params: dict | None = None,
   json_body: dict | None = None,
   kingdee_uid: str | None = None,
+  *,
+  auth_user_id: str | None = None,
   _retried: bool = False,
 ) -> dict:
   """发起一次 pen 流程服务请求，`Authorization: Bearer` 携带**指定人员**的 token。
 
   与 mgmt 请求（`token` + `Deptid` 头）不同——pen 认证头是 Bearer，且认的是
   「token 归属人」（即 kingdee_uid 那个人）的数据（待办按人，变更工单按公司，
-  token 只做鉴权）。kingdee_uid 为空时用服务账号本人 token。
+  token 只做鉴权）。kingdee_uid 为空时：auth_user_id 有值用该用户本人，否则服务
+  账号本人。
 
   Args:
     path: pen 接口路径。
     params: GET query 参数。
     json_body: POST body（传了就走 POST，否则 GET）。待办查询用 GET，变更工单
       列表用 POST body。
-    kingdee_uid: 指定人员；空用服务账号本人。
+    kingdee_uid: 指定人员；空按 auth_user_id / 服务账号本人解析。
+    auth_user_id: 认证中心用户 id；换发人员 token 用该用户自己的 mgmt token 授权。
     _retried: 内部标记，鉴权失败清缓存重试一次，避免死循环。
 
   Returns:
@@ -218,11 +354,14 @@ async def pen_request(
   if not settings.MGMT_PEN_BASE_URL:
     raise MgmtError('未配置 MGMT_PEN_BASE_URL，无法调用 pen 流程服务')
   if not kingdee_uid:
-    kingdee_uid = await get_service_kingdee_uid()
+    kingdee_uid = (
+      await get_user_kingdee_uid(auth_user_id) if auth_user_id
+      else await get_service_kingdee_uid()
+    )
   if not kingdee_uid:
-    raise MgmtError('pen 请求缺 kingdee_uid 且服务账号本人 kingdeeUid 未取到')
+    raise MgmtError('pen 请求缺 kingdee_uid 且该用户/服务账号本人 kingdeeUid 未取到')
 
-  bearer = await get_person_token(kingdee_uid)
+  bearer = await get_person_token(kingdee_uid, auth_user_id=auth_user_id)
   method = 'POST' if json_body is not None else 'GET'
   url = f'{settings.MGMT_PEN_BASE_URL}{path}'
   async with httpx.AsyncClient(timeout=settings.MGMT_TIMEOUT) as client:
@@ -240,27 +379,33 @@ async def pen_request(
   if not _retried and _is_auth_error(body):
     logger.info('pen 请求鉴权失效，清该人 token 缓存重试一次 uid=%s path=%s', kingdee_uid, path)
     _clear_person_token(kingdee_uid)
-    return await pen_request(path, params, json_body, kingdee_uid, _retried=True)
+    return await pen_request(
+      path, params, json_body, kingdee_uid,
+      auth_user_id=auth_user_id, _retried=True,
+    )
 
   raise MgmtError(f'pen 流程服务调用失败 path={path}: {body.get("msg", "未知错误")}')
 
 
-async def get_pen_company_kingdee_id(internal_company_id: str) -> str:
+async def get_pen_company_kingdee_id(
+  internal_company_id: str, *, auth_user_id: str | None = None,
+) -> str:
   """把 mgmt 内部 companyId 映射为 pen 平台的 kingdeeCompanyId（跨公司查变更工单用）。
 
   pen 的变更工单接口 companyId 只认 kingdee 格式（sA8...，实测内部格式 27Wq...
   返回 0 条），而 query_company_list 返回的是内部 id——映射表来自
-  `GET /pen/pending/list/company`（Bearer 服务账号 token），data 为
-  [{companyId 内部, companyName, kingdee}, ...]，缓存 Redis `pen:companymap`
-  （JSON）。查不到返回空串（调用方抛错提示公司不可见）。
+  `GET /pen/pending/list/company`（Bearer 该用户/服务账号 token），data 为
+  [{companyId 内部, companyName, kingdee}, ...]，按用户缓存 Redis
+  `pen:companymap:{user_id}`（JSON，用户可见公司不同映射不同）。查不到返回空串
+  （调用方抛错提示公司不可见）。
   """
   if not internal_company_id:
     return ''
-  key = redis_manager.key(_PEN_COMPANY_MAP_KEY)
+  key = redis_manager.key(f'{_PEN_COMPANY_MAP_KEY}:{auth_user_id or "service"}')
   raw = redis_manager.client.get(key)
   if not raw:
     data = await pen_request(
-      '/pen/pending/list/company', kingdee_uid=await get_service_kingdee_uid(),
+      '/pen/pending/list/company', kingdee_uid=None, auth_user_id=auth_user_id,
     )
     mapping = {
       comp.get('companyId'): comp.get('kingdee')
@@ -295,6 +440,7 @@ async def request(
   json_body: dict | None = None,
   dept_id: str | None = None,
   base_url: str | None = None,
+  user_id: str | None = None,
   _retried: bool = False,
 ) -> dict:
   """发起一次综合管理平台 HTTP 请求，返回拆开信封后的 `data`。
@@ -307,6 +453,7 @@ async def request(
     dept_id: 显式指定 Deptid，未传则用登录账号的默认部门。
     base_url: 覆盖 base URL（如巡检服务在根路径 /inspection）；None 用
       settings.MGMT_BASE_URL。
+    user_id: 指定按哪个用户身份查询（认证中心）；空则用服务账号 token。
     _retried: 内部标记，鉴权失败重登后重试一次，避免死循环。
 
   Returns:
@@ -315,7 +462,10 @@ async def request(
   Raises:
     MgmtError: 非鉴权类业务错误，或重试后仍失败。
   """
-  token, default_dept = await _get_token_and_dept()
+  if user_id:
+    token, default_dept = await get_user_token_and_dept(user_id)
+  else:
+    token, default_dept = await _get_token_and_dept()
   headers = {
     'token': token,
     'Deptid': dept_id or default_dept,
@@ -335,11 +485,14 @@ async def request(
 
   if not _retried and _is_auth_error(body):
     logger.info('mgmt 请求鉴权失效，清缓存重登一次 path=%s', path)
-    redis_manager.client.delete(redis_manager.key(_TOKEN_KEY))
-    redis_manager.client.delete(redis_manager.key(_DEPTID_KEY))
+    if user_id:
+      clear_user_token(user_id)
+    else:
+      redis_manager.client.delete(redis_manager.key(_TOKEN_KEY))
+      redis_manager.client.delete(redis_manager.key(_DEPTID_KEY))
     return await request(
       method, path, params=params, json_body=json_body,
-      dept_id=dept_id, base_url=base_url, _retried=True,
+      dept_id=dept_id, base_url=base_url, user_id=user_id, _retried=True,
     )
 
   raise MgmtError(f'综合管理平台调用失败 path={path}: {body.get("msg", "未知错误")}')

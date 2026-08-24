@@ -170,7 +170,7 @@ export default memo(function MermaidRenderer({ code }: { code: string }) {
 
   return (
     <>
-      <div className="mermaid-wrapper my-3 overflow-hidden rounded-lg border border-border bg-white">
+      <div className="mermaid-wrapper my-3 overflow-hidden rounded-lg border border-border bg-card">
         <div className="flex items-center justify-end border-b border-border px-3 py-1.5 bg-muted/30">
           {controls}
         </div>

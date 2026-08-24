@@ -235,7 +235,7 @@ export default function LoginPage() {
         <img
           src={`data:image/png;base64,${captchaImg}`}
           alt="验证码"
-          className="h-10 w-[120px] cursor-pointer rounded border border-border object-contain bg-white shrink-0"
+          className="h-10 w-[120px] cursor-pointer rounded border border-border object-contain bg-card shrink-0"
           onClick={loadCaptcha}
           title="点击刷新验证码"
         />

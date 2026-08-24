@@ -211,9 +211,7 @@ function ChartRenderer({ spec }: { spec: ChartSpec }) {
   const lineWidth = attrs.lineWidth && Number.isFinite(lineWidthNum) ? lineWidthNum : 2;
   const bgColor = attrs.backgroundColor || '';
   // 全屏时用不透明底色：半透明 bg-card/60 叠在全屏黑底上会成灰色
-  const cardBg = isFullscreen
-    ? bgColor || (validTheme === 'dark' || validTheme === 'classicDark' ? '#141414' : '#ffffff')
-    : bgColor;
+  const cardBg = isFullscreen ? bgColor || 'var(--background)' : bgColor;
 
   // 单系列默认色保持 G2 出厂蓝（用户选择，不覆盖）；仅多系列/饼图套用多彩分类色板
   const base = {

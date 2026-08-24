@@ -26,6 +26,7 @@ from langchain.tools import tool
 from langchain_core.runnables.config import RunnableConfig
 
 from config.settings import settings
+from core.agent.user_context import get_current_user_id
 from core.sandbox.datasets import DatasetError, load_dataset_dir, save_dataset
 from core.sandbox.runner import run_python
 from service.query.base.platform import get_capability, get_caller
@@ -170,7 +171,7 @@ async def analysis_load(
       **(params or {}),
       'page': str(page),
       'page_size': str(page_size),
-    })
+    }, on_behalf_of=get_current_user_id())
     page_records, _ = _extract_records(resp)
     if not page_records:
       break
