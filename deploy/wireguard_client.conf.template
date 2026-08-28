@@ -1,0 +1,23 @@
+# WireGuard 客户端配置（共用一份，发给所有用户）
+#
+# 用法：
+#   1. 在服务器上执行  sudo bash wireguard_setup.sh
+#   2. 把脚本打印的「服务端公钥」和「共用客户端私钥」替换下面两处 <...> 占位符
+#   3. 保存为 wg0.conf（或任意 .conf），用 WireGuard 官方客户端（Win/Mac/手机）导入即可
+#
+# 注意：本配置含客户端私钥，分发要走安全通道；所有人共用一份（单 Peer）。
+
+[Interface]
+Address = 10.8.0.2/24
+PrivateKey = <共用客户端私钥 client.key>
+
+[Peer]
+PublicKey = <服务端公钥 server.pub>
+Endpoint = 118.126.142.38:51820
+AllowedIPs = 10.8.0.0/24, 10.100.17.0/24, 10.0.0.0/8, 192.168.0.0/16
+PersistentKeepalive = 25
+
+# AllowedIPs 说明：
+#   10.8.0.0/24         VPN 网段
+#   10.100.17.0/24      服务器所在内网网段
+#   10.0.0.0/8, 192.168.0.0/16   服务器可达的其它内网（mgmt/LLM 等），嫌范围大可去掉

@@ -25,17 +25,16 @@ def build_langfuse_handler():
     return None
 
   try:
-    from langfuse.callback import CallbackHandler
+    # langfuse 4.x 把 LangChain 回调移到了 langfuse.langchain（旧路径 langfuse.callback 已移除）
+    from langfuse.langchain import CallbackHandler
   except ImportError:
     logger.warning('LANGFUSE_ENABLED=true 但未安装 langfuse 包，追踪不生效（pip install langfuse）')
     return None
 
   try:
-    return CallbackHandler(
-      public_key=settings.LANGFUSE_PUBLIC_KEY,
-      secret_key=settings.LANGFUSE_SECRET_KEY,
-      host=settings.LANGFUSE_HOST,
-    )
+    # langfuse 4.x 的 LangchainCallbackHandler 从环境变量读取配置
+    # （LANGFUSE_PUBLIC_KEY / LANGFUSE_SECRET_KEY / LANGFUSE_HOST，见 .env.production），无需传参
+    return CallbackHandler()
   except Exception as e:
     logger.warning('Langfuse CallbackHandler 初始化失败，追踪不生效: %s', e)
     return None

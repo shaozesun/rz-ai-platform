@@ -110,7 +110,7 @@ client.interceptors.response.use(
 
     // Skip refresh for auth endpoints that would cause loops
     const url = originalRequest.url || '';
-    const skipList = ['/auth/login', '/auth/refresh', '/auth/logout'];
+    const skipList = ['/auth/login', '/auth/mgmt-login', '/auth/refresh', '/auth/logout'];
     if (skipList.some((path) => url.includes(path))) {
       return Promise.reject(error);
     }
