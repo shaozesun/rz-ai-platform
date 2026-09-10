@@ -40,8 +40,8 @@ class Role(BaseModel):
   description: str = ''
   permissions: list[str] = []  # ['ai:chat', 'ai:knowledge', ...]
   is_builtin: bool = False
-  created_at: datetime = Field(default_factory=datetime.utcnow)
-  updated_at: datetime = Field(default_factory=datetime.utcnow)
+  created_at: datetime = Field(default_factory=datetime.now)
+  updated_at: datetime = Field(default_factory=datetime.now)
 
 
 # ==================== 用户 ====================
@@ -56,12 +56,18 @@ class User(BaseModel):
   status: UserStatus = UserStatus.PENDING
   roles: list[str] = []
   permissions: list[str] = []
-  created_at: datetime = Field(default_factory=datetime.utcnow)
+  created_at: datetime = Field(default_factory=datetime.now)
   last_login_at: Optional[datetime] = None
   last_login_ip: Optional[str] = None
   # 认证中心：绑定的综合管理平台账号（空 = 未绑定，查询时走默认平台账号）
   mgmt_username: str = ''
   mgmt_password_enc: str = ''
+  # 综合管理平台人员档案（注册时/SSO 登录时从 mgmt 拉取持久化，用于用户/审批管理展示）
+  mgmt_uid: str = ''          # mgmt 平台用户唯一 id
+  dept_name: str = ''         # 部门
+  # 飞书 IM 绑定（空 = 未绑定；open_id 非敏感，无需加密）
+  lark_open_id: str = ''      # 飞书用户 open_id
+  lark_name: str = ''         # 飞书昵称
 
 
 class UserPublic(BaseModel):
@@ -76,6 +82,9 @@ class UserPublic(BaseModel):
   roles: list[str] = []
   permissions: list[str] = []
   created_at: datetime
+  mgmt_uid: str = ''
+  dept_name: str = ''
+  lark_bound: bool = False    # 飞书是否已绑定（open_id != ''）
 
 
 # ==================== 权限申请 ====================
@@ -91,7 +100,7 @@ class RoleApplication(BaseModel):
   reviewer_id: Optional[str] = None
   review_reason: Optional[str] = None
   reviewed_at: Optional[datetime] = None
-  created_at: datetime = Field(default_factory=datetime.utcnow)
+  created_at: datetime = Field(default_factory=datetime.now)
 
 
 # ==================== 审计日志 ====================
@@ -104,7 +113,7 @@ class AuditLog(BaseModel):
   resource: str  # e.g., 'application', 'user', 'role'
   detail: str = ''
   ip: str = ''
-  created_at: datetime = Field(default_factory=datetime.utcnow)
+  created_at: datetime = Field(default_factory=datetime.now)
 
 
 # ==================== 预置权限清单 ====================
@@ -116,6 +125,7 @@ BUILTIN_PERMISSIONS: list[Permission] = [
   Permission(perm_key='ai:fire_safety', resource='ai', action='fire_safety', description='消防配置'),
   Permission(perm_key='ai:video', resource='ai', action='video', description='视频生成'),
   Permission(perm_key='ai:agent', resource='ai', action='agent', description='AI Agent 对话'),
+  Permission(perm_key='scheduled_task:manage', resource='scheduled_task', action='manage', description='定时任务管理'),
   Permission(perm_key='system:admin', resource='system', action='admin', description='系统管理'),
 ]
 
@@ -127,7 +137,7 @@ BUILTIN_ROLES: list[dict] = [
     'role_id': 'admin',
     'name': '管理员',
     'description': '拥有所有 AI 能力和系统管理权限',
-    'permissions': ['system:admin', 'ai:chat', 'ai:agent', 'ai:knowledge', 'ai:risk', 'ai:fire_safety', 'ai:video'],
+    'permissions': ['system:admin', 'ai:chat', 'ai:agent', 'ai:knowledge', 'ai:risk', 'ai:fire_safety', 'ai:video', 'scheduled_task:manage'],
     'is_builtin': True,
   },
   {

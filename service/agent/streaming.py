@@ -207,6 +207,7 @@ async def stream_agent(
   session_id: str,
   initial_state: dict | None = None,
   plan_instruction: str | None = None,
+  mode_instruction: str | None = None,
   uploaded_filenames: list[str] | None = None,
   tracing_callbacks: list | None = None,
 ):
@@ -217,6 +218,8 @@ async def stream_agent(
       合并后传入 agent。为空则仅传 messages（原行为）。
     plan_instruction: 计划模式确认后的执行指令文本；非空时替换本轮 user 消息
       （落库仍用 message，即前端确认时传的简短文案）。
+    mode_instruction: 任务模式指令（如 full_analysis 全量分析）；非空时拼到本轮
+      user 消息最前面（与 plan_instruction 可叠加）。
     uploaded_filenames: 本轮消息关联的已上传文件名（上传接口返回值）。非空时自动把
       文件大纲/预览摘要拼成 <current_uploads> 块附加到用户消息前，LLM 无需先调
       list_uploaded_files 就能感知本轮上传的内容；历史轮次上传的文件不在此注入，
@@ -235,6 +238,10 @@ async def stream_agent(
   tokens = {'input': 0, 'output': 0}
   start_time = time.time()
   stop_reason = None
+  logger.info(
+    'agent 轮开始 thread=%s mode_inst=%s msg_len=%d',
+    thread_id, bool(mode_instruction), len(message),
+  )
 
   config = {
     'recursion_limit': settings.AGENT_RECURSION_LIMIT,
@@ -253,7 +260,9 @@ async def stream_agent(
   # 调用 的累积（merge_promoted union）不受影响；被重置的工具若被调用，middleware
   # 会返回「请先 tool_search」，LLM 可重搜恢复。
   try:
-    agent.update_state(config, {'promoted': {'catalog_hash': '', 'names': []}})
+    # AsyncPostgresSaver 不能在主线程调同步 update_state（会抛
+    # "Synchronous calls to AsyncPostgresSaver..."），必须用异步版，重置才真正生效。
+    await agent.aupdate_state(config, {'promoted': {'catalog_hash': '', 'names': []}})
   except Exception as e:
     # 首次请求无 checkpoint 等边界：promoted 本为空，重置失败不影响本轮
     logger.warning('重置 promoted 失败（忽略，继续本轮）: %s', e)
@@ -263,9 +272,14 @@ async def stream_agent(
   # 保证（或 MemorySaver 单进程内存）。
   # 计划模式确认轮：用渲染后的执行指令替换本轮 user 消息，让 LLM 首轮即按计划执行。
   content = plan_instruction if plan_instruction else message
+  if mode_instruction:
+    content = f'{mode_instruction}\n\n{content}'
   uploads_block = _build_current_uploads_block(thread_id, uploaded_filenames)
   if uploads_block:
     content = f'{uploads_block}\n\n{content}'
+  # 当前时间每请求注入（不烘焙进 Agent 系统提示词——缓存单例里时间会过期）
+  now_str = datetime.now().strftime('%Y年%m月%d日 %H:%M')
+  content = f'（当前时间：{now_str}）\n\n{content}'
   agent_input = {'messages': [{'role': 'user', 'content': content}]}
   if initial_state:
     agent_input.update(initial_state)
@@ -287,12 +301,36 @@ async def stream_agent(
 
       elif kind == 'on_chat_model_end':
         usage = event.get('data', {}).get('output', {})
+        # 断流诊断：正常结束的 OpenAI 兼容流式响应必带 usage_metadata（include_usage
+        # 结束块）且 finish_reason 非空；两者都缺失 → 响应被 vLLM/代理静默掐断。这里只
+        # 记日志（不改变用户可见行为），把模型实际返回（finish_reason/usage/内容预览）
+        # 暴露出来供人工判断断流原因。
+        rm = usage.response_metadata if hasattr(usage, 'response_metadata') else {}
+        has_usage_block = bool(
+          (hasattr(usage, 'usage_metadata') and usage.usage_metadata)
+          or rm.get('token_usage')
+        )
+        finish_reason = rm.get('finish_reason')
+        content = getattr(usage, 'content', '') or ''
+        if not isinstance(content, str):
+          content = str(content)
+        if not has_usage_block and not finish_reason:
+          logger.warning(
+            'Agent 模型流疑似被截断 thread=%s finish_reason=%r has_usage=%s '
+            'content_len=%d content_preview=%r',
+            thread_id, finish_reason, has_usage_block,
+            len(content), content[:200],
+          )
+        else:
+          logger.debug(
+            'Agent 模型结束 thread=%s finish_reason=%r has_usage=%s content_len=%d',
+            thread_id, finish_reason, has_usage_block, len(content),
+          )
         if hasattr(usage, 'usage_metadata') and usage.usage_metadata:
           um = usage.usage_metadata
           tokens['input'] = um.get('input_tokens', 0)
           tokens['output'] = um.get('output_tokens', 0)
-        elif hasattr(usage, 'response_metadata') and usage.response_metadata:
-          rm = usage.response_metadata
+        elif rm and rm.get('token_usage'):
           tu = rm.get('token_usage', {})
           tokens['input'] = tu.get('prompt_tokens', 0)
           tokens['output'] = tu.get('completion_tokens', 0)
@@ -371,6 +409,13 @@ async def stream_agent(
             'message': data['message'],
           })
 
+  except asyncio.CancelledError:
+    # 客户端断开 / 任务被取消（BaseException，except Exception 捕不到）。
+    # 对方已走不再发兜底；记日志 + finally 落库/审计，随后让取消自然传播。
+    logger.warning('Agent 流被取消 thread_id=%s tools_called=%d', thread_id, len(tool_calls_log))
+    stop_reason = 'cancelled'
+    raise
+
   except asyncio.TimeoutError:
     # 整轮事件流静默超时：给用户可见的友好提示，落入 finally（done + 落库）
     logger.error('Agent 事件流超时（%ss 无事件）', settings.AGENT_EVENT_TIMEOUT)
@@ -383,7 +428,13 @@ async def stream_agent(
 
   except Exception as e:
     # 优雅降级（借鉴 DeerFlow 状态契约）：不再把原始异常抛给用户，按状态给可见回应
-    logger.exception('Agent stream error')
+    # 诊断：异常路径记下已产出的部分内容 + 异常详情，供人工判断断流原因
+    logger.exception(
+      'Agent stream error thread=%s answer_len=%d answer_preview=%r',
+      thread_id,
+      len(''.join(answer_parts)),
+      ''.join(answer_parts)[:200],
+    )
     stop_reason = str(e)
     if _is_context_too_long(e):
       # 对话历史超长（模型 400）：给可操作提示，不静默失败；已有工具结果一并列出
@@ -439,21 +490,22 @@ async def stream_agent(
   finally:
     duration_ms = int((time.time() - start_time) * 1000)
 
-    # 发送结束事件
-    yield format_sse('done', {
-      'session_id': session_id,
-      'thread_id': thread_id,
-      'duration_ms': duration_ms,
-      'tool_calls_count': len(tool_calls_log),
-    })
+    # 每轮 Agent INFO 日志（进 stdout → Loki，便于排查；放最前，取消时也记录）
+    logger.info(
+      'agent 轮结束 thread=%s tools=%d duration=%dms stop=%s',
+      thread_id, len(tool_calls_log), duration_ms, stop_reason or 'normal',
+    )
 
-    # 落库会话消息（用户问题 + 助手回答）到 messages 集合，供前端历史加载。
-    # 助手回答存 display_parts（含 <tool-call>/<tool-result> 标记，与前端直播插入的
-    # 格式一致），重载历史时 ChatArea 会解析标记重现工具卡片；纯文本回答在
-    # answer_parts（final_answer），审计日志用。
+    # 先落库、再发 done —— 前端收到 done 即刷新会话列表，若 save 在 done 之后才执行，
+    # 用户立刻点回会话时消息还没落库会返回空（「点好几次才出来」）；生成器被取消时
+    # done-yield 抛 CancelledError 直接传播，save 更会被整体跳过导致会话永久空。
+    # 故把落库放到 done 之前，并包 try/except 兜底（落库失败仅记日志，不影响流）。
     final_answer = ''.join(answer_parts)
     display_answer = ''.join(display_parts) or final_answer
-    await save_messages(session_id, user_id, message, display_answer, uploaded_filenames)
+    try:
+      await save_messages(session_id, user_id, message, display_answer, uploaded_filenames)
+    except Exception:
+      logger.exception('agent 收尾落库失败')
 
     # 写入审计日志（fire-and-forget）。
     # 注意：函数内不能再出现局部 `import asyncio` —— 那会把 asyncio 变成函数局部
@@ -470,3 +522,19 @@ async def stream_agent(
         duration_ms=duration_ms,
         stopped_by_guard=stop_reason,
       ))
+
+    # 发送结束事件（生成器被关闭/取消时 yield 会抛 GeneratorExit/CancelledError，
+    # 拦截避免 RuntimeError；取消则让异常继续传播——此时消息已落库，不影响）。
+    try:
+      yield format_sse('done', {
+        'session_id': session_id,
+        'thread_id': thread_id,
+        'duration_ms': duration_ms,
+        'tool_calls_count': len(tool_calls_log),
+      })
+    except GeneratorExit:
+      raise
+    except asyncio.CancelledError:
+      raise
+    except Exception:
+      pass

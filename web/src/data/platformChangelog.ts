@@ -7,6 +7,12 @@ export interface ChangelogEntry {
 
 const PLATFORM_CHANGELOG: ChangelogEntry[] = [
   {
+    version: 'v1.5',
+    date: '2026-08-25',
+    title: '智能体（Agent）平台全新升级',
+    body: '对话即可查询综合管理平台的人员/设备/工单/巡检等数据，数据分析沙箱一键出图与 HTML 看板，支持创建自定义技能，一站式智能运维助手。',
+  },
+  {
     version: 'v1.4',
     date: '2026-06-25',
     title: '对话助手预设问答上线',

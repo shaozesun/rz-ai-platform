@@ -203,6 +203,18 @@ class Settings(BaseSettings):
   SCHEDULER_SLOT_ACQUIRE_TIMEOUT: int = 5
   SCHEDULER_STREAM_SLOT_TIMEOUT: int = 10
 
+  # ==================== 定时任务（定时报告/巡检，复用 Agent 跑一轮） ====================
+  SCHEDULED_TASKS_ENABLED: bool = False     # 总开关，默认关闭
+  SCHEDULED_TASK_POLL_INTERVAL: int = 30    # 后台轮询到期任务间隔（秒）
+  SCHEDULED_TASK_LOCK_TTL: int = 600        # Redis 锁 TTL（秒），防多 worker 重复触发
+  # 定时任务跑 Agent 用身份：空 = 服务账号（MGMT_USERNAME/MGMT_PASSWORD，mgmt 查询按服务身份）；
+  # 非空 = 指定 rz 用户（用该用户的 mgmt 绑定身份查询）
+  SCHEDULED_TASK_SERVICE_USER_ID: str = ''
+  # 服务账号权限（逗号分隔）：授予 Agent 对话 + 平台工具访问，按需增减
+  SCHEDULED_TASK_SERVICE_PERMISSIONS: str = 'ai:agent,query:platform/access'
+  # cron 表达式按此本地时区计算（用户填的时间是本地时间）
+  SCHEDULED_TASK_TIMEZONE: str = 'Asia/Shanghai'
+
   # ==================== 部署 ====================
   ALLOWED_ORIGINS: str = '*'  # 生产环境应改为具体域名 (逗号分隔)，如 https://fire.whitegiveking.cn
   RATE_LIMIT_PER_MINUTE: int = 60
@@ -259,14 +271,14 @@ class Settings(BaseSettings):
 
   # 工具输出进上下文前封顶：page_size 上限 + 单条工具结果最大字符数
   AGENT_MAX_PAGE_SIZE: int = 20
-  AGENT_MAX_TOOL_OUTPUT_CHARS: int = 12000  # ≈6k token；紧凑序列化后正常/较宽 20 条页面全量放得下
+  AGENT_MAX_TOOL_OUTPUT_CHARS: int = 20000  # ≈10k token；紧凑序列化后约 25 条较宽记录（如问题工单列表）全量放得下
 
   # ==================== Agent 数据分析沙箱（参照 DifySandbox / DeerFlow 模式） ====================
   AGENT_ANALYSIS_ENABLED: bool = False        # 总开关，默认关闭
   AGENT_ANALYSIS_DATA_DIR: str = str(Path(__file__).parent.parent / 'data' / 'analysis')
   AGENT_ANALYSIS_TIMEOUT: int = 30            # 单次代码执行超时（秒）
   AGENT_ANALYSIS_MAX_ROWS: int = 10000        # 单数据集最大行数（全量拉取上限）
-  AGENT_ANALYSIS_PAGE_SIZE: int = 100         # 拉取平台数据的分页大小
+  AGENT_ANALYSIS_PAGE_SIZE: int = 500         # 拉取平台数据的分页大小
   AGENT_ANALYSIS_MAX_MEMORY_MB: int = 512     # 沙箱子进程内存上限
   AGENT_ANALYSIS_MAX_OUTPUT_CHARS: int = 4000 # 单次执行返回结果上限
   AGENT_ANALYSIS_MAX_DATASETS_PER_SESSION: int = 20
@@ -312,6 +324,10 @@ class Settings(BaseSettings):
   MGMT_PASSWORD_KEY: str = ''          # 认证中心密码加密 Fernet 密钥（空则从 JWT_PRIVATE_KEY 派生）
   MGMT_DEFAULT_PASSWORD: str = '666666'  # 未绑定用户的默认 mgmt 账号密码（默认平台账号）
 
+  # 综合管理平台账号打通（SSO 登录 + 注册时档案同步）
+  MGMT_SSO_ENABLED: bool = False          # mgmt 账号登录 rz 总开关，默认关闭
+  MGMT_SSO_DEFAULT_ROLE: str = 'dc_operator'  # mgmt 账号自动创建用户的默认角色
+
   # ==================== 安防平台集成 ====================
   # 占位注册：暂无接口文档，capabilities 为空元组，client.call 直接抛异常。
   # 接口文档到位后按 mgmt 的接入模式（EndpointSpec 声明式映射）填实即可。
@@ -319,6 +335,18 @@ class Settings(BaseSettings):
   SECURITY_BASE_URL: str = ''          # 安防平台 API 基地址
   SECURITY_API_TOKEN: str = ''         # 服务级访问 token
   SECURITY_TIMEOUT: int = 30           # 调用超时（秒）
+
+  # ==================== 飞书 IM 机器人 ====================
+  LARK_ENABLED: bool = False           # 总开关，默认关闭
+  LARK_APP_ID: str = ''                # 飞书自建应用 App ID
+  LARK_APP_SECRET: str = ''            # 飞书自建应用 App Secret
+  LARK_VERIFICATION_TOKEN: str = ''    # 事件订阅 Verification Token（未开加密留空）
+  LARK_ENCRYPT_KEY: str = ''           # 事件订阅 Encrypt Key（未开加密留空）
+  LARK_BOT_NAME: str = ''              # 群聊 @提及去重用（@机器人 后文本里的机器人名）
+  LARK_CONNECT_CODE_TTL: int = 600     # 一次性绑定码有效期（秒）
+  LARK_HISTORY_LIMIT: int = 50         # 群消息总结默认拉取条数
+  LARK_ARTIFACT_TOKEN_TTL: int = 3600  # 产物下载链接有效期（秒）
+  LARK_LEADER_TTL: int = 30            # 多 worker 选主锁 TTL（秒）
 
   model_config = {
     'env_file': '.env',

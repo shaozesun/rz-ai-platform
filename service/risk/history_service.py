@@ -50,7 +50,7 @@ async def save_check_result(
     'image_name': result.image_name,
     'thumbnail': _make_thumbnail(image_bytes),
     'result': result.model_dump(),
-    'checked_at': datetime.utcnow(),
+    'checked_at': datetime.now(),
   }
   try:
     await mongodb_manager.db[COLLECTION].insert_one(doc)
@@ -132,7 +132,7 @@ async def save_fire_safety_result(
     'summary': result.summary,
     'request': request.model_dump(),
     'result': result.model_dump(),
-    'created_at': datetime.utcnow(),
+    'created_at': datetime.now(),
   }
   try:
     await mongodb_manager.db[FIRE_SAFETY_COLLECTION].insert_one(doc)

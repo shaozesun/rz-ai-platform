@@ -27,11 +27,11 @@ import {
 } from '@/api/stats';
 
 const modules = [
-  { href: '/assistant', title: '对话助手', desc: '企业知识库问答、智能客服与办公助理', icon: MessageSquareText, status: '运行中', metric: '知识库 RAG 驱动' },
-  { href: '/knowledge', title: '知识库', desc: '文档上传、向量化管理，为对话提供知识溯源', icon: BookOpen, status: '运行中', metric: '支持 7 种格式' },
-  { href: '/risk', title: '隐患识别', desc: 'AI 安全隐患检测、两阶段 VLM+CV 流水线', icon: ShieldAlert, status: '运行中', metric: '4 种机柜模板' },
-  { href: '/fire-safety', title: '消防配置', desc: '基于建筑参数自动推荐消防设施配置方案', icon: Flame, status: '运行中', metric: '5 种快速填充' },
-  { href: '/video', title: '视频生成', desc: 'PPT 转解说视频，TTS 语音合成，MP4 输出', icon: Clapperboard, status: '运行中', metric: '全自动流程' },
+  { href: '/assistant', title: '对话助手', desc: '企业知识库问答、智能客服与办公助理', icon: MessageSquareText, status: '运行中', metric: '知识库 RAG 驱动', tone: 'bg-chart-1/25 text-chart-1' },
+  { href: '/knowledge', title: '知识库', desc: '文档上传、向量化管理，为对话提供知识溯源', icon: BookOpen, status: '运行中', metric: '支持 7 种格式', tone: 'bg-chart-2/25 text-chart-2' },
+  { href: '/risk', title: '隐患识别', desc: 'AI 安全隐患检测、两阶段 VLM+CV 流水线', icon: ShieldAlert, status: '运行中', metric: '4 种机柜模板', tone: 'bg-chart-5/25 text-chart-5' },
+  { href: '/fire-safety', title: '消防配置', desc: '基于建筑参数自动推荐消防设施配置方案', icon: Flame, status: '运行中', metric: '5 种快速填充', tone: 'bg-chart-4/25 text-chart-4' },
+  { href: '/video', title: '视频生成', desc: 'PPT 转解说视频，TTS 语音合成，MP4 输出', icon: Clapperboard, status: '运行中', metric: '全自动流程', tone: 'bg-chart-3/25 text-chart-3' },
 ];
 
 function timeAgo(iso: string): string {
@@ -47,17 +47,29 @@ function timeAgo(iso: string): string {
   return d.toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit' });
 }
 
-const dotColor = (type: string) => {
-  if (type === 'video') return 'bg-chart-2';
-  return 'bg-muted-foreground';
+const DOT_COLORS: Record<string, string> = {
+  chat: 'bg-chart-1',
+  message: 'bg-chart-1',
+  assistant: 'bg-chart-1',
+  knowledge: 'bg-chart-3',
+  doc: 'bg-chart-3',
+  upload: 'bg-chart-3',
+  video: 'bg-chart-2',
+  risk: 'bg-chart-5',
+  fire: 'bg-chart-4',
+  fire_safety: 'bg-chart-4',
+  scheduled_task: 'bg-chart-6',
 };
+const dotColor = (type: string) => DOT_COLORS[type] || 'bg-muted-foreground';
 
 export default function OverviewPage() {
   const user = useAuthStore((s) => s.user);
   const userName = user?.name || user?.phone || '用户';
-  const [overview, setOverview] = useState<OverviewData>({ api_call_count: 0, api_call_change: null, compute_usage: 0, compute_usage_change: null, user_count: 0, session_count: 0, session_change: null, video_count: 0, video_change: null, risk_check_count: 0, risk_check_change: null, fire_safety_count: 0, fire_safety_change: null, doc_count: 0 });
+  const [overview, setOverview] = useState<OverviewData>({ api_call_count: 0, api_call_change: null, compute_usage: 0, compute_usage_change: null, user_count: 0, message_count: 0, session_count: 0, session_change: null, video_count: 0, video_change: null, risk_check_count: 0, risk_check_change: null, fire_safety_count: 0, fire_safety_change: null, doc_count: 0 });
   const [activities, setActivities] = useState<ActivityItem[]>([]);
   const [trend, setTrend] = useState<TrendItem[]>([]);
+  // 个人通知开关（SettingsPage「动态通知」，key rz_notify_enabled）：关闭后首页动态不展示个人活动
+  const [notifyEnabled] = useState(() => localStorage.getItem('rz_notify_enabled') === 'true');
 
   useEffect(() => {
     getOverview().then(setOverview).catch((err) => { console.error('getOverview failed:', err); });
@@ -73,27 +85,35 @@ export default function OverviewPage() {
       {/* Stat cards */}
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-4">
         {[
-          { label: 'API 调用总量', value: overview.api_call_count, icon: Activity, sub: '本周请求', tone: 'bg-chart-5/15 text-chart-5' },
-          { label: '算力消耗', value: overview.compute_usage, icon: Zap, sub: 'Token 消耗', tone: 'bg-chart-6/15 text-chart-6' },
-          { label: '活跃用户', value: overview.user_count, icon: Users, sub: '注册用户', tone: 'bg-chart-1/15 text-chart-1' },
-          { label: '对话会话', value: overview.session_count, icon: MessageSquareText, sub: '本周会话', tone: 'bg-chart-2/15 text-chart-2' },
-          { label: '视频生成', value: overview.video_count, icon: Clapperboard, sub: '本周任务', tone: 'bg-chart-3/15 text-chart-3' },
-          { label: '隐患识别', value: overview.risk_check_count, icon: ShieldAlert, sub: '本周检测', tone: 'bg-chart-4/15 text-chart-4' },
-          { label: '消防配置', value: overview.fire_safety_count, icon: Flame, sub: '本周推荐', tone: 'bg-amber-100 text-amber-600' },
-          { label: '知识库', value: overview.doc_count, icon: BookOpen, sub: '文档总数', tone: 'bg-primary/10 text-primary' },
+          { label: 'API 调用总量', value: overview.api_call_count, icon: Activity, sub: '本周请求', tone: 'text-chart-5', accent: 'var(--chart-5)' },
+          { label: '算力消耗', value: overview.compute_usage, icon: Zap, sub: 'Token 消耗', tone: 'text-chart-6', accent: 'var(--chart-6)' },
+          { label: '活跃用户', value: overview.user_count, icon: Users, sub: '注册用户', tone: 'text-chart-1', accent: 'var(--chart-1)' },
+          { label: '对话会话', value: overview.session_count, icon: MessageSquareText, sub: '本周会话', tone: 'text-chart-2', accent: 'var(--chart-2)' },
+          { label: '视频生成', value: overview.video_count, icon: Clapperboard, sub: '本周任务', tone: 'text-chart-3', accent: 'var(--chart-3)' },
+          { label: '隐患识别', value: overview.risk_check_count, icon: ShieldAlert, sub: '本周检测', tone: 'text-chart-4', accent: 'var(--chart-4)' },
+          { label: '消防配置', value: overview.fire_safety_count, icon: Flame, sub: '本周推荐', tone: 'text-orange-500', accent: '#fb923c' },
+          { label: '知识库', value: overview.doc_count, icon: BookOpen, sub: '文档总数', tone: 'text-primary', accent: 'var(--primary)' },
         ].map((s) => {
           const Icon = s.icon;
+          const iconGrad = {
+            backgroundImage: `linear-gradient(135deg, color-mix(in oklab, ${s.accent} 28%, transparent), color-mix(in oklab, ${s.accent} 6%, transparent))`,
+          };
           return (
             <div
               key={s.label}
-              className="flex items-center gap-3 rounded-lg border border-border/60 bg-muted/30 px-3.5 py-3"
+              className="relative flex items-center gap-3 overflow-hidden rounded-xl border border-border/70 bg-card px-3.5 py-3 db:bg-[#151e2e]"
             >
-              <div className={`flex size-9 shrink-0 items-center justify-center rounded-md ${s.tone}`}>
+              <div
+                className={`relative flex size-9 shrink-0 items-center justify-center rounded-lg ${s.tone}`}
+                style={iconGrad}
+              >
                 <Icon className="size-4.5" />
               </div>
-              <div className="min-w-0 flex-1">
+              <div className="relative min-w-0 flex-1">
                 <p className="truncate text-xs text-muted-foreground">{s.label}</p>
-                <p className="text-lg font-semibold tracking-tight tabular-nums">{s.value.toLocaleString()}</p>
+                <p className="bg-gradient-to-br from-foreground to-muted-foreground bg-clip-text text-lg font-semibold tracking-tight tabular-nums text-transparent">
+                  {s.value.toLocaleString()}
+                </p>
                 <p className="text-[11px] text-muted-foreground/70">{s.sub}</p>
               </div>
             </div>
@@ -103,7 +123,7 @@ export default function OverviewPage() {
 
       {/* Charts */}
       <div className="mt-6 grid grid-cols-1 gap-4 lg:grid-cols-3">
-        <Card className="lg:col-span-2">
+        <Card className="db:[--card:#1a2436] lg:col-span-2">
           <CardHeader className="flex-row items-center justify-between">
             <div>
               <CardTitle>调用趋势</CardTitle>
@@ -115,14 +135,14 @@ export default function OverviewPage() {
           </CardContent>
         </Card>
 
-        <Card>
+        <Card className="db:[--card:#1a2436]">
           <CardHeader>
             <CardTitle>能力占比</CardTitle>
             <p className="text-sm text-muted-foreground">按调用量分布</p>
           </CardHeader>
           <CardContent>
             <DistributionChart data={[
-              { name: '对话助手', value: overview.session_count, color: 'var(--chart-1)' },
+              { name: '对话助手', value: overview.message_count, color: 'var(--chart-1)' },
               { name: '视频生成', value: overview.video_count, color: 'var(--chart-2)' },
               { name: '隐患识别', value: overview.risk_check_count, color: 'var(--chart-3)' },
               { name: '消防配置', value: overview.fire_safety_count, color: 'var(--chart-4)' },
@@ -140,9 +160,9 @@ export default function OverviewPage() {
               const Icon = m.icon;
               return (
                 <Link key={m.href} to={m.href} className="group">
-                  <Card className="h-full transition-all hover:border-primary/40 hover:shadow-md">
+                  <Card className="h-full transition-all hover:border-primary/40 hover:shadow-md db:[--card:#151e2f]">
                     <CardContent className="p-5">
-                      <div className="flex size-10 items-center justify-center rounded-lg bg-primary/10 text-primary">
+                      <div className={`flex size-10 items-center justify-center rounded-lg ${m.tone}`}>
                         <Icon className="size-5" />
                       </div>
                       <h3 className="mt-4 flex items-center gap-1.5 font-semibold">
@@ -163,14 +183,14 @@ export default function OverviewPage() {
         </div>
 
         {/* Activity feed: system changelog + user activities */}
-        <Card>
+        <Card className="db:[--card:#151e2f]">
           <CardHeader>
             <CardTitle>动态</CardTitle>
             <p className="text-sm text-muted-foreground">系统更新与个人活动</p>
           </CardHeader>
           <CardContent className="flex flex-col gap-4">
-            {/* User activities */}
-            {activities.length > 0 && (
+            {/* User activities（个人通知关闭时不展示个人活动） */}
+            {notifyEnabled && activities.length > 0 && (
               <div className="flex flex-col gap-3">
                 {activities.map((a, i) => (
                   <div key={i} className="flex gap-3">

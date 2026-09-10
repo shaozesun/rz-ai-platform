@@ -3,6 +3,7 @@
 @import 'shadcn/tailwind.css';
 
 @custom-variant dark (&:is(.dark *));
+@custom-variant db (&:is(:where(.dark):not(:where(.black)) *));
 
 @theme inline {
   --font-heading: var(--font-sans);
@@ -94,41 +95,129 @@
 
 .dark {
   color-scheme: dark;
-  --background: oklch(0.18 0.05 250);
-  --foreground: oklch(0.92 0.02 252);
-  --card: oklch(0.24 0.05 250);
-  --card-foreground: oklch(0.92 0.02 252);
-  --popover: oklch(0.24 0.05 250);
-  --popover-foreground: oklch(0.92 0.02 252);
-  --primary: oklch(0.62 0.15 250);
-  --primary-foreground: oklch(0.15 0.03 250);
-  --secondary: oklch(0.34 0.04 250);
-  --secondary-foreground: oklch(0.92 0.02 252);
-  --muted: oklch(0.29 0.04 250);
-  --muted-foreground: oklch(0.72 0.03 250);
-  --accent: oklch(0.39 0.05 250);
-  --accent-foreground: oklch(0.94 0.03 250);
+  --background: oklch(0.208 0.04 265);
+  --foreground: oklch(0.968 0.007 247);
+  --card: oklch(0.279 0.04 260);
+  --card-foreground: oklch(0.968 0.007 247);
+  --popover: oklch(0.31 0.04 260);
+  --popover-foreground: oklch(0.968 0.007 247);
+  --primary: oklch(0.715 0.143 215);
+  --primary-foreground: oklch(0.2 0.045 265);
+  --secondary: oklch(0.33 0.04 260);
+  --secondary-foreground: oklch(0.93 0.01 252);
+  --muted: oklch(0.3 0.04 260);
+  --muted-foreground: oklch(0.704 0.04 256);
+  --accent: oklch(0.372 0.044 257);
+  --accent-foreground: oklch(0.968 0.007 247);
+  --destructive: oklch(0.704 0.191 22);
+  --destructive-foreground: oklch(0.98 0.015 20);
+  --success: oklch(0.765 0.177 163);
+  --warning: oklch(0.828 0.189 84);
+  --border: oklch(0.372 0.044 257);
+  --input: oklch(0.42 0.045 257);
+  --ring: oklch(0.789 0.154 211);
+  --chart-1: oklch(0.715 0.143 215);
+  --chart-2: oklch(0.623 0.214 259);
+  --chart-3: oklch(0.585 0.233 277);
+  --chart-4: oklch(0.7 0.14 175);
+  --chart-5: oklch(0.704 0.191 22);
+  --chart-6: oklch(0.68 0.19 310);
+  --sidebar: oklch(0.19 0.04 265);
+  --sidebar-foreground: oklch(0.93 0.01 252);
+  --sidebar-primary: oklch(0.715 0.143 215);
+  --sidebar-primary-foreground: oklch(0.2 0.045 265);
+  --sidebar-accent: oklch(0.3 0.04 260);
+  --sidebar-accent-foreground: oklch(0.968 0.007 247);
+  --sidebar-border: oklch(0.372 0.044 257);
+  --sidebar-ring: oklch(0.789 0.154 211);
+}
+
+/* ========== 黑色主题（DeerFlow 黑白风，独立可选模式） ==========
+   使用时 html 同时挂 .dark 与 .black：.dark 保证 dark: 变体与 .dark 规则生效，
+   本块写在其后，用暖黑 + 白 primary 色板覆盖 token。 */
+.black {
+  color-scheme: dark;
+  --background: oklch(0.24 0.0036 106.64);
+  --foreground: oklch(0.985 0 0);
+  --card: oklch(0.27 0.0036 106.64);
+  --card-foreground: oklch(0.985 0 0);
+  --popover: oklch(0.29 0.0036 106.64);
+  --popover-foreground: oklch(0.985 0 0);
+  --primary: oklch(1 0 0);
+  --primary-foreground: oklch(0.205 0 0);
+  --secondary: oklch(0.31 0.0036 106.64);
+  --secondary-foreground: oklch(0.985 0 0);
+  --muted: oklch(0.3 0.0036 106.64);
+  --muted-foreground: oklch(0.78 0 0);
+  --accent: oklch(0.33 0.0036 106.64);
+  --accent-foreground: oklch(0.985 0 0);
   --destructive: oklch(0.64 0.18 20);
   --destructive-foreground: oklch(0.98 0.02 20);
   --success: oklch(0.72 0.13 155);
   --warning: oklch(0.8 0.14 75);
-  --border: oklch(0.36 0.035 250);
-  --input: oklch(0.44 0.04 250);
-  --ring: oklch(0.62 0.15 250);
-  --chart-1: oklch(0.62 0.15 250);
-  --chart-2: oklch(0.72 0.13 200);
-  --chart-3: oklch(0.8 0.14 75);
-  --chart-4: oklch(0.72 0.13 155);
-  --chart-5: oklch(0.64 0.18 20);
+  --border: oklch(1 0 0 / 10%);
+  --input: oklch(1 0 0 / 14%);
+  --ring: oklch(0.62 0 0);
+  --chart-1: oklch(0.769 0.188 70.08);
+  --chart-2: oklch(0.696 0.17 162.48);
+  --chart-3: oklch(0.645 0.246 16.439);
+  --chart-4: oklch(0.627 0.265 303.9);
+  --chart-5: oklch(0.556 0 0);
   --chart-6: oklch(0.68 0.17 290);
-  --sidebar: oklch(0.155 0.04 250);
-  --sidebar-foreground: oklch(0.92 0.02 252);
-  --sidebar-primary: oklch(0.62 0.15 250);
-  --sidebar-primary-foreground: oklch(0.15 0.03 250);
-  --sidebar-accent: oklch(0.36 0.05 250);
-  --sidebar-accent-foreground: oklch(0.94 0.03 250);
-  --sidebar-border: oklch(0.36 0.035 250);
-  --sidebar-ring: oklch(0.62 0.15 250);
+  --sidebar: oklch(0.25 0.0036 106.64);
+  --sidebar-foreground: oklch(0.985 0 0);
+  --sidebar-primary: oklch(1 0 0);
+  --sidebar-primary-foreground: oklch(0.205 0 0);
+  --sidebar-accent: oklch(0.32 0.0036 106.64);
+  --sidebar-accent-foreground: oklch(0.985 0 0);
+  --sidebar-border: oklch(1 0 0 / 10%);
+  --sidebar-ring: oklch(0.62 0 0);
+}
+
+/* ========== 登录页固定浅色主题 ==========
+   登录页保持原始浅色外观，不受 深色/黑色 主题影响：
+   在容器作用域重声明 :root 浅色 token，覆盖 html 上的 .dark/.black。 */
+.login-page {
+  color-scheme: light;
+  --background: oklch(0.985 0.003 247);
+  --foreground: oklch(0.21 0.02 257);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.21 0.02 257);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.21 0.02 257);
+  --primary: oklch(0.55 0.17 256);
+  --primary-foreground: oklch(0.99 0.005 247);
+  --secondary: oklch(0.967 0.005 247);
+  --secondary-foreground: oklch(0.34 0.02 257);
+  --muted: oklch(0.967 0.005 247);
+  --muted-foreground: oklch(0.55 0.015 257);
+  --accent: oklch(0.95 0.02 256);
+  --accent-foreground: oklch(0.4 0.12 256);
+  --destructive: oklch(0.58 0.21 27);
+  --destructive-foreground: oklch(0.985 0.01 20);
+  --success: oklch(0.62 0.15 155);
+  --warning: oklch(0.72 0.16 70);
+  --border: oklch(0.92 0.006 247);
+  --input: oklch(0.92 0.006 247);
+  --ring: oklch(0.55 0.17 256);
+}
+
+/* 登录页输入框浏览器自动填充（记住密码）：-webkit-autofill 会给输入框套不透明白底，
+   导致白底白字看不清。用实心深灰 inset 阴影盖住（近似玻璃输入框底色），白字保持可读。 */
+.login-page input:-webkit-autofill,
+.login-page input:-webkit-autofill:hover,
+.login-page input:-webkit-autofill:focus {
+  -webkit-text-fill-color: #fff;
+  caret-color: #fff;
+  -webkit-box-shadow: 0 0 0 1000px rgba(62, 66, 72, 1) inset;
+  transition: background-color 5000s ease-in-out 0s;
+}
+
+/* 登录页输入框提示字强制白色（75% 适中）：覆盖 .dark ::placeholder（黑色模式下会把它
+   盖成 muted-foreground 灰色，导致与玻璃背景接近看不清）。 */
+.login-page input::placeholder {
+  color: rgba(255, 255, 255, 0.75);
+  opacity: 1;
 }
 
 @layer base {
@@ -179,7 +268,7 @@
   border-bottom: none;
 }
 .assistant-table tbody tr:hover td {
-  background: oklch(0.985 0.003 247);
+  background: oklch(0.93 0.015 250);
 }
 
 .dark .assistant-table th {
@@ -187,6 +276,10 @@
 }
 .dark .assistant-table tbody tr:hover td {
   background: var(--muted);
+}
+/* black（墨绿）主题独立加深：气泡 secondary≈0.31，muted≈0.3 几乎同色看不清 */
+.black .assistant-table tbody tr:hover td {
+  background: oklch(0.27 0.006 106.64);
 }
 
 /* ========== 流程图样式 ========== */
@@ -288,3 +381,55 @@
 .dark ::-webkit-scrollbar-thumb:hover { background: var(--input); }
 .dark ::selection { background-color: color-mix(in oklch, var(--primary) 35%, transparent); color: var(--foreground); }
 .dark ::placeholder { color: var(--muted-foreground); opacity: 1; }
+/* 黑色模式 primary 为白色：选中背景用中性浅灰（muted-foreground），白气泡上显浅灰高亮，
+   选中文字用深色（primary-foreground）保证对比 */
+.black ::selection { background-color: color-mix(in oklch, var(--muted-foreground) 45%, transparent); color: var(--primary-foreground); }
+
+/* ========== 会话标题悬停跑马灯（超长流动显示全文，无省略号） ========== */
+.rz-marquee {
+  overflow: hidden;
+  white-space: nowrap;
+}
+.rz-marquee__track {
+  display: inline-flex;
+  min-width: 100%;
+  will-change: transform;
+}
+/* 仅当文字溢出时，悬停滚动（向后流动） */
+.rz-marquee[data-overflow='true']:hover .rz-marquee__track {
+  animation: rz-marquee-scroll 8s linear infinite;
+}
+@keyframes rz-marquee-scroll {
+  0% { transform: translateX(0); }
+  100% { transform: translateX(-50%); }
+}
+
+/* ========== 即时悬浮提示（替代原生 title 的延迟） ==========
+   元素加 `data-tip="文案"`，悬停立刻显示；主题跟随 popover 色。 */
+[data-tip] {
+  position: relative;
+}
+[data-tip]::after {
+  content: attr(data-tip);
+  position: absolute;
+  left: 50%;
+  bottom: calc(100% + 6px);
+  transform: translateX(-50%);
+  padding: 3px 7px;
+  border-radius: 6px;
+  background: var(--popover);
+  color: var(--popover-foreground);
+  border: 1px solid var(--border);
+  font-size: 12px;
+  line-height: 1.4;
+  white-space: nowrap;
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 0.1s ease;
+  pointer-events: none;
+  z-index: 50;
+}
+[data-tip]:hover::after {
+  opacity: 1;
+  visibility: visible;
+}

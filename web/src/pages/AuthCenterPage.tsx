@@ -1,10 +1,11 @@
 import { useState, useEffect } from 'react';
-import { KeyRound, ShieldCheck } from 'lucide-react';
+import { KeyRound, ShieldCheck, Bot, Copy } from 'lucide-react';
 import { PlatformShell } from '@/components/platform-shell';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { getMgmtStatus, bindMgmtAccount, unbindMgmtAccount } from '@/api/auth';
+import { getFeishuStatus, connectFeishu, unbindFeishu } from '@/api/feishu';
 
 export default function AuthCenterPage() {
   const [bound, setBound] = useState(false);
@@ -14,6 +15,9 @@ export default function AuthCenterPage() {
   const [loading, setLoading] = useState(false);
   const [msg, setMsg] = useState('');
   const [msgType, setMsgType] = useState<'success' | 'error'>('success');
+  const [larkBound, setLarkBound] = useState(false);
+  const [larkName, setLarkName] = useState('');
+  const [larkCode, setLarkCode] = useState('');
 
   const showMsg = (text: string, type: 'success' | 'error' = 'success') => {
     setMsg(text);
@@ -30,8 +34,53 @@ export default function AuthCenterPage() {
         setUsernameMasked(s.username_masked);
       })
       .catch(() => {});
+    getFeishuStatus()
+      .then((s) => {
+        if (cancelled) return;
+        setLarkBound(s.lark_bound);
+        setLarkName(s.lark_name);
+      })
+      .catch(() => {});
     return () => { cancelled = true; };
   }, []);
+
+  const handleGenerateCode = async () => {
+    try {
+      const d = await connectFeishu();
+      setLarkCode(d.code);
+    } catch {
+      showMsg('生成绑定码失败', 'error');
+    }
+  };
+
+  const handleUnbindFeishu = async () => {
+    try {
+      await unbindFeishu();
+      setLarkBound(false);
+      setLarkName('');
+      setLarkCode('');
+      showMsg('已解绑飞书');
+    } catch {
+      showMsg('解绑失败', 'error');
+    }
+  };
+
+  const copyCode = async () => {
+    const text = larkCode;
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch {
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand('copy');
+      document.body.removeChild(ta);
+    }
+    showMsg('已复制到剪贴板');
+  };
 
   const handleBind = async () => {
     if (!username.trim() || !password) {
@@ -156,6 +205,60 @@ export default function AuthCenterPage() {
                     {loading ? '绑定中…' : '绑定'}
                   </Button>
                 </div>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+
+        {/* 飞书绑定 */}
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <Bot className="size-4" />
+              飞书机器人
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            {larkBound ? (
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-sm font-medium text-foreground">
+                    已绑定飞书{larkName ? `：${larkName}` : ''}
+                  </p>
+                  <p className="text-xs text-muted-foreground mt-0.5">
+                    可在飞书群聊 @机器人 或私聊直接与平台 Agent 对话
+                  </p>
+                </div>
+                <Button size="sm" variant="outline" onClick={handleUnbindFeishu}>
+                  解绑
+                </Button>
+              </div>
+            ) : (
+              <div className="space-y-3">
+                <p className="text-sm text-muted-foreground">
+                  绑定后即可在飞书里 @机器人 问答、私聊，或总结群消息。点击生成一次性绑定码，再到飞书私聊
+                  机器人发送，或直接 @机器人 后在卡片输入框粘贴。
+                </p>
+                {larkCode ? (
+                  <div className="space-y-2">
+                    <p className="text-sm text-muted-foreground">
+                      在飞书私聊机器人，发送命令{' '}
+                      <code className="font-mono text-foreground">/connect</code>{' '}
+                      并粘贴下方绑定码
+                    </p>
+                    <div className="flex items-center gap-2 rounded-lg border border-border bg-muted/40 px-3 py-2">
+                      <code className="flex-1 truncate text-sm font-mono">{larkCode}</code>
+                      <Button size="sm" variant="ghost" onClick={copyCode}>
+                        <Copy className="size-3.5" />
+                        复制
+                      </Button>
+                    </div>
+                  </div>
+                ) : null}
+                <Button size="sm" onClick={handleGenerateCode}>
+                  <Bot className="size-3.5" />
+                  生成绑定码
+                </Button>
               </div>
             )}
           </CardContent>

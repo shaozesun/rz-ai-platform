@@ -77,8 +77,34 @@ async def lifespan(app: FastAPI):
   except Exception as e:
     logger.critical('角色初始化失败: %s', e)
 
+  if settings.SCHEDULED_TASKS_ENABLED:
+    try:
+      from service.scheduled_task.scheduler import start as scheduled_start
+      await scheduled_start()
+    except Exception as e:
+      logger.warning('定时任务调度器启动失败: %s', e)
+
+  if settings.LARK_ENABLED:
+    try:
+      from service.feishu.client import start as lark_start
+      await lark_start()
+    except Exception as e:
+      logger.warning('飞书机器人启动失败: %s', e)
+
   logger.info('初始化完成, 开始接收请求')
   yield
+  if settings.LARK_ENABLED:
+    try:
+      from service.feishu.client import shutdown as lark_shutdown
+      await lark_shutdown()
+    except Exception:
+      pass
+  if settings.SCHEDULED_TASKS_ENABLED:
+    try:
+      from service.scheduled_task.scheduler import shutdown as scheduled_shutdown
+      await scheduled_shutdown()
+    except Exception:
+      pass
   mongodb_manager.close()
   redis_manager.close()
   # Agent Checkpointer 清理（PostgreSQL 模式需关闭连接池）

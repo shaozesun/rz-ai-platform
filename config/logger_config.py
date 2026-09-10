@@ -18,6 +18,21 @@ class TraceIdFilter(logging.Filter):
         return True
 
 
+class AccessLogFilter(logging.Filter):
+    """过滤 uvicorn 访问日志里的噪音路径（如健康检查 /api/v1/health）。
+
+    探活进程高频轮询 health 会把访问日志刷屏，屏蔽该路径不影响其它日志。
+    """
+    _IGNORED_SUBSTRINGS = ('/api/v1/health',)
+
+    def filter(self, record):
+        try:
+            msg = record.getMessage()
+        except Exception:
+            return True
+        return not any(s in msg for s in self._IGNORED_SUBSTRINGS)
+
+
 class DailyFileHandler(logging.FileHandler):
     """多进程安全的日切日志处理器。
 
@@ -108,3 +123,6 @@ def setup_logging(level='INFO'):
     # 抑制第三方日志
     logging.getLogger('pymongo').setLevel(logging.WARNING)
     logging.getLogger('redis').setLevel(logging.WARNING)
+
+    # 过滤 uvicorn 访问日志的噪音路径（健康检查等高频探活）
+    logging.getLogger('uvicorn.access').addFilter(AccessLogFilter())

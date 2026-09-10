@@ -28,7 +28,7 @@ async def submit_feedback(request: Request, body: FeedbackRequest):
     'user_id': user_id,
     'phone': phone,
     'content': body.content.strip(),
-    'created_at': datetime.utcnow(),
+    'created_at': datetime.now(),
   }
   await mongodb_manager.db.feedbacks.insert_one(doc)
   logger.info(f'用户反馈: user_id={user_id}, len={len(body.content)}')

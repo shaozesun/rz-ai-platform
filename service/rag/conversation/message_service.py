@@ -82,6 +82,7 @@ class MessageService:
             messages = []
             async for msg in cursor:
                 messages.append(MessageListItem(
+                    message_id=cast(str, msg.get("message_id") or ""),
                     role=cast(str, msg.get("role")),
                     content=cast(str, msg.get("content")),
                     created_at=cast(Optional[datetime], msg.get("created_at")),
@@ -95,6 +96,20 @@ class MessageService:
                 e,
             )
             raise
+
+    async def delete_message(
+        self, session_id: str, message_id: str,
+        user_id: Optional[str] = None,
+    ) -> bool:
+        """按 message_id 删除单条消息（带会话 + 用户归属校验）"""
+        query: dict = {"session_id": session_id, "message_id": message_id}
+        if user_id:
+            query["$or"] = [
+                {"user_id": user_id},
+                {"user_id": {"$exists": False}},
+            ]
+        result = await self.messages.delete_one(query)
+        return result.deleted_count > 0
 
     async def delete_messages(self, session_id: str, user_id: Optional[str] = None) -> int:
         query: dict = {"session_id": session_id}

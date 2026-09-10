@@ -60,7 +60,7 @@ export default function UsersPage() {
   const fetchUsers = async () => {
     setLoading(true);
     try {
-      const res = await getUsers({ page, page_size: PAGE_SIZE, search, status: statusFilter });
+      const res = await getUsers({ page, page_size: PAGE_SIZE, keyword: search, status: statusFilter });
       setUsers(res.items ?? []);
       setTotal(res.total ?? 0);
     } catch {
@@ -115,7 +115,7 @@ export default function UsersPage() {
           <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
           <Input
             className="pl-8"
-            placeholder="搜索手机号"
+            placeholder="搜索手机号/姓名"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
@@ -145,6 +145,7 @@ export default function UsersPage() {
                 <tr className="border-b border-border text-left text-muted-foreground">
                   <th className="px-4 py-2.5 font-medium">手机号</th>
                   <th className="px-4 py-2.5 font-medium">姓名</th>
+                  <th className="px-4 py-2.5 font-medium">部门</th>
                   <th className="px-4 py-2.5 font-medium">类型</th>
                   <th className="px-4 py-2.5 font-medium">状态</th>
                   <th className="px-4 py-2.5 font-medium">角色</th>
@@ -154,14 +155,15 @@ export default function UsersPage() {
               </thead>
               <tbody>
                 {loading ? (
-                  <tr><td colSpan={7} className="px-4 py-8 text-center text-muted-foreground">加载中...</td></tr>
+                  <tr><td colSpan={8} className="px-4 py-8 text-center text-muted-foreground">加载中...</td></tr>
                 ) : users.length === 0 ? (
-                  <tr><td colSpan={7} className="px-4 py-8 text-center text-muted-foreground">暂无数据</td></tr>
+                  <tr><td colSpan={8} className="px-4 py-8 text-center text-muted-foreground">暂无数据</td></tr>
                 ) : (
                   users.map((u) => (
                     <tr key={u.user_id} className="border-b border-border">
                       <td className="px-4 py-2.5">{u.phone}</td>
                       <td className="px-4 py-2.5">{u.name || '-'}</td>
+                      <td className="px-4 py-2.5">{u.dept_name || '-'}</td>
                       <td className="px-4 py-2.5">
                         <Badge variant={u.user_type === 'INTERNAL' ? 'primary' : u.user_type === 'EXTERNAL' ? 'warning' : 'default'}>
                           {u.user_type}

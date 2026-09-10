@@ -323,7 +323,7 @@ export default function RiskPage() {
                         <button
                           onClick={() => removePendingFile(i)}
                           className="absolute right-2 top-2 flex size-6 items-center justify-center rounded-full bg-black/50 text-white hover:bg-destructive"
-                          title="移除"
+                          data-tip="移除"
                         >
                           <X className="size-3.5" />
                         </button>

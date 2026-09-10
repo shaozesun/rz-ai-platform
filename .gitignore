@@ -19,3 +19,4 @@ uploads/*
 .claude/
 data/
 *.db
+deploy/vpn/

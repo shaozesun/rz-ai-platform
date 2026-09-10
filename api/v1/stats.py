@@ -16,7 +16,7 @@ def _week_range(offset_weeks: int = 0) -> tuple[datetime, datetime]:
   offset_weeks=0: 本周（周一 00:00 至当前时刻）
   offset_weeks=-1: 上周（周一 00:00 至周日 23:59）
   """
-  now = datetime.utcnow()
+  now = datetime.now()
   monday = (now - timedelta(days=now.weekday())).replace(
     hour=0, minute=0, second=0, microsecond=0,
   )
@@ -89,6 +89,7 @@ async def get_overview(request: Request):
     'data': {
       'api_call_count': api_call_t,
       'api_call_change': _pct_change(api_call_t, api_call_l),
+      'message_count': msg_t,
       'compute_usage': compute_t,
       'compute_usage_change': _pct_change(compute_t, compute_l),
       'user_count': user_count,
@@ -107,7 +108,7 @@ async def get_overview(request: Request):
 
 @router.get('/stats/activity')
 async def get_activity(request: Request, limit: int = Query(5, ge=1, le=50)):
-    """返回当前用户的最近活动（视频 + 消防配置），按时间倒序。"""
+    """返回当前用户的最近活动（视频 + 定时任务），按时间倒序。"""
     user_id = request.state.user_id
     db = mongodb_manager.db
     activities: list[dict] = []
@@ -121,6 +122,18 @@ async def get_activity(request: Request, limit: int = Query(5, ge=1, le=50)):
         activities.append({
             'type': 'video',
             'text': text,
+            'time': _fmt(doc.get('created_at')),
+        })
+
+    # 定时任务完成通知
+    notif_cursor = (
+      db.scheduled_task_notifications.find({'user_id': user_id})
+      .sort('created_at', -1).limit(limit)
+    )
+    async for doc in notif_cursor:
+        activities.append({
+            'type': 'scheduled_task',
+            'text': doc.get('title', '定时任务执行完成'),
             'time': _fmt(doc.get('created_at')),
         })
 
@@ -139,7 +152,7 @@ def _fmt(dt):
 async def get_trend(request: Request):
     """返回各功能近 7 天每日调用量。"""
     db = mongodb_manager.db
-    now = datetime.utcnow()
+    now = datetime.now()
     days = [(now - timedelta(days=i)).strftime('%Y-%m-%d') for i in range(6, -1, -1)]
     labels = ['周一', '周二', '周三', '周四', '周五', '周六', '周日']
     day_labels = [labels[datetime.strptime(d, '%Y-%m-%d').weekday()] for d in days]

@@ -19,12 +19,13 @@ async function fetchWithAuth(url: string, init: RequestInit = {}): Promise<Respo
 export async function getSessions(): Promise<Session[]> {
   const { data } = await client.get('/chat/sessions');
   const list = data.sessions ?? data.data ?? [];
-  return list.map((s: { session_id: string; session_name: string; created_at: string; updated_at: string }) => ({
+  return list.map((s: { session_id: string; session_name: string; created_at: string; updated_at: string; pinned?: boolean }) => ({
     session_id: s.session_id,
     title: s.session_name || '新对话',
     created_at: s.created_at,
     updated_at: s.updated_at,
     message_count: 0,
+    pinned: !!s.pinned,
   }));
 }
 
@@ -39,6 +40,7 @@ export async function createSession(title?: string): Promise<Session> {
     created_at: s.created_at,
     updated_at: s.updated_at,
     message_count: 0,
+    pinned: false,
   };
 }
 
@@ -46,21 +48,28 @@ export async function deleteSession(sessionId: string): Promise<void> {
   await client.delete(`/chat/sessions/${sessionId}`);
 }
 
-export async function updateSession(sessionId: string, title: string): Promise<void> {
-  await client.patch(`/chat/sessions/${sessionId}`, { title });
+export async function updateSession(
+  sessionId: string,
+  updates: { title?: string; pinned?: boolean },
+): Promise<void> {
+  await client.patch(`/chat/sessions/${sessionId}`, updates);
 }
 
-export async function getMessages(sessionId: string): Promise<Message[]> {
-  const { data } = await client.get(`/chat/sessions/${sessionId}/messages`);
+export async function getMessages(sessionId: string, signal?: AbortSignal): Promise<Message[]> {
+  const { data } = await client.get(`/chat/sessions/${sessionId}/messages`, { signal });
   const list = data.messages ?? data.data ?? [];
-  return list.map((m: { role: string; content: string; created_at?: string; uploaded_filenames?: string[] }, i: number) => ({
-    message_id: `${sessionId}-${i}`,
+  return list.map((m: { message_id?: string; role: string; content: string; created_at?: string; uploaded_filenames?: string[] }, i: number) => ({
+    message_id: m.message_id || `${sessionId}-${i}`,
     session_id: sessionId,
     role: m.role,
     content: m.content,
     created_at: m.created_at || new Date().toISOString(),
     uploaded_filenames: m.uploaded_filenames,
   }));
+}
+
+export async function deleteMessage(sessionId: string, messageId: string): Promise<void> {
+  await client.delete(`/chat/sessions/${sessionId}/messages/${messageId}`);
 }
 
 // SSE 流式对话
@@ -130,6 +139,7 @@ export function chatStream(
 
 export interface AgentStreamOptions {
   interactionMode?: string;
+  taskMode?: string;
   planConfirmed?: boolean;
   plan?: ExecutionPlan | null;
   onPlan?: (plan: ExecutionPlan) => void;
@@ -188,6 +198,7 @@ export function agentStream(
     body: JSON.stringify({
       message: text,
       interaction_mode: options?.interactionMode ?? 'trust',
+      task_mode: options?.taskMode ?? 'normal',
       plan_confirmed: options?.planConfirmed ?? false,
       plan: options?.plan ?? null,
       interview_answers: options?.interviewAnswers ?? null,

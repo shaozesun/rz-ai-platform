@@ -8,7 +8,7 @@
 import asyncio
 import logging
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 
 from config.redis_conn import redis_manager
 from config.settings import settings
@@ -22,7 +22,7 @@ _stop = False
 
 
 async def _poll_once() -> None:
-  now = datetime.utcnow()
+  now = datetime.now(timezone.utc)
   due = await get_due_tasks(now=now)
   for task in due:
     lock_key = redis_manager.key(f'scheduled:{task.task_id}:lock')
@@ -39,7 +39,7 @@ async def _poll_once() -> None:
       fresh = await get_task(task.task_id)
       if fresh is None or not fresh.enabled:
         continue
-      if fresh.next_run_at and fresh.next_run_at > datetime.utcnow():
+      if fresh.next_run_at and fresh.next_run_at > datetime.now(timezone.utc):
         continue
       await set_next_run(fresh)
       asyncio.create_task(run_task(fresh))

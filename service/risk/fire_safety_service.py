@@ -40,7 +40,7 @@ async def _log_fire_safety_usage(user_id: str | None = None) -> None:
     await mongodb_manager.db.llm_usage.insert_one({
       'user_id': user_id,
       'caller': 'fire_safety',
-      'created_at': datetime.utcnow(),
+      'created_at': datetime.now(),
     })
   except Exception:
     logger.warning('消防配置用量写入失败', exc_info=True)

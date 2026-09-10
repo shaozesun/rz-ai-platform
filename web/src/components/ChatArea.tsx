@@ -1,8 +1,11 @@
 import { useState, useCallback, useEffect, useRef, useMemo, memo } from 'react';
+import { createPortal } from 'react-dom';
 import type { ReactNode } from 'react';
 import {
-  Bot, User, Sparkles, Trash2, Search, Wrench, ChevronDown, FileText,
+  Bot, User, Sparkles, Trash2, Search, Wrench, ChevronDown, FileText, Copy, Check,
+  AlertCircle, RotateCcw, Loader2, MoreHorizontal, Pin, PinOff, Pencil,
 } from 'lucide-react';
+import { Input } from './ui/input';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import TableActions from './TableActions';
@@ -65,7 +68,7 @@ function hideIncompleteFile(text: string): string {
   if (text.indexOf('/>', lastOpen) !== -1) return text; // 已闭合，正常渲染
   return text.slice(0, lastOpen); // 未闭合：截掉从 <file 起的部分
 }
-import { useChatStore, collectHtmlArtifacts } from '../stores/chatStore';
+import { useChatStore, collectArtifacts } from '../stores/chatStore';
 import { useAuthStore } from '../stores/authStore';
 import ChatInput from './ChatInput';
 import { cn } from '@/lib/utils';
@@ -202,7 +205,7 @@ function ToolCard({ name, args, result }: { name: string; args?: string; result?
   const status = useChatStore((s) => s.toolStatus?.[name]);
   const done = result !== undefined;
   return (
-    <div className="my-2 overflow-hidden rounded-lg border border-border bg-card/60 text-xs">
+    <div className="my-2 overflow-hidden rounded-lg border border-border bg-card/85 text-xs">
       <button
         onClick={() => setOpen((v) => !v)}
         className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-muted/50 transition-colors"
@@ -238,13 +241,46 @@ function ToolCard({ name, args, result }: { name: string; args?: string; result?
 
 
 const SUGGESTIONS = [
-  '智能运维平台有哪些功能？',
-  '如何配置消防设施？',
-  '安全隐患检测怎么做？',
-  '帮我创建一个技能',
+  '介绍一下平台和智能体有哪些能力',
+  '查一下我的待办工单',
+  '查询设备台账或人员信息',
+  '分析数据并生成图表',
+  '帮我创建一个自定义技能',
 ];
 
-const MessageBubble = memo(function MessageBubble({
+function formatDateTime(iso?: string): string {
+  if (!iso) return '';
+  try {
+    return new Date(iso).toLocaleString('zh-CN', { dateStyle: 'short', timeStyle: 'short' });
+  } catch {
+    return '';
+  }
+}
+
+/** 超长标题：无省略号，悬停时向后滚动（跑马灯）显示全文 */
+function MarqueeTitle({ text }: { text: string }) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [overflow, setOverflow] = useState(false);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    setOverflow(el.scrollWidth > el.clientWidth + 1);
+  }, [text]);
+  return (
+    <div
+      ref={ref}
+      className="rz-marquee min-w-0 text-sm font-medium leading-tight"
+      data-overflow={overflow ? 'true' : undefined}
+    >
+      <span className="rz-marquee__track">
+        {overflow && <span className="pr-2" aria-hidden>{text}</span>}
+        <span className="pr-2">{text}</span>
+      </span>
+    </div>
+  );
+}
+
+export const MessageBubble = memo(function MessageBubble({
   msg,
   isStreaming,
   isLast,
@@ -269,6 +305,25 @@ const MessageBubble = memo(function MessageBubble({
   const isAssistant = msg.role === 'assistant';
   // 空气泡：流式且最后一条且尚无任何内容时，显示思考指示器替代空泡
   const showThinking = isAssistant && isStreaming && isLast && !(msg.content || '').trim();
+  const deleteMessage = useChatStore((s) => s.deleteMessage);
+  const retryFailed = useChatStore((s) => s.retryFailed);
+  const [copied, setCopied] = useState(false);
+
+  const handleCopy = async () => {
+    try {
+      await navigator.clipboard.writeText(msg.content || '');
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      // ignore
+    }
+  };
+
+  const handleDelete = () => {
+    if (window.confirm('删除这条回答？')) {
+      void deleteMessage(msg.session_id, msg.message_id);
+    }
+  };
 
   const markdownComponents = {
     table: ({ children }: { children?: ReactNode }) => {
@@ -300,6 +355,7 @@ const MessageBubble = memo(function MessageBubble({
 
   return (
     <div
+      data-mid={msg.message_id}
       className={cn('flex gap-3', msg.role === 'user' && 'flex-row-reverse')}
     >
       <div
@@ -307,7 +363,7 @@ const MessageBubble = memo(function MessageBubble({
           'flex size-8 shrink-0 items-center justify-center rounded-lg',
           msg.role === 'user'
             ? 'bg-secondary text-secondary-foreground'
-            : 'bg-primary text-primary-foreground',
+            : 'bg-primary/20 text-primary',
         )}
       >
         {msg.role === 'user'
@@ -337,13 +393,28 @@ const MessageBubble = memo(function MessageBubble({
           className={cn(
             'rounded-2xl px-4 py-2.5 text-sm leading-relaxed',
             msg.role === 'user'
-              ? 'rounded-tr-sm bg-primary text-primary-foreground'
+              ? 'rounded-tr-sm bg-secondary text-secondary-foreground'
               : 'rounded-tl-sm bg-secondary text-secondary-foreground',
           )}
         >
           {isAssistant ? (
             <div className="assistant-msg max-w-none">
-              {showThinking ? (
+              {msg.streamError ? (
+                <div className="flex flex-col items-start gap-2 rounded-lg border border-destructive/40 bg-destructive/5 px-3 py-2">
+                  <p className="flex items-center gap-1.5 text-sm text-destructive">
+                    <AlertCircle className="size-4 shrink-0" />
+                    {msg.streamError}
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => void retryFailed()}
+                    className="inline-flex items-center gap-1.5 rounded-md border border-border px-2 py-1 text-xs text-foreground transition-colors hover:bg-muted"
+                  >
+                    <RotateCcw className="size-3" />
+                    重试
+                  </button>
+                </div>
+              ) : showThinking ? (
                 <div className="flex items-center gap-1.5 py-1">
                   <span className="size-1.5 animate-bounce rounded-full bg-muted-foreground/60" />
                   <span className="size-1.5 animate-bounce rounded-full bg-muted-foreground/60 [animation-delay:150ms]" />
@@ -396,6 +467,29 @@ const MessageBubble = memo(function MessageBubble({
             <p className="whitespace-pre-line">{msg.content}</p>
           )}
         </div>
+        {isAssistant && (
+          <div className="mt-1.5 flex items-center gap-1.5">
+            {msg.created_at && (
+              <span className="text-xs text-muted-foreground/70">{formatDateTime(msg.created_at)}</span>
+            )}
+            <button
+              type="button"
+              onClick={handleCopy}
+              title={copied ? '已复制' : '复制'}
+              className="rounded p-1 text-muted-foreground/70 transition-colors hover:bg-muted/60 hover:text-foreground"
+            >
+              {copied ? <Check className="size-3.5" /> : <Copy className="size-3.5" />}
+            </button>
+            <button
+              type="button"
+              onClick={handleDelete}
+              data-tip="删除"
+              className="rounded p-1 text-muted-foreground/70 transition-colors hover:bg-muted/60 hover:text-destructive"
+            >
+              <Trash2 className="size-3.5" />
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -403,23 +497,54 @@ const MessageBubble = memo(function MessageBubble({
 
 export default function ChatArea() {
   const {
-    messages, isStreaming, sessions, currentSessionId,
-    selectSession, deleteSession, sessionPanelOpen, closeSessionPanel,
+    messages, isStreaming, isLoadingMessages, sessions, currentSessionId,
+    selectSession, deleteSession, pinSession, renameSession, sessionPanelOpen, closeSessionPanel,
   } = useChatStore();
   const user = useAuthStore((s) => s.user);
   const pushArtifact = useChatStore((s) => s.pushArtifact);
+  const pendingJump = useChatStore((s) => s.pendingJump);
+  const clearPendingJump = useChatStore((s) => s.clearPendingJump);
   const listRef = useRef<HTMLDivElement>(null);
   const [sessionSearch, setSessionSearch] = useState('');
+  // 会话项省略号菜单 + 行内重命名状态。菜单用 fixed 定位向右弹（避开侧栏 overflow 裁剪），
+  // 记录触发按钮的位置；省略号选中时显示气泡高亮。
+  const [menu, setMenu] = useState<{ id: string; top: number; left: number } | null>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const [renamingId, setRenamingId] = useState<string | null>(null);
+  const [renameValue, setRenameValue] = useState('');
+
+  // 点菜单外关闭（省略号本身除外，toggle 交给其 click 处理）
+  useEffect(() => {
+    if (!menu) return;
+    const onDocClick = (e: MouseEvent) => {
+      const target = e.target as HTMLElement;
+      if (target?.closest?.('[data-menu-trigger]')) return;
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
+        setMenu(null);
+      }
+    };
+    document.addEventListener('mousedown', onDocClick);
+    return () => document.removeEventListener('mousedown', onDocClick);
+  }, [menu]);
+
+  const saveRename = (id: string) => {
+    const title = renameValue.trim();
+    if (title) renameSession(id, title);
+    setRenamingId(null);
+    setMenu(null);
+  };
 
   // 流式/历史消息里的 HTML 产物自动进右侧面板：只推 store 里还没有的（新产物）。
   // 不能全量重推——pushArtifact 现在对已存在产物也会打开面板，历史会话预填后若重推
   // 会强制弹开面板；只推新的才能在流式生成新看板时自动打开、又不打扰用户手动开关。
   useEffect(() => {
+    // 会话切换加载中：messages 可能仍是旧会话内容，跳过避免把旧会话产物错推进来
+    if (isLoadingMessages) return;
     const known = new Set(useChatStore.getState().artifacts.map((a) => a.url));
-    collectHtmlArtifacts(messages, currentSessionId)
+    collectArtifacts(messages, currentSessionId)
       .filter((a) => !known.has(a.url))
-      .forEach((a) => pushArtifact(a.url, a.name));
-  }, [messages, pushArtifact, currentSessionId]);
+      .forEach((a) => pushArtifact(a.url, a.name, a.type === 'records'));
+  }, [messages, pushArtifact, currentSessionId, isLoadingMessages]);
 
   const scrollToBottom = useCallback(() => {
     if (listRef.current) {
@@ -428,6 +553,32 @@ export default function ChatArea() {
   }, []);
 
   useEffect(() => { scrollToBottom(); }, [messages, scrollToBottom]);
+
+  // 铃铛通知跳转：切到目标会话后，滚动到通知对应的那条回答并短暂高亮；
+  // 该回复已不可定位（重载后 id 变化/已删除）→ 回退到该会话最新一条助手回复，再兜底到底部。
+  useEffect(() => {
+    if (!pendingJump || pendingJump.sessionId !== currentSessionId) return;
+    if (isLoadingMessages) return;
+    const container = listRef.current;
+    if (!container || messages.length === 0) return;
+    const findEl = (mid?: string | null) => {
+      if (!mid) return null;
+      return (
+        (Array.from(container.querySelectorAll('[data-mid]')).find(
+          (el) => (el as HTMLElement).dataset.mid === mid,
+        ) as HTMLElement | null) ?? null
+      );
+    };
+    let target = findEl(pendingJump.messageId);
+    if (!target) {
+      const lastAsst = [...messages].reverse().find((m) => m.role === 'assistant');
+      target = findEl(lastAsst?.message_id);
+    }
+    const anchor = target ?? (container.lastElementChild as HTMLElement | null);
+    if (!anchor) return;
+    anchor.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    clearPendingJump();
+  }, [pendingJump, currentSessionId, isLoadingMessages, messages, clearPendingJump]);
 
   // Hide empty "新对话" sessions (created before first message was sent)
   const displaySessions = sessions.filter(
@@ -480,40 +631,110 @@ export default function ChatArea() {
               <button
                 onClick={() => { selectSession(s.session_id); closeSessionPanel(); }}
                 className={cn(
-                  'flex flex-1 items-center gap-2.5 rounded-lg px-2.5 py-2 text-left transition-colors',
+                  'flex min-w-0 flex-1 items-center gap-2.5 rounded-lg px-2.5 py-2 text-left transition-colors',
                   s.session_id === currentSessionId
                     ? 'bg-accent text-accent-foreground'
                     : 'hover:bg-secondary',
                 )}
               >
-                <Sparkles className="mt-0.5 size-3.5 shrink-0 text-muted-foreground" />
+                {s.pinned
+                  ? <Pin className="mt-0.5 size-3.5 shrink-0 text-primary" />
+                  : <Sparkles className="mt-0.5 size-3.5 shrink-0 text-muted-foreground" />}
                 <div className="min-w-0 flex-1">
-                  <p className="truncate text-sm font-medium leading-tight">{s.title}</p>
-                  <p className="text-xs text-muted-foreground">
+                  {renamingId === s.session_id ? (
+                    <Input
+                      autoFocus
+                      value={renameValue}
+                      onChange={(e) => setRenameValue(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') saveRename(s.session_id);
+                        if (e.key === 'Escape') { setRenamingId(null); setMenu(null); }
+                      }}
+                      onBlur={() => saveRename(s.session_id)}
+                      onClick={(e) => e.stopPropagation()}
+                      className="h-7 w-full text-sm"
+                    />
+                  ) : (
+                    <MarqueeTitle text={s.title} />
+                  )}
+                  <p className="truncate text-xs text-muted-foreground">
                     {s.updated_at
                       ? new Date(s.updated_at).toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit' })
                       : ''}
                   </p>
                 </div>
               </button>
-              <button
-                onClick={(e) => { e.stopPropagation(); deleteSession(s.session_id); }}
-                className="shrink-0 rounded p-1 text-muted-foreground opacity-0 group-hover:opacity-100 hover:text-destructive transition-opacity mr-1"
-                title="删除会话"
-              >
-                <Trash2 className="size-3" />
-              </button>
+              {/* 省略号菜单：置顶/重命名/删除（fixed 定位向右弹，避开侧栏 overflow 裁剪） */}
+              <div className="mr-1 shrink-0">
+                <button
+                  data-menu-trigger
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    const rect = (e.currentTarget as HTMLButtonElement).getBoundingClientRect();
+                    setMenu(menu?.id === s.session_id
+                      ? null
+                      : { id: s.session_id, top: rect.bottom + 4, left: rect.right + 4 });
+                  }}
+                  className={cn(
+                    'rounded-full p-1 transition-colors',
+                    menu?.id === s.session_id
+                      ? 'bg-primary text-primary-foreground opacity-100 shadow-sm'
+                      : 'text-muted-foreground opacity-0 group-hover:opacity-100 hover:bg-muted/60',
+                  )}
+                >
+                  <MoreHorizontal className="size-3.5" />
+                </button>
+                {menu?.id === s.session_id && createPortal(
+                  <div
+                    ref={menuRef}
+                    style={{ position: 'fixed', top: menu.top, left: menu.left, zIndex: 50 }}
+                    className="min-w-32 overflow-hidden rounded-md border border-border bg-popover p-1 shadow-lg"
+                  >
+                    <button
+                      onClick={(e) => { e.stopPropagation(); pinSession(s.session_id, !s.pinned); setMenu(null); }}
+                      className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs hover:bg-muted/60"
+                    >
+                      {s.pinned ? <PinOff className="size-3" /> : <Pin className="size-3" />}
+                      {s.pinned ? '取消置顶' : '置顶'}
+                    </button>
+                    <button
+                      onClick={(e) => { e.stopPropagation(); setRenamingId(s.session_id); setRenameValue(s.title); setMenu(null); }}
+                      className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs hover:bg-muted/60"
+                    >
+                      <Pencil className="size-3" />
+                      重命名
+                    </button>
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setMenu(null);
+                        if (window.confirm(`删除会话「${s.title}」？`)) deleteSession(s.session_id);
+                      }}
+                      className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs text-destructive hover:bg-destructive/10"
+                    >
+                      <Trash2 className="size-3" />
+                      删除
+                    </button>
+                  </div>,
+                  document.body,
+                )}
+              </div>
             </div>
           ))}
         </div>
       </div>
 
       {/* 聊天列（看板为 fixed 全屏覆盖层，不进卡片流，不占横向空间） */}
-      <div className="flex min-h-0 flex-1 overflow-hidden rounded-none border-0 lg:rounded-xl lg:border lg:border-border bg-card">
+      <div className="flex min-h-0 flex-1 overflow-hidden rounded-none border-0 lg:rounded-xl lg:border lg:border-border bg-background">
         <div className="flex min-w-0 min-h-0 flex-1 flex-col">
           {/* Messages */}
           <div ref={listRef} className="flex-1 space-y-5 overflow-y-auto p-4 [touch-action:pan-y]">
-            {messages.length === 0 ? (
+            {isLoadingMessages ? (
+              <div className="flex h-full items-center justify-center gap-2 text-sm text-muted-foreground">
+                <Loader2 className="size-4 animate-spin" />
+                加载会话…
+              </div>
+            ) : messages.length === 0 ? (
               <div className="flex h-full flex-col items-center justify-center gap-3 text-center">
                 <div className="flex size-14 items-center justify-center rounded-2xl bg-primary/10">
                   <Bot className="size-7 text-primary" />
@@ -521,7 +742,7 @@ export default function ChatArea() {
                 <div>
                   <p className="text-sm font-semibold">智能运维助手</p>
                   <p className="mt-1 text-xs text-muted-foreground max-w-xs">
-                    基于企业知识库的智能问答与办公助理，可以帮您查询文档、分析数据
+                    欢迎使用润泽 AI 平台，一个面向数据中心运维的超级智能体。可以帮您检索知识文档、分析业务数据，还能识别安全隐患、生成图表看板、制作报告与视频等。
                   </p>
                 </div>
               </div>

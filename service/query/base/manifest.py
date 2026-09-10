@@ -36,6 +36,7 @@ _CATEGORY_LABELS = {
   'config': '配置',
   'skill': '技能',
   'review': '评审',
+  'dashboard': '看板',
 }
 
 # 域中文名（L3，仅展示用；未登记则回退用 domain 原值）
@@ -57,6 +58,7 @@ _DOMAIN_LABELS = {
   'config': '配置',
   'skill': '技能',
   'review': '评审',
+  'dashboard': '看板',
 }
 
 
@@ -100,3 +102,42 @@ def build_category_manifest() -> str:
     label = _PLATFORM_LABELS.get(platform, platform)
     lines.append(f'- {platform}（{label}）：{" / ".join(parts)}')
   return '\n'.join(lines)
+
+
+def platform_display_name(name: str) -> str:
+  """平台中文名，未登记回退用平台 id。"""
+  return _PLATFORM_LABELS.get(name, name)
+
+
+def category_display_name(category: str) -> str:
+  """分类中文名，未登记回退用 category 原值。"""
+  return _CATEGORY_LABELS.get(category, category)
+
+
+def build_label_hints(labels: list[str]) -> dict[str, str]:
+  """生成每个意图标签的中文语义提示（供意图识别 prompt 使用，让 LLM 看懂标签含义）。
+
+  Returns:
+    {label: '中文名：域词1/域词2'}；域词从绑定表反查能力的 domain，经
+    _DOMAIN_LABELS 映射去重，域为空时只返回中文名。
+    自维护：新增能力（category/domain）自动带出提示，无需手工维护。
+    例：org → '组织人事：人员/部门/公司'；skill → '技能'（skill_creator 无 domain）。
+  """
+  from service.query.base.intent_bindings import build_intent_bindings
+  from service.query.base.platform import get_capability
+
+  bindings = build_intent_bindings()
+  hints: dict[str, str] = {}
+  for label in labels:
+    cn = category_display_name(label)
+    domains: list[str] = []
+    for cid in bindings.get(label, []):
+      cap = get_capability(cid)
+      if cap and cap.domain:
+        d = _DOMAIN_LABELS.get(cap.domain, cap.domain)
+        if d not in domains:
+          domains.append(d)
+    # 域词与分类同名（如 工单/图表/设备）则省略，避免「工单（工单：工单）」噪音
+    domains = [d for d in domains if d != cn]
+    hints[label] = f'{cn}：{"、".join(domains)}' if domains else cn
+  return hints

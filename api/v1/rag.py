@@ -95,7 +95,7 @@ async def upload_file(
               'size': filepath.stat().st_size,
               'chunks': count,
               'uploaded_by': user_id,
-              'uploaded_at': datetime.utcnow(),
+              'uploaded_at': datetime.now(),
             }},
             upsert=True,
           )
@@ -289,7 +289,7 @@ async def create_group(request: Request, body: dict):
         return JSONResponse(status_code=400, content={"ok": False, "msg": "名称不能为空"})
     group_id = name
     db = mongodb_manager.db
-    now = datetime.utcnow().isoformat()
+    now = datetime.now().isoformat()
     try:
         await db.knowledge_groups.insert_one({
             "group_id": group_id,

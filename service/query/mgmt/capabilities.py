@@ -1,10 +1,14 @@
 """综合管理平台能力数据（真实接口，Phase 2）。
 
-43 条能力（32 条单接口经联调核实可用、且当前需求内；另 8 条组合能力
+50 条能力（32 条单接口经联调核实可用、且当前需求内；另 3 条接口文档登记待实测；
+还有 15 条组合能力 query_my_info / query_pen_company_dept / query_event_ticket /
 query_pending_ticket / query_change_ticket / query_breakdown_ticket /
-query_question_ticket / query_breakdown_ticket_detail / query_question_ticket_detail /
-query_event_ticket_detail / query_change_ticket_detail 均已实测；还有 3 条接口文档
-登记待实测）：
+query_question_ticket / query_threshold_ticket / query_supplier_ticket /
+query_breakdown_ticket_detail / query_question_ticket_detail / query_event_ticket_detail /
+query_change_ticket_detail / query_supplier_ticket_detail / query_threshold_ticket_detail，
+均已实测）：
+- mgmt.query_my_info（查询我的综合管理平台账号信息，解析当前用户身份）
+- mgmt.query_pen_company_dept（查询我的公司及部门，pen 流程服务，用于解析 dc/公司 id）
 - mgmt.query_person_by_name（按姓名查人）
 - mgmt.query_dept_by_name（按部门名称模糊查询部门）
 - mgmt.query_person_by_id（按 uid 查档案）
@@ -30,16 +34,21 @@ query_event_ticket_detail / query_change_ticket_detail 均已实测；还有 3 �
 - mgmt.query_device_type（设备类型列表，分页，支持名称关键字/专业过滤）
 - mgmt.query_company_list（公司列表，取 company_id 的前置步骤）
 - mgmt.query_user_list（部门人员列表，按部门分页，返回 uid 供后续查人）
-- mgmt.query_dept_list（公司下的部门列表，companyId 默认服务账号所属公司）
+- mgmt.query_dept_list（公司下的部门列表，companyId 默认当前登录用户所属公司，服务账号回退）
 - mgmt.query_mindmap（运维管理体系/思维导图树，file_id 必填）
 - mgmt.query_kb_article（IDC 知识库共享案例文章列表，支持标题关键字/标签过滤）
 - mgmt.query_inspection_ticket（巡检工单列表，按工单编号/名称/状态/类型筛选）
 - mgmt.query_inspection_ticket_detail（巡检工单明细，按 id 查单张工单详情）
 - mgmt.query_kb_standard（标准规范列表，按标题关键字/标签过滤）
 - mgmt.query_pending_ticket（查询我的工单，组合能力：查人→换 token→调 pen）
-- mgmt.query_change_ticket（查询变更工单，组合能力：公司维度 POST，默认润泽科技）
-- mgmt.query_breakdown_ticket（查询故障工单列表，组合能力：公司维度 POST，默认润泽科技）
-- mgmt.query_question_ticket（查询问题工单列表，组合能力：公司维度 POST，默认润泽科技）
+- mgmt.query_event_ticket（查询事件工单列表，组合能力：公司维度 POST，支持按部门/时间筛选）
+- mgmt.query_change_ticket（查询变更工单，组合能力：公司维度 POST，默认当前登录用户所属公司，服务账号回退润泽科技）
+- mgmt.query_breakdown_ticket（查询故障工单列表，组合能力：公司维度 POST，默认当前登录用户所属公司，服务账号回退润泽科技）
+- mgmt.query_question_ticket（查询问题工单列表，组合能力：公司维度 POST，默认当前登录用户所属公司，服务账号回退润泽科技）
+- mgmt.query_threshold_ticket（查询阈值工单列表，组合能力：公司维度 POST，默认当前登录用户所属公司，服务账号回退润泽科技，specialty 1/2/4/8）
+- mgmt.query_supplier_ticket（查询供应商服务工单列表，组合能力：公司维度 POST，默认当前登录用户所属公司，服务账号回退润泽科技，serviceType 1=例行维护/2=故障检修/3=技术培训/0=其他）
+- mgmt.query_supplier_ticket_detail（查询供应商服务工单详情，按供应商工单列表 ticketId 查单张工单）
+- mgmt.query_threshold_ticket_detail（查询阈值工单详情，按阈值工单列表 ticketId 查单张工单）
 - mgmt.query_breakdown_ticket_detail（查询故障工单详情，按待办列表 id 查单张工单）
 - mgmt.query_question_ticket_detail（查询问题工单详情，按待办列表 id 查单张工单）
 - mgmt.query_event_ticket_detail（查询事件工单详情，按待办列表 id 查单张工单）
@@ -73,15 +82,17 @@ promote 它们（文档登记待实测）；两者联动——列表按工单编
 id 后再查单张工单明细。与 query_inspection_list（巡检执行记录）区分：本组查工单台账。
 query_equipment_maintenance_plan 为
 'maintenance'：设备维护计划相关查询 promote 它；deptId 优先按用户问题中的部门
-经 query_dept_by_name 解析，未指明用服务账号默认部门（技术保障部）并告知用户。
+经 query_dept_by_name 解析，未指明默认当前登录用户所属部门（ownDeptId，服务账号
+回退技术保障部）并告知用户。
 query_equipment_maintenance_status 亦为 'maintenance'：维护计划状态概览查询 promote
 它，与明细列表（query_equipment_maintenance_plan）联动。
 query_equipment_work_order 亦为 'maintenance'：设备维护工单/执行记录查询 promote 它，
 与维护计划（query_equipment_maintenance_plan）区分——计划查安排/进度，工单查实际执行
 记录；主单号（maintenance_main_num）按主单返回其下全部子单，子单号（maintenance_num）
 按子单号返回该计划的历史执行记录。
-query_device_info 为 'device'：设备/台账相关查询 promote 它；dept_id 必填，未指明
-部门时必须询问用户（区别于 maintenance 的默认兜底）。
+query_device_info 为 'device'：设备/台账相关查询 promote 它；dept_id 未指明默认
+当前登录用户所属部门（ownDeptId，服务账号回退技术保障部），用户指定部门时用
+query_dept_by_name 解析（区别于 maintenance 的默认兜底）。
 query_infrared_device_type / query_infrared_device_list / query_infrared_detect_device
 亦为 'device'：红外温度检测相关查询 promote 它们。三者链路——
 query_infrared_device_type 红外设备类型（4 种，带默认温度上限）→
@@ -102,12 +113,14 @@ pen 流程服务三步。pen 的巡检工单是单独接口 /pen/pending/list/in
 「我的工单」（token 归属人相关），返回工单编号/名称/级别/类型/状态/部门/创建人等；
 type 按工单类别过滤：1=变更/4=问题/5=故障/6=事件/7=阈值。
 query_change_ticket 亦为 'work_order'：变更工单查询 promote 它；组合能力内部公司维度
-POST（默认服务账号所属润泽科技+技术保障部，company_id 可选跨公司），与待办区分——
+POST（默认当前登录用户所属公司/部门，服务账号回退润泽科技+技术保障部，company_id 可选
+跨公司），与待办区分——
 变更工单是**公司维度**（token 只鉴权，不区分人，实测同 body 不同人结果相同），
 所以无 name 参数，返回工单编号/项目名称/专业/状态/发起人/时间等。
 query_breakdown_ticket 亦为 'work_order'：故障工单列表查询 promote 它；与
-query_change_ticket 同构（公司维度 POST，默认润泽科技+技术保障部，company_id 可选
-跨公司），区别仅端点 /ticket/wiporder/ticketlist/breakdown 与筛选项——变更的
+query_change_ticket 同构（公司维度 POST，默认当前登录用户所属公司/部门，服务账号
+回退润泽科技+技术保障部，company_id 可选跨公司），区别仅端点
+/ticket/wiporder/ticketlist/breakdown 与筛选项——变更的
 specialty/modifyType 换成 breakDownLevel（故障级别），key_word 支持故障名称/工单号
 模糊查询。
 query_question_ticket 亦为 'work_order'：问题工单列表查询 promote 它；与
@@ -155,6 +168,23 @@ from service.query.base.capability import Capability
 
 CAPABILITIES: tuple[Capability, ...] = (
   Capability(
+    id='mgmt.query_my_info',
+    name='查询我的综合管理平台账号信息',
+    description=(
+      '返回当前登录用户自己的综合管理平台账号信息（姓名、工号、职位、所属部门、'
+      '上级部门、公司等，来自账号登录档案）。无参数。适用于一切以「我」为视角的'
+      '查询：「我在哪个部门」「我所在部门的人员」「我的部门有哪些人」「我的工号/'
+      '职位」等——先调用本工具拿到当前用户身份，再据此继续查询，不要反问用户索要'
+      '姓名。own_dept_id/own_dept_name 是所属部门（通常如技术保障部），'
+      'dept_id/dept_name 是具体部门；查「我所在部门的人员」时用 own_dept_id 作为'
+      '部门人员列表的 dept_id。'
+    ),
+    params={},
+    category='org',
+    domain='person',
+    kind='资源',
+  ),
+  Capability(
     id='mgmt.query_person_by_name',
     name='按姓名查询人员信息',
     description=(
@@ -163,7 +193,7 @@ CAPABILITIES: tuple[Capability, ...] = (
       '等按姓名查人的场景；也是查询人员变更工单前获取 uid 与 company_id 的前置步骤。'
     ),
     params={
-      'name': '姓名关键字，必填，模糊匹配（如传「郭」能匹配「郭春磊」等）',
+      'name': '姓名关键字，必填，模糊匹配（传姓名的部分片段即可匹配对应人员）',
     },
     category='org',
     domain='person',
@@ -195,8 +225,8 @@ CAPABILITIES: tuple[Capability, ...] = (
     ),
     params={
       'uid': '用户 uid，必填（从按姓名查询结果中获取）',
-      'dept_id': '部门 id；留空用服务账号默认部门',
-      'company_id': '公司 id；留空用服务账号默认公司',
+      'dept_id': '部门 id；留空默认当前登录用户所属部门',
+      'company_id': '公司 id；留空默认当前登录用户所属公司',
     },
     category='org',
     domain='person',
@@ -227,20 +257,21 @@ CAPABILITIES: tuple[Capability, ...] = (
     id='mgmt.query_person_training',
     name='查询人员培训信息',
     description=(
-      '按员工 uid 查询综合管理平台的人员培训学习情况，返回培训时长、完成度、'
-      '每日学习时长分布等。适用于「XX 的培训情况」「XX 培训学习多长时间了」'
-      '等查询。需先通过按姓名查询拿到员工 uid。平台要求 year 和 month 必填'
-      '（缺任一个返回空数据）；start_time/end_time 可不传（自动用宽范围兜底）。'
-      '用户未指明时间时，year 用当前年份、month 用当前月份。'
+      '按员工 uid 查询综合管理平台某**季度**的培训学习情况，返回培训时长、完成度、'
+      '每日学习时长、培训计划列表等。适用于「XX 的培训情况」「XX 某季度培训多长时间」'
+      '等查询。需先通过按姓名查询拿到员工 uid。year+month 必填，**month 是季度索引**'
+      '（1=1-3月 / 2=4-6月 / 3=7-9月 / 4=10-12月），不是日历月份；start_time/end_time'
+      '不用传，系统自动按季度范围补全。查某年全年培训时，依次传 month=1/2/3/4 查询'
+      '4 个季度并自行汇总。用户未指明季度时，用当前年份当前季度。'
     ),
     params={
       'uid': '员工 uid，必填（从按姓名查询结果中获取）',
-      'year': '年份，必填（如 2026；不带返回空数据）',
-      'month': '月份，必填（如 3；不带返回空数据）',
-      'start_time': '开始时间（格式 YYYY-MM-DD HH:MM:SS），可选，不传自动用宽范围',
-      'end_time': '结束时间（格式 YYYY-MM-DD HH:MM:SS），可选，不传自动用宽范围',
-      'is_pass': '是否通过（0 未通过 / 1 通过），可选',
-      'plan_status': '培训计划状态（数字编码，如 0），可选',
+      'year': '年份，必填（如 2026）',
+      'month': '季度索引，必填：1=1-3月 / 2=4-6月 / 3=7-9月 / 4=10-12月（不是日历月份）',
+      'start_time': '开始时间，可选；不用传，系统按季度自动补全',
+      'end_time': '结束时间，可选；不用传，系统按季度自动补全',
+      'is_pass': '合格筛选，可选：0全部 / 1合格 / 2不合格',
+      'plan_status': '培训计划状态，可选：0全部 / 1进行中 / 2未开始 / 3已完成',
     },
     category='org',
     domain='person',
@@ -294,22 +325,23 @@ CAPABILITIES: tuple[Capability, ...] = (
     description=(
       '按专业类别、姓名、时间范围、巡检类型等条件查询综合管理平台的巡检列表，返回'
       '每条巡检的人员、部门、专业类别、巡检类型、巡检时间、时长、归档状态等。'
-      '适用于「查一下巡检记录」「XX 专业的巡检」「王立强的巡检」「计划/非计划巡检'
+      '适用于「查一下巡检记录」「XX 专业的巡检」「某员工的巡检」「计划/非计划巡检'
       '列表」等。room_type 巡检专业类别取「供配电/制冷/智能化」；type 巡检类型'
       '1=计划巡检 / 0=非计划巡检；employee_name 姓名、start_time/end_time 时间范围'
       '（格式 YYYY-MM-DD）均可选。company/dept_name：优先按用户问题中的公司/部门'
-      '传；问题未指明时，询问用户或提示默认查询「润泽科技发展有限公司」「技术保障'
-      '部」。archive 固定为 true（只查已归档）。区别于 query_person_inspection'
+      '传；问题未指明时，默认查当前登录用户所属公司/部门（服务账号回退润泽科技/'
+      '技术保障部）并告知默认范围。archive 固定为 true（只查已归档）。区别于 '
+      'query_person_inspection'
       '（按员工 uid 查个人机房巡检记录）：本工具按条件筛巡检列表，不要求 uid。'
     ),
     params={
       'room_type': '巡检专业类别：供配电 / 制冷 / 智能化，可选',
-      'employee_name': '巡检人员姓名，可选（如「王立强」）',
+      'employee_name': '巡检人员姓名，可选（用户明确指定某人时才传）',
       'start_time': '开始时间（格式 YYYY-MM-DD），可选',
       'end_time': '结束时间（格式 YYYY-MM-DD），可选',
       'type': '巡检类型：1=计划巡检 / 0=非计划巡检，可选，按用户意图传',
-      'company': '公司名称，可选；未指明时询问用户或提示默认「润泽科技发展有限公司」',
-      'dept_name': '部门/分部名称，可选；未指明时询问用户或提示默认「技术保障部」',
+      'company': '公司名称，可选；未指明时默认查当前登录用户所属公司',
+      'dept_name': '部门/分部名称，可选；未指明时默认查当前登录用户所属部门',
       'page': '页码，默认 1',
       'page_size': '每页条数，默认 20',
     },
@@ -401,8 +433,9 @@ CAPABILITIES: tuple[Capability, ...] = (
       '查询。'
       '公司/组织（部门）处理规则：用户问题中明确了公司或组织时，优先按用户所指'
       '查询——先用 query_dept_by_name 按部门名解析出 dept_id 传入；未指明时用'
-      '默认部门（技术保障部），但回复须明确告知「默认查询的是技术保障部」，并'
-      '提示用户可选择其他公司/组织。parent_group 按问题中的专业类别传（供配电/'
+      '默认当前登录用户所属部门（ownDeptId，服务账号回退技术保障部），回复须明确'
+      '告知默认查询的公司/部门，并提示用户可选择其他公司/组织。parent_group 按问题'
+      '中的专业类别传（供配电/'
       '制冷/智能化），不指明则查全部类别；device_name 仅当用户明确提到具体设备'
       '（如「消防自动报警系统」）时才做模糊查询，否则不传；year 必填（默认当前'
       '年份）。数据量大（多条计划×每周）会被截断，回答进度类问题可汇总已见部分'
@@ -410,7 +443,7 @@ CAPABILITIES: tuple[Capability, ...] = (
       'query_person_maintenance_plan（按员工 uid 查该人员负责的维护工单）。'
     ),
     params={
-      'dept_id': '部门 id，可选；用户指明部门时从 query_dept_by_name 解析获取，未指明用默认部门（技术保障部）',
+      'dept_id': '部门 id，可选；用户指明部门时从 query_dept_by_name 解析获取，未指明用当前登录用户所属部门（服务账号回退技术保障部）',
       'device_name': '设备名称，可选；用户明确问某类设备时才传（模糊匹配，如「消防」）',
       'parent_group': '维护专业类别：供配电 / 制冷 / 智能化，可选；不传查全部类别',
       'year': '年份，必填；不传用当前年份（如 2026）',
@@ -432,7 +465,7 @@ CAPABILITIES: tuple[Capability, ...] = (
     ),
     params={
       'year': '年份，必填（如 2026，通常为当前年份）',
-      'company_id': '公司 id，必填（润泽科技发展有限公司为 27WqDiazDVr，可从 query_company_list 获取）',
+      'company_id': '公司 id，必填（当前登录用户所属公司 id，从 query_company_list 获取）',
     },
     category='maintenance',
     domain='device',
@@ -448,12 +481,12 @@ CAPABILITIES: tuple[Capability, ...] = (
       '工单」「维护执行记录」「某台设备的维护历史」「主单/子单查询」等场景。'
       '支持主单号（maintenance_main_num）按主单返回其下全部子单、子单号'
       '（maintenance_num）按子单号返回该计划的历史执行记录，也支持按年份/周次/'
-      '状态/周期类型过滤。dept_id 默认技术保障部；year 可选（留空查全部年份）。'
+      '状态/周期类型过滤。dept_id 默认当前登录用户所属部门（服务账号回退技术保障部）；year 可选（留空查全部年份）。'
       '区别于 query_equipment_maintenance_plan（查维护计划安排/进度），本能力查'
       '实际维护工单执行记录。'
     ),
     params={
-      'dept_id': '部门 id，可选；默认技术保障部 ownDeptId（23BaepxKklv）',
+      'dept_id': '部门 id，可选；默认当前登录用户所属部门（ownDeptId，服务账号回退技术保障部 23BaepxKklv）',
       'year': '年份，可选（如 2026）；留空查全部年份',
       'week': '执行周次，可选（如 32）',
       'status': '执行状态，可选（实测 0=未执行，3=已完成；其余取值可能返回空）',
@@ -475,12 +508,12 @@ CAPABILITIES: tuple[Capability, ...] = (
       '设备类型、所属部门、专业组别（供配电/制冷/智能化）、负责人、关联状态、告警上限等。'
       '适用于「查一下 XX 部门的设备」「有哪些设备」「设备台账」「某类设备清单」等查询。'
       'dept_id 必填：用户问题中明确了部门时，先用 query_dept_by_name 按部门名解析出 '
-      'dept_id 再传入；用户未指明部门时，必须询问用户要查哪个部门，不要默认。'
+      'dept_id 再传入；用户未指明部门时，默认当前登录用户所属部门（ownDeptId，服务账号回退技术保障部）。'
       'type_id 按问题中的设备类型传（可选，不传查该部门全部设备）。区别于 '
       'query_equipment_maintenance_plan（查设备维护计划/维保安排）。'
     ),
     params={
-      'dept_id': '部门 id，必填；用户明确部门时先用 query_dept_by_name 按部门名解析，未明确时必须询问用户',
+      'dept_id': '部门 id，必填；默认当前登录用户所属部门（ownDeptId，服务账号回退技术保障部），用户明确部门时先用 query_dept_by_name 解析',
       'type_id': '设备类型 id，可选；用户明确问某类设备时才传',
       'page': '页码，默认 1',
       'page_size': '每页条数，默认 20',
@@ -498,11 +531,11 @@ CAPABILITIES: tuple[Capability, ...] = (
       '嵌入式服务器（65.5）、变压器（100）、高压柜（25.5）。适用于「红外检测有哪些'
       '设备类型」「XX 类型的默认温度上限」等查询；也是查询红外设备列表'
       '（query_infrared_device_list）按类型过滤拿 infraredDeviceTypeId 的前置步骤。'
-      'dept_id 必填：用服务账号 ownDeptId（技术保障部为 23BaepxKklv），用户明确'
+      'dept_id 必填：默认当前登录用户所属部门（ownDeptId，服务账号回退技术保障部），用户明确'
       '部门时先用 query_dept_by_name 解析。'
     ),
     params={
-      'dept_id': '部门 id，必填；用服务账号 ownDeptId（技术保障部为 23BaepxKklv），用户明确部门时先用 query_dept_by_name 解析',
+      'dept_id': '部门 id，必填；默认当前登录用户所属部门（ownDeptId，服务账号回退技术保障部 23BaepxKklv），用户明确部门时先用 query_dept_by_name 解析',
     },
     category='device',
     domain='device',
@@ -516,13 +549,13 @@ CAPABILITIES: tuple[Capability, ...] = (
       '设备 id、名称、红外设备类型、安装位置（installation_site / project）、温度'
       '上限（upper_limit_value）等。适用于「XX 红外类型下有哪些设备」「红外检测点位'
       '清单」「高压柜红外设备有哪些」等查询。infrared_device_type_id 必填（不带报'
-      '服务器错误），从 query_infrared_device_type 获取；dept_id 默认技术保障部。'
+      '服务器错误），从 query_infrared_device_type 获取；dept_id 默认当前登录用户所属部门（服务账号回退技术保障部）。'
       '区别于 query_infrared_detect_device（查部门全量设备及关联状态）——本工具'
       '只查已纳入检测的设备。'
     ),
     params={
       'infrared_device_type_id': '红外设备类型 id，必填（从 query_infrared_device_type 获取，如高压柜 27mEIi1uDpd）',
-      'dept_id': '部门 id，可选；默认技术保障部 ownDeptId（23BaepxKklv）',
+      'dept_id': '部门 id，可选；默认当前登录用户所属部门（ownDeptId，服务账号回退技术保障部 23BaepxKklv）',
       'page': '页码，默认 1',
       'page_size': '每页条数，默认 20',
     },
@@ -544,7 +577,7 @@ CAPABILITIES: tuple[Capability, ...] = (
       '本工具是红外温度检测的设备范围/关联状态一览。'
     ),
     params={
-      'dept_id': '部门 id，可选；默认技术保障部 ownDeptId（23BaepxKklv），用户明确部门时先用 query_dept_by_name 解析',
+      'dept_id': '部门 id，可选；默认当前登录用户所属部门（ownDeptId，服务账号回退技术保障部 23BaepxKklv），用户明确部门时先用 query_dept_by_name 解析',
       'page': '页码，默认 1',
       'page_size': '每页条数，默认 10000（一次返回全部，与红外检测设备清单场景匹配）',
     },
@@ -561,10 +594,10 @@ CAPABILITIES: tuple[Capability, ...] = (
       '「XX 部门有哪些设备专业/分组」「设备怎么分类的」「某专业下有哪些设备组」等查询；'
       '也是按设备分组细看设备信息的前置步骤——分组 typeId 即设备信息记录里的'
       'parentGroupId。dept_id 必填：用户明确部门时先用 query_dept_by_name 按部门名'
-      '解析，未明确时必须询问用户。'
+      '解析，未明确默认当前登录用户所属部门（ownDeptId，服务账号回退技术保障部）。'
     ),
     params={
-      'dept_id': '部门 id，必填；用户明确部门时先用 query_dept_by_name 按部门名解析，未明确时必须询问用户',
+      'dept_id': '部门 id，必填；默认当前登录用户所属部门（ownDeptId，服务账号回退技术保障部），用户明确部门时先用 query_dept_by_name 解析',
     },
     category='device',
     domain='device',
@@ -577,12 +610,12 @@ CAPABILITIES: tuple[Capability, ...] = (
       '查询综合管理平台某部门的设备系统类型树，返回一级系统类型（配电/暖通/弱电/消防'
       '系统等）及其下挂的二级子系统，节点含 id、名称、层级。适用于「XX 部门有哪些设备'
       '系统类型」「暖通系统下有哪些子系统」「设备系统树」「设备怎么按系统分类」等查询。'
-      'dept_id 必填，须用服务账号 ownDeptId（技术保障部为 23BaepxKklv）；用户指明'
+      'dept_id 必填，默认当前登录用户所属部门（ownDeptId，服务账号回退技术保障部）；用户指明'
       '部门时先用 query_dept_by_name 按部门名解析。树节点 id 即查询子系统列表'
       '（query_device_logic_type）时需传的 pid，两者联动。'
     ),
     params={
-      'dept_id': '部门 id，必填；用服务账号 ownDeptId（技术保障部为 23BaepxKklv），用户明确部门时先用 query_dept_by_name 解析',
+      'dept_id': '部门 id，必填；默认当前登录用户所属部门（ownDeptId，服务账号回退技术保障部 23BaepxKklv），用户明确部门时先用 query_dept_by_name 解析',
     },
     category='device',
     domain='device',
@@ -596,11 +629,11 @@ CAPABILITIES: tuple[Capability, ...] = (
       '返回子系统名称、父类型、关联设备数 appTypeNumber 等。适用于「XX 系统下有哪些'
       '具体系统」「点击某系统看下级」「各子系统关联多少设备」等查询；也是系统类型树'
       '的点击下钻步骤——pid 从 query_device_system_tree 的树节点 id 获取（如暖通系统'
-      '2BHdF5kH4Zq）。dept_id 可选，默认服务账号 ownDeptId（技术保障部）。'
+      '2BHdF5kH4Zq）。dept_id 可选，默认当前登录用户所属部门（服务账号回退技术保障部）。'
     ),
     params={
       'pid': '父系统类型 id，必填（从系统类型树节点获取）',
-      'dept_id': '部门 id，可选；默认技术保障部 ownDeptId（23BaepxKklv）',
+      'dept_id': '部门 id，可选；默认当前登录用户所属部门（ownDeptId，服务账号回退技术保障部 23BaepxKklv）',
       'page': '页码，默认 1',
       'page_size': '每页条数，默认 20',
     },
@@ -615,11 +648,11 @@ CAPABILITIES: tuple[Capability, ...] = (
       '查询综合管理平台某部门下的设备专业大类，返回专业类别 id、名称（供配电/制冷/'
       '智能化）。适用于「XX 部门有哪些设备专业」「设备按专业怎么分」「有哪些大类」等'
       '查询；也是按专业过滤设备类型列表（query_device_type）获取 parentId 的前置步骤'
-      '——parent_id 即本工具返回的专业类别 id。dept_id 可选，默认服务账号 ownDeptId'
-      '（技术保障部）。'
+      '——parent_id 即本工具返回的专业类别 id。dept_id 可选，默认当前登录用户所属部门'
+      '（服务账号回退技术保障部）。'
     ),
     params={
-      'dept_id': '部门 id，可选；默认技术保障部 ownDeptId（23BaepxKklv）',
+      'dept_id': '部门 id，可选；默认当前登录用户所属部门（ownDeptId，服务账号回退技术保障部 23BaepxKklv）',
     },
     category='device',
     domain='device',
@@ -629,15 +662,17 @@ CAPABILITIES: tuple[Capability, ...] = (
     id='mgmt.query_device_type',
     name='查询设备类型列表',
     description=(
-      '按部门分页查询综合管理平台的设备类型列表，返回设备类型 id、名称、父级专业类别'
-      '（parentId + deviceMajor）等。适用于「XX 部门有哪些设备类型」「阀门类设备」'
-      '「制冷专业下有哪些设备类型」「设备类型有多少种」等查询。dept_id 可选，默认'
-      '服务账号 ownDeptId（技术保障部）；name 为设备类型名称关键字（模糊，如「阀门」）；'
-      'parent_id 为父级专业类别 id（从 query_device_major 获取，如制冷 2AySJZbc31m），'
-      '可按专业筛选。'
+      '按部门分页查询综合管理平台的设备**类型字典**（有哪些设备类型），返回设备类型 id、'
+      '名称、父级专业类别（parentId + deviceMajor）等。适用于「XX 部门有哪些设备类型」'
+      '「制冷专业下有哪些设备类型」「设备类型有多少种」等查「类型/分类」的问题。'
+      '**注意：本工具只查设备类型字典，不是具体设备实例清单**——用户要查「制冷设备有哪些」'
+      '「XX 设备清单/台账」（要具体设备）时，用 query_device_info（设备台账），不要用本工具。'
+      'dept_id 可选，默认当前登录用户所属部门（服务账号回退技术保障部）；name 为设备类型'
+      '名称关键字（模糊，如「阀门」）；parent_id 为父级专业类别 id（从 query_device_major '
+      '获取，如制冷 2AySJZbc31m），可按专业筛选。'
     ),
     params={
-      'dept_id': '部门 id，可选；默认技术保障部 ownDeptId（23BaepxKklv）',
+      'dept_id': '部门 id，可选；默认当前登录用户所属部门（ownDeptId，服务账号回退技术保障部 23BaepxKklv）',
       'name': '设备类型名称关键字，可选，模糊匹配（如「阀门」）',
       'parent_id': '父级专业类别 id，可选（从 query_device_major 获取）',
       'page': '页码，默认 1',
@@ -648,14 +683,36 @@ CAPABILITIES: tuple[Capability, ...] = (
     kind='资源',
   ),
   Capability(
+    id='mgmt.query_pen_company_dept',
+    name='查询我的公司及部门（流程服务）',
+    description=(
+      '返回当前用户 pen 流程服务可见的公司列表及各公司下部门，每个公司含 companyId、'
+      'kingdeeCompanyId、companyName 与 deptList（deptId+deptName）。适用于解析「XX 数据'
+      '中心/机房/分部」对应的**部门 id(dc)** 与**公司 id**——查事件/故障/问题/变更工单'
+      '列表时，先用本工具按用户所指的位置（如「廊坊园区A1数据中心」=润泽科技下的 A1分部）'
+      '找到该部门的 deptId 和所属公司的 kingdeeCompanyId，再传给对应工单列表工具。'
+      '**未指定公司/部门时，默认用当前登录用户所属公司/部门（ownDeptId/ownDeptName、'
+      'kingdeeCompanyId/companyName，在本工具返回里可见）；服务账号才回退润泽科技+技术保障部。** '
+      '区别于 '
+      'query_company_list/query_dept_by_name（mgmt 内部 id）：本工具返回 pen 侧公司/部门'
+      '结构且按公司分组，能区分跨公司的同名部门（如多个公司都有 A1分部）。无需参数。'
+    ),
+    params={},
+    category='org',
+    domain='company',
+    kind='资源',
+  ),
+  Capability(
     id='mgmt.query_company_list',
     name='查询公司列表',
     description=(
       '查询综合管理平台当前账号可见的公司列表，返回每个公司的 company_id、公司全称、'
-      '金蝶公司编码等。适用于「有哪些公司」「XX 公司的全称/ID」「查其他公司的数据」'
-      '等场景；也是获取 company_id 的来源——用户要查其他公司的数据时，先在这里拿到'
-      '该公司的 company_id，再结合 query_dept_by_name 按部门名解析 dept_id 后传给'
-      '对应工具。无需参数，返回账号可见的全部公司。'
+      '金蝶公司编码、**gardenName（园区名，如「廊坊园区」「平湖园区」）**等。适用于'
+      '「有哪些公司」「XX 公司的全称/ID」「查其他公司的数据」等场景；也是获取 '
+      'company_id 的来源——用户要查其他公司的数据时，先在这里拿到该公司的 company_id，'
+      '再结合 query_dept_by_name 按部门名解析 dept_id 后传给对应工具。**用户提到园区名'
+      '（如「廊坊园区」）时，用本工具按 gardenName 找到对应公司**（如 廊坊园区=润泽科技'
+      '发展有限公司），再继续查该公司的部门/人员。无需参数，返回账号可见的全部公司。'
     ),
     params={},
     category='org',
@@ -671,11 +728,17 @@ CAPABILITIES: tuple[Capability, ...] = (
       '部门有哪些人」「技术保障部人员名单」「某部门一共有多少人」「查某个部门所有人的 '
       'uid」等查询。返回的 uid 可用于后续查询该人员的档案、变更工单、巡检、培训等'
       '（结合 query_person_by_id / query_employee_ticket / query_person_inspection 等）。'
-      'dept_id 必填：用户明确部门时先用 query_dept_by_name 按部门名解析，未明确时必须'
-      '询问用户。区别于 query_person_by_name（按姓名跨部门模糊查人）。'
+      '**可按专业筛选**：用户问「供配电/制冷/智能化专业的人」时传 profession（供配电/制冷/'
+      '智能化/其他）。'
+      'dept_id 必填：用户明确部门时先用 query_dept_by_name 按部门名解析，未明确默认'
+      '当前登录用户所属部门（ownDeptId，服务账号回退技术保障部）。区别于 '
+      'query_person_by_name（按姓名跨部门模糊查人）。'
+      '**仅单页明细**：每次调用返回一页（默认 20 条）；需要统计全量分布/汇总/占比'
+      '（如「部门人员专业分布」）时，改用 analysis_load 物化全量后再聚合。'
     ),
     params={
-      'dept_id': '部门 id，必填；用户明确部门时先用 query_dept_by_name 按部门名解析，未明确时必须询问用户',
+      'dept_id': '部门 id，必填；默认当前登录用户所属部门（ownDeptId，服务账号回退技术保障部），用户明确部门时先用 query_dept_by_name 解析',
+      'profession': '专业，可选：供配电 / 制冷 / 智能化 / 其他',
       'page': '页码，默认 1',
       'page_size': '每页条数，默认 20',
     },
@@ -690,13 +753,13 @@ CAPABILITIES: tuple[Capability, ...] = (
       '查询综合管理平台某公司下（当前账号可见）的部门列表，返回每个部门的 id、名称、'
       '简称、父部门、状态等。适用于「XX 公司下有哪些部门」「有哪些分部」「某公司的部门'
       '列表」「查部门 id」等查询；也是按部门查人员/设备/维护计划时解析 dept_id 的来源'
-      '（查其他公司的数据时先在这里拿部门 id）。company_id 可选，留空用服务账号所属'
-      '公司（润泽科技发展有限公司）；查其他公司的部门时，先用 query_company_list 拿到'
+      '（查其他公司的数据时先在这里拿部门 id）。company_id 可选，留空默认当前登录用户'
+      '所属公司（服务账号回退润泽科技）；查其他公司的部门时，先用 query_company_list 拿到'
       '该公司的 company_id 再传入。区别于 query_dept_by_name（按部门名模糊搜索单个'
       '部门）。'
     ),
     params={
-      'company_id': '公司 id，可选；留空用服务账号所属公司（润泽科技发展有限公司），查其他公司时先用 query_company_list 获取',
+      'company_id': '公司 id，可选；留空默认当前登录用户所属公司，查其他公司时先用 query_company_list 获取',
     },
     category='org',
     domain='dept',
@@ -807,17 +870,24 @@ CAPABILITIES: tuple[Capability, ...] = (
     id='mgmt.query_pending_ticket',
     name='查询我的工单',
     description=(
-      '查询流程平台「我的工单」（当前账号本人，或指定人员经换 token 查其工单），返回'
+      '查询流程平台「我的工单」（仅当前账号本人，用本人 token 查询，不支持查他人），返回'
       '每条工单的编号、名称、级别、类型、状态、部门、创建人等。type 区分工单类别'
       '（1=变更 / 4=问题 / 5=故障 / 6=事件 / 7=阈值，不传查全部类别）；is_done 区分'
-      '状态（1=待办 / 2=已办 / 3=已发起 / 4=抄送给我，默认待办）。适用于「我的工单」'
-      '「我的待办/已办」「XX 的工单」「有哪些变更/故障/问题工单」等场景。'
+      '状态（1=待办 / 2=已办 / 3=已发起 / 4=抄送给我，默认待办）。公司范围：company_id '
+      '**不传 = 查全部公司的工单**（回复用户时应说明「未限定公司，返回的是全部公司的'
+      '待办」，不要答成「默认公司」——这与变更/故障/问题工单列表默认查当前登录用户所属公司不同）；'
+      '传了才按该公司过滤。**注意：本工具是个人「我的工单」口径（仅当前账号本人，'
+      '按 is_done 区分 1=待办 / 2=已办 / 3=已发起 / 4=抄送给我，默认待办），不是公司/'
+      '部门维度的平台工单列表，不能按部门/时间筛选**；用户查「XX 公司的 XX 工单」「有'
+      '哪些 XX 工单」而没说「我的」时，用 query_event_ticket / query_change_ticket / '
+      'query_breakdown_ticket / query_question_ticket / query_threshold_ticket / '
+      'query_supplier_ticket（公司/部门维度平台列表，支持按部门、时间筛选）。适用于'
+      '「我的工单」「我的待办/已办/已发起/抄送」等场景（仅能查本人工单，不支持查他人）。'
     ),
     params={
-      'name': '人员姓名，可选。传了查该人员的工单；不传默认查当前账号本人的工单',
       'is_done': '状态筛选，可选，默认 1=待办：1=待办 / 2=已办 / 3=已发起 / 4=抄送给我',
       'type': '工单类别，可选：1=变更 / 4=问题 / 5=故障 / 6=事件 / 7=阈值；不传查全部类别',
-      'company_id': '公司 id，可选',
+      'company_id': '公司 id，可选。**不传 = 查全部公司的工单**；查某个公司时才传，用 pen 公司列表（GET /pen/pending/list/company）返回的公司 id',
       'page': '页码，可选，默认 1',
       'page_size': '每页条数，可选，默认 20',
     },
@@ -832,25 +902,33 @@ CAPABILITIES: tuple[Capability, ...] = (
       '查询 pen 流程平台的变更工单列表，返回工单编号、项目名称、专业、状态、发起人、'
       '时间等。适用于「查变更工单」「有哪些变更单」「XX 公司的变更工单」「XX 部门的'
       '变更工单」「我发起的变更单」等。**支持按部门筛选**：dc 参数即部门 id，传了就'
-      '按该部门查，不限于默认部门——用户问「其他部门」「XX 部门」的变更工单时，先用 '
-      'query_dept_by_name 按部门名解析出 dept_id，再作为 dc 传入即可，不要以为只能查'
-      '默认部门或需要事后过滤。dc 不传时默认技术保障部；company_id 可选，跨公司时用 '
+      '按该部门查，不限于默认部门——用户问「其他部门」「XX 部门」或部门/分部简称（如 '
+      '「A1」即 A1 分部）的变更工单时，先用 query_pen_company_dept 解析出该部门的 '
+      'deptId(dc)，**不要把部门/分部名放进 key_word**（key_word 只模糊匹配项目名称/'
+      '工单号，匹配不到部门）。dc 不传时默认当前登录用户所属部门（ownDeptId，服务账号回退技术保障部）；company_id 可选，跨公司时用 '
       'mgmt 公司 id（从 query_company_list 获取），跨公司且未指明部门时 dc 留空查全公司。'
+      '**回复用户时必须先说明本次查询的公司与部门**：未指定公司/部门时默认查当前登录用户'
+      '所属公司/部门（ownDeptId/ownDeptName、kingdeeCompanyId/companyName）；服务账号'
+      '（用户未绑定 mgmt 账号）才回退「润泽科技 + 技术保障部」；用户指定其他公司/部门时，'
+      '说明实际'
+      '查询的公司名与部门名（公司名从 query_company_list/query_pen_company_dept 返回获取，'
+      '部门名用 query_pen_company_dept 解析出的 deptName）。'
       'type 1=全部/2=我发起的/4=我处理的/5=我验收的/6=我监督的；ticket_type '
-      '专业码 1=供配电/2=制冷/4=智能化。'
+      '变更等级 1=低风险/2=中风险/3=高风险；specialty 专业 1=供配电/2=制冷/4=智能化/8=其他。'
     ),
     params={
-      'company_id': '公司 id，可选；默认润泽科技，跨公司时从 query_company_list 获取',
+      'company_id': '公司 id，可选；默认当前登录用户所属公司。指定公司/跨公司时用 query_company_list 或 query_pen_company_dept 返回的 pen kingdeeCompanyId 传入（勿传 mgmt 内部 companyId 或公司名）',
       'type': '查询范围，可选，默认 1=全部 / 2=我发起的 / 4=我处理的 / 5=我验收的 / 6=我监督的',
-      'ticket_type': '专业码，可选：1=供配电 / 2=制冷 / 4=智能化',
+      'ticket_type': '变更等级，可选：1=低风险 / 2=中风险 / 3=高风险',
+      'specialty': '专业，可选：1=供配电 / 2=制冷 / 4=智能化 / 8=其他',
       'ticket_no': '工单编号，可选',
       'project_name': '项目名称，可选（模糊）',
-      'key_word': '关键字，可选',
-      'modify_type': '变更类型，可选',
+      'key_word': '关键字，可选；只模糊匹配项目名称/工单号，部门/分部名不算，用 dc 筛',
+      'modify_type': '变更类型，可选：1=计划型变更 / 2=非计划型变更 / 3=紧急变更',
       'stage': '阶段，可选',
-      'dc': '部门 id，可选；用于按部门筛选（不限于默认部门），用户指明部门时先用 query_dept_by_name 解析出 dept_id 传入；不传默认技术保障部，跨公司未指明部门时留空查全公司',
+      'dc': '部门 id，可选；用于按部门筛选（不限于默认部门），用户指明部门/分部（含简称如 A1 分部）时先用 query_pen_company_dept 解析出 deptId 传入；不传默认当前登录用户所属部门（ownDeptId，服务账号回退技术保障部），跨公司未指明部门时留空查全公司',
       'start_time': '开始时间，可选，YYYY-MM-DD',
-      'end_time': '结束时间，可选，YYYY-MM-DD',
+      'end_time': '结束时间，可选，YYYY-MM-DD（查“X至今/到现在”时传当天；只传 start 缺 end 接口会按全量历史返回，务必成对传）',
       'only_time_out': '只看超时，可选',
       'page': '页码，默认 1',
       'page_size': '每页条数，默认 20',
@@ -866,24 +944,32 @@ CAPABILITIES: tuple[Capability, ...] = (
       '查询 pen 流程平台的故障工单列表，返回工单编号、故障名称、级别、状态、发起人、'
       '时间等。适用于「查故障工单」「有哪些故障单」「XX 公司的故障工单」「XX 部门的'
       '故障工单」等。**支持按部门筛选**：dc 参数即部门 id，传了就按该部门查，不限于'
-      '默认部门——用户问「其他部门」「XX 部门」的故障工单时，先用 query_dept_by_name '
-      '按部门名解析出 dept_id 再作为 dc 传入。dc 不传时默认技术保障部；company_id 可选，'
+      '默认部门——用户问「其他部门」「XX 部门」或部门/分部简称（如「A1」即 A1 分部）'
+      '的故障工单时，先用 query_pen_company_dept 解析出该部门的 deptId 再作为 dc 传入，'
+      '**不要把部门/分部名放进 key_word**（key_word 只模糊匹配故障名称/工单号，匹配'
+      '不到部门）。dc 不传时默认当前登录用户所属部门（ownDeptId，服务账号回退技术保障部）；company_id 可选，'
       '跨公司时用 mgmt 公司 id（从 query_company_list 获取），跨公司且未指明部门时 dc '
-      '留空查全公司。key_word 支持故障名称/工单号模糊查询；break_down_level 故障级别'
+      '留空查全公司。**回复用户时必须先说明本次查询的公司与部门**：未指定公司/部门时'
+      '默认查当前登录用户所属公司/部门（ownDeptId/ownDeptName、kingdeeCompanyId/'
+      'companyName）；服务账号（用户未绑定 mgmt 账号）才回退「润泽科技 + 技术保障部」；'
+      '用户指定其他公司/'
+      '部门时，说明实际查询的公司名与部门名（公司名从 query_company_list/query_pen_'
+      'company_dept 返回获取，部门名用 query_pen_company_dept 解析出的 deptName）。'
+      'key_word 支持故障名称/工单号模糊查询；break_down_level 故障级别'
       '筛选，可选。与 query_change_ticket（变更工单列表）同构，仅端点与故障级别筛选项不同。'
     ),
     params={
-      'company_id': '公司 id，可选；默认润泽科技，跨公司时从 query_company_list 获取',
+      'company_id': '公司 id，可选；默认当前登录用户所属公司。指定公司/跨公司时用 query_company_list 或 query_pen_company_dept 返回的 pen kingdeeCompanyId 传入（勿传 mgmt 内部 companyId 或公司名）',
       'type': '查询范围，可选，默认 1=全部（与变更工单列表一致）',
       'ticket_type': '专业码，可选：1=供配电 / 2=制冷 / 4=智能化',
       'break_down_level': '故障级别，可选',
       'ticket_no': '工单编号，可选',
       'project_name': '项目名称，可选（模糊）',
-      'key_word': '关键字，可选（支持故障名称/工单号模糊查询）',
-      'stage': '阶段，可选',
-      'dc': '部门 id，可选；用于按部门筛选（不限于默认部门），用户指明部门时先用 query_dept_by_name 解析出 dept_id 传入；不传默认技术保障部，跨公司未指明部门时留空查全公司',
+      'key_word': '关键字，可选（支持故障名称/工单号模糊查询；部门/分部名不算，用 dc 筛）',
+      'stage': '阶段（进度），可选：7=故障派发 / 2=故障处理 / 3=故障验收 / 5=故障关闭',
+      'dc': '部门 id，可选；用于按部门筛选（不限于默认部门），用户指明部门/分部（含简称如 A1 分部）时先用 query_pen_company_dept 解析出 deptId 传入；不传默认当前登录用户所属部门（ownDeptId，服务账号回退技术保障部），跨公司未指明部门时留空查全公司',
       'start_time': '开始时间，可选，YYYY-MM-DD',
-      'end_time': '结束时间，可选，YYYY-MM-DD',
+      'end_time': '结束时间，可选，YYYY-MM-DD（查“X至今/到现在”时传当天；只传 start 缺 end 接口会按全量历史返回，务必成对传）',
       'only_time_out': '只看超时，可选',
       'page': '页码，默认 1',
       'page_size': '每页条数，默认 20',
@@ -898,23 +984,148 @@ CAPABILITIES: tuple[Capability, ...] = (
     description=(
       '查询 pen 流程平台的问题工单列表，返回工单编号、问题名称、级别、状态、发起人、'
       '时间等。适用于「查问题工单」「有哪些问题单」「XX 公司的问题工单」「XX 部门的'
-      '问题工单」等。**支持按部门筛选**（dc 参数，同变更/故障工单列表）；company_id '
-      '可选跨公司；key_word 支持问题名称/工单号模糊查询；severity_level 问题级别筛选，'
+      '问题工单」等。**支持按部门筛选**（dc 参数，同变更/故障工单列表）：用户问部门/'
+      '分部（含简称如「A1」即 A1 分部）的问题工单时，先用 query_pen_company_dept 解析'
+      '出 deptId 作为 dc 传入，**不要把部门/分部名放进 key_word**（key_word 只模糊匹配'
+      '问题名称/工单号，匹配不到部门）；company_id 可选跨公司；severity_level 问题级别'
+      '筛选，'
+      '**回复用户时必须先说明本次查询的公司与部门**：未指定公司/部门时默认查当前登录用户'
+      '所属公司/部门（ownDeptId/ownDeptName、kingdeeCompanyId/companyName）；服务账号'
+      '（用户未绑定 mgmt 账号）才回退「润泽科技 + 技术保障部」；用户指定其他公司/部门时，'
+      '说明实际'
+      '查询的公司名与部门名（公司名从 query_company_list/query_pen_company_dept 返回获取，'
+      '部门名用 query_pen_company_dept 解析出的 deptName）。'
       '可选。与 query_change_ticket（变更工单列表）同构，仅端点与问题级别/专业筛选项'
       '不同（无 ticketType/modifyType/onlyTimeOut）。'
     ),
     params={
-      'company_id': '公司 id，可选；默认润泽科技，跨公司时从 query_company_list 获取',
+      'company_id': '公司 id，可选；默认当前登录用户所属公司。指定公司/跨公司时用 query_company_list 或 query_pen_company_dept 返回的 pen kingdeeCompanyId 传入（勿传 mgmt 内部 companyId 或公司名）',
       'type': '查询范围，可选，默认 1=全部（与变更工单列表一致）',
       'severity_level': '问题级别，可选',
-      'specialty': '专业，可选',
+      'specialty': '专业，可选：1=供配电 / 2=制冷 / 4=智能化 / 8=其他',
       'ticket_no': '工单编号，可选',
       'project_name': '项目名称，可选（模糊）',
-      'key_word': '关键字，可选（支持问题名称/工单号模糊查询）',
+      'key_word': '关键字，可选（支持问题名称/工单号模糊查询；部门/分部名不算，用 dc 筛）',
       'stage': '阶段，可选',
-      'dc': '部门 id，可选；用于按部门筛选（不限于默认部门），用户指明部门时先用 query_dept_by_name 解析出 dept_id 传入；不传默认技术保障部，跨公司未指明部门时留空查全公司',
+      'dc': '部门 id，可选；用于按部门筛选（不限于默认部门），用户指明部门/分部（含简称如 A1 分部）时先用 query_pen_company_dept 解析出 deptId 传入；不传默认当前登录用户所属部门（ownDeptId，服务账号回退技术保障部），跨公司未指明部门时留空查全公司',
       'start_time': '开始时间，可选，YYYY-MM-DD',
-      'end_time': '结束时间，可选，YYYY-MM-DD',
+      'end_time': '结束时间，可选，YYYY-MM-DD（查“X至今/到现在”时传当天；只传 start 缺 end 接口会按全量历史返回，务必成对传）',
+      'page': '页码，默认 1',
+      'page_size': '每页条数，默认 20',
+    },
+    category='work_order',
+    domain='work_order',
+    kind='资源',
+  ),
+  Capability(
+    id='mgmt.query_threshold_ticket',
+    name='查询阈值工单列表',
+    description=(
+      '查询 pen 流程平台的阈值工单列表，返回工单编号、阈值项、专业、状态、发起人、'
+      '时间等。适用于「查阈值工单」「有哪些阈值单」「XX 公司的阈值工单」「XX 部门的'
+      '阈值工单」等。**支持按部门筛选**（dc 参数）：用户问部门/分部（含简称如「A1」'
+      '即 A1 分部）的阈值工单时，先用 query_pen_company_dept 解析出 deptId 作为 dc '
+      '传入，**不要把部门/分部名放进 key_word**（key_word 只模糊匹配名称/工单号，'
+      '匹配不到部门）；company_id 可选跨公司；specialty 专业筛选 1=供配电/2=制冷/'
+      '4=智能化/8=其他。与 query_question_ticket 同构（DTO 共用），仅端点与专业枚举'
+      '不同。**注意：这是公司/部门维度的平台工单列表，不是当前账号的个人待办/已办/'
+      '已发起/抄送**（个人口径用 query_pending_ticket）。**查询结果为空时回复「当前'
+      '公司/部门没有符合条件的阈值工单」，严禁说「无待办、已办、已发起或抄送的阈值'
+      '工单」**。**回复用户时必须先说明本次查询的公司与部门**：未指定公司/部门时默认查'
+      '当前登录用户所属公司/部门（ownDeptId/ownDeptName、kingdeeCompanyId/companyName）；'
+      '服务账号（用户未绑定 mgmt 账号）才回退「润泽科技 + 技术保障部」；用户指定其他'
+      '公司/部门时，'
+      '说明实际查询的公司名与部门名（公司名从 query_company_list/query_pen_company_dept '
+      '返回获取，部门名用 query_pen_company_dept 解析出的 deptName）。'
+    ),
+    params={
+      'company_id': '公司 id，可选；默认当前登录用户所属公司。指定公司/跨公司时用 query_company_list 或 query_pen_company_dept 返回的 pen kingdeeCompanyId 传入（勿传 mgmt 内部 companyId 或公司名）',
+      'type': '查询范围，可选，默认 1=全部（与其它工单列表一致）',
+      'specialty': '专业，可选：1=供配电 / 2=制冷 / 4=智能化 / 8=其他',
+      'ticket_no': '工单编号，可选',
+      'project_name': '项目名称，可选（模糊）',
+      'key_word': '关键字，可选；只模糊匹配名称/工单号，部门/分部名不算，用 dc 筛',
+      'stage': '阶段，可选',
+      'dc': '部门 id，可选；用于按部门筛选（不限于默认部门），用户指明部门/分部（含简称如 A1 分部）时先用 query_pen_company_dept 解析出 deptId 传入；不传默认当前登录用户所属部门（ownDeptId，服务账号回退技术保障部），跨公司未指明部门时留空查全公司',
+      'start_time': '开始时间，可选，YYYY-MM-DD',
+      'end_time': '结束时间，可选，YYYY-MM-DD（查“X至今/到现在”时传当天；只传 start 缺 end 接口会按全量历史返回，务必成对传）',
+      'page': '页码，默认 1',
+      'page_size': '每页条数，默认 20',
+    },
+    category='work_order',
+    domain='work_order',
+    kind='资源',
+  ),
+  Capability(
+    id='mgmt.query_supplier_ticket',
+    name='查询供应商服务工单列表',
+    description=(
+      '查询 pen 流程平台的供应商服务工单列表，返回工单编号、服务项、状态、发起人、'
+      '时间等。适用于「查供应商服务工单」「有哪些供应商工单」「XX 公司的供应商服务工单」'
+      '等。**支持按部门筛选**（dc 参数）：用户问部门/分部（含简称如「A1」即 A1 分部）'
+      '的供应商服务工单时，先用 query_pen_company_dept 解析出 deptId 作为 dc 传入，'
+      '**不要把部门/分部名放进 key_word**（key_word 只模糊匹配服务项目名称/工单号，匹配不到'
+      '部门）；company_id 可选跨公司；serviceType 服务类型筛选（1=例行维护/2=故障检修/'
+      '3=技术培训/0=其他），可选。与 query_threshold_ticket '
+      '同构（DTO 共用），仅端点与筛选项（serviceType 替代 specialty、无时间筛选）不同。'
+      '**回复用户时必须先说明本次查询的公司与部门**：未指定公司/部门时默认查当前登录用户'
+      '所属公司/部门（ownDeptId/ownDeptName、kingdeeCompanyId/companyName）；服务账号'
+      '（用户未绑定 mgmt 账号）才回退「润泽科技 + 技术保障部」；用户指定其他公司/部门时，'
+      '说明实际'
+      '查询的公司名与部门名（公司名从 query_company_list/query_pen_company_dept 返回获取，'
+      '部门名用 query_pen_company_dept 解析出的 deptName）。'
+    ),
+    params={
+      'company_id': '公司 id，可选；默认当前登录用户所属公司。指定公司/跨公司时用 query_company_list 或 query_pen_company_dept 返回的 pen kingdeeCompanyId 传入（勿传 mgmt 内部 companyId 或公司名）',
+      'type': '查询范围，可选，默认 1=全部（与其它工单列表一致）',
+      'service_type': '服务类型，可选：1=例行维护 / 2=故障检修 / 3=技术培训 / 0=其他',
+      'ticket_no': '工单编号，可选',
+      'project_name': '项目名称，可选（模糊）',
+      'key_word': '关键字，可选；只模糊匹配服务项目名称/工单号，部门/分部名不算，用 dc 筛',
+      'stage': '阶段，可选',
+      'dc': '部门 id，可选；用于按部门筛选（不限于默认部门），用户指明部门/分部（含简称如 A1 分部）时先用 query_pen_company_dept 解析出 deptId 传入；不传默认当前登录用户所属部门（ownDeptId，服务账号回退技术保障部），跨公司未指明部门时留空查全公司',
+      'page': '页码，默认 1',
+      'page_size': '每页条数，默认 20',
+    },
+    category='work_order',
+    domain='work_order',
+    kind='资源',
+  ),
+  Capability(
+    id='mgmt.query_event_ticket',
+    name='查询事件工单列表',
+    description=(
+      '查询 pen 流程平台的事件工单列表，返回工单编号、事件名称、级别、状态、发起人、'
+      '时间等。适用于「查事件工单」「事件单」「XX 公司/部门的事件单」「XX 数据中心昨天/'
+      '某时间段的事件单」等。**用户问事件工单而没说「我的」时用本工具**（区别于'
+      'query_pending_ticket——那是查「我的工单/待办」，走的是当前账号本人的待办，不能按'
+      '部门/时间筛选）。**支持按部门筛选**（dc 参数）与按时间筛选（start_time/end_time，'
+      'YYYY-MM-DD，内部转毫秒）；company_id 可选跨公司；severity_level 事件级别、specialty '
+      '专业、key_word 关键字（事件名称/工单号模糊）均可选。用户指明数据中心/机房/分部'
+      '（含简称如「A1」即 A1 分部）时，先调 query_pen_company_dept 解析出该位置的 '
+      'deptId(dc) 与公司 id 再传入，**不要把部门/分部名放进 key_word**（key_word 只'
+      '模糊匹配事件名称/工单号，匹配不到部门）。'
+      '**回复用户时必须先说明本次查询的公司与部门**：未指定公司/部门时默认查当前登录用户'
+      '所属公司/部门（ownDeptId/ownDeptName、kingdeeCompanyId/companyName）；服务账号'
+      '（用户未绑定 mgmt 账号）才回退「润泽科技 + 技术保障部」；用户指定其他公司/部门时，'
+      '说明实际'
+      '查询的公司名与部门名（公司名从 query_company_list/query_pen_company_dept 返回获取，'
+      '部门名用 query_pen_company_dept 解析出的 deptName）。与'
+      'query_question_ticket 同构（DTO 共用），仅端点不同。'
+    ),
+    params={
+      'company_id': '公司 id，可选；默认当前登录用户所属公司。指定公司/跨公司时用 query_company_list 或 query_pen_company_dept 返回的 pen kingdeeCompanyId 传入（勿传 mgmt 内部 companyId 或公司名）',
+      'dc': '部门 id，可选；用于按部门筛选（如某数据中心/分部），用户指明位置（含简称如 A1 分部）时先用 query_pen_company_dept 解析出 deptId 传入；不传默认当前登录用户所属部门，跨公司未指明部门时留空查全公司',
+      'type': '查询范围，可选，默认 1=全部（与其它工单列表一致）',
+      'severity_level': '事件级别，可选',
+      'specialty': '专业，可选：1=供配电 / 2=制冷 / 4=智能化 / 8=其他',
+      'ticket_no': '工单编号，可选',
+      'project_name': '项目名称，可选（模糊）',
+      'key_word': '关键字，可选（支持事件名称/工单号模糊查询；部门/分部名不算，用 dc 筛）',
+      'stage': '阶段，可选',
+      'only_time_out': '只看超时，可选',
+      'start_time': '开始时间，可选，YYYY-MM-DD',
+      'end_time': '结束时间，可选，YYYY-MM-DD（查“X至今/到现在”时传当天；只传 start 缺 end 接口会按全量历史返回，务必成对传）',
       'page': '页码，默认 1',
       'page_size': '每页条数，默认 20',
     },
@@ -996,6 +1207,44 @@ CAPABILITIES: tuple[Capability, ...] = (
     kind='资源',
   ),
   Capability(
+    id='mgmt.query_supplier_ticket_detail',
+    name='查询供应商服务工单详情',
+    description=(
+      '按工单 id 查询单张供应商服务工单的完整详情（工单编号、服务类型、服务商、项目、'
+      '状态、发起人、服务内容/方案、计划/实际时间、涉及设备、审批流程、操作记录等）。'
+      '适用于「查看 XX 供应商服务工单的详情」「这张供应商工单的具体情况」等。id 从 '
+      'query_supplier_ticket（供应商服务工单列表）返回的 ticketId 字段获取（注意不是 '
+      'id）；与 query_breakdown_ticket_detail/query_question_ticket_detail/'
+      'query_event_ticket_detail/query_change_ticket_detail 区分——本能力查的是供应商'
+      '服务工单详情，各工单类型详情端点不同，按工单类型选对应工具。'
+    ),
+    params={
+      'ticket_id': '供应商服务工单 id，必填（从 query_supplier_ticket 列表结果的 ticketId 字段获取）',
+    },
+    category='work_order',
+    domain='work_order',
+    kind='资源',
+  ),
+  Capability(
+    id='mgmt.query_threshold_ticket_detail',
+    name='查询阈值工单详情',
+    description=(
+      '按工单 id 查询单张阈值工单的完整详情（工单编号、阈值项、专业、状态、发起人、'
+      '阈值内容/判定、计划/实际时间、涉及设备、审批流程、操作记录等）。适用于'
+      '「查看 XX 阈值工单的详情」「这张阈值工单的具体情况」等。id 从 '
+      'query_threshold_ticket（阈值工单列表）返回的 ticketId 字段获取（注意不是 id）；'
+      '与 query_breakdown_ticket_detail/query_question_ticket_detail/'
+      'query_event_ticket_detail/query_change_ticket_detail/query_supplier_ticket_detail '
+      '区分——本能力查的是阈值工单详情，各工单类型详情端点不同，按工单类型选对应工具。'
+    ),
+    params={
+      'ticket_id': '阈值工单 id，必填（从 query_threshold_ticket 列表结果的 ticketId 字段获取）',
+    },
+    category='work_order',
+    domain='work_order',
+    kind='资源',
+  ),
+  Capability(
     id='mgmt.query_config_template_list',
     name='查询配置管理列表',
     description=(
@@ -1025,7 +1274,7 @@ CAPABILITIES: tuple[Capability, ...] = (
     ),
     params={
       'type': '任务类型，可选，默认 1=全部',
-      'dept_id': '部门 id，可选，默认服务账号所属部门',
+      'dept_id': '部门 id，可选，默认当前登录用户所属部门（服务账号回退）',
       'template_name': '模板名称，可选，模糊匹配',
       'status': '状态，可选，精确过滤',
       'executor_name': '执行人姓名，可选，精确过滤',
@@ -1052,8 +1301,8 @@ CAPABILITIES: tuple[Capability, ...] = (
     ),
     params={
       'type': '预约类型编码，可选，含义待核实，默认 0',
-      'dept_id': '部门 id，可选；留空用服务账号默认部门（技术保障部），需告知用户默认范围',
-      'company_id': '公司 id，可选；留空用服务账号默认公司（润泽科技），需告知用户默认范围',
+      'dept_id': '部门 id，可选；留空默认当前登录用户所属部门（服务账号回退技术保障部），需告知用户默认范围',
+      'company_id': '公司 id，可选；留空默认当前登录用户所属公司（服务账号回退润泽科技），需告知用户默认范围',
       'start_time': '开始时间（格式 YYYY-MM-DD），可选，不传查全部时间范围',
       'end_time': '结束时间（格式 YYYY-MM-DD），可选，不传查全部时间范围',
       'is_all': '是否查全部（不分页），可选，含义待核实，默认 false',

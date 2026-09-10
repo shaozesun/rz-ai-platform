@@ -18,6 +18,7 @@ import asyncio
 import json
 import logging
 import os
+import time
 import sys
 from pathlib import Path
 
@@ -256,22 +257,28 @@ async def run_python(
   """
   wrapper = _build_wrapper(code, timeout=timeout, max_memory_mb=max_memory_mb)
 
-  # 继承父进程环境，额外注入中文字体路径与动态库搜索路径。
-  # 传 env=os.environ 等价于默认继承行为，仅多这几个变量，无隔离降级。
-  child_env = None
-  if cjk_font_path or extra_lib_path:
-    child_env = dict(os.environ)
-    if cjk_font_path:
-      child_env['RZ_CJK_FONT'] = str(cjk_font_path)
-    if extra_lib_path:
-      # WeasyPrint 依赖的 Pango/Cairo 在非系统路径时（如 conda env），注入搜索路径。
-      # 只作用于本子进程，不影响父进程（后端）加载。
-      lib_var = 'DYLD_LIBRARY_PATH' if sys.platform == 'darwin' else 'LD_LIBRARY_PATH'
-      existing = child_env.get(lib_var, '')
-      child_env[lib_var] = (
-        str(extra_lib_path) + (os.pathsep + existing if existing else '')
-      )
+  # 继承父进程环境，注入线程限制 + 中文字体路径 + 动态库搜索路径。
+  # 线程限制：沙箱 RLIMIT_AS（默认 512MB）下 OpenBLAS 按核数开线程（多核服务器
+  # 12 线程），线程栈 + 线程本地缓冲 + 科学库虚拟地址空间占用会顶破地址空间上限，
+  # pthread_create 报 EAGAIN（Resource temporarily unavailable）。压成单线程后
+  # 虚拟地址空间占用降一个数量级，且 pandas 聚合本就轻量，无性能损失。
+  child_env = dict(os.environ)
+  child_env['OPENBLAS_NUM_THREADS'] = '1'
+  child_env['OMP_NUM_THREADS'] = '1'
+  child_env['MKL_NUM_THREADS'] = '1'
+  child_env['NUMEXPR_NUM_THREADS'] = '1'
+  if cjk_font_path:
+    child_env['RZ_CJK_FONT'] = str(cjk_font_path)
+  if extra_lib_path:
+    # WeasyPrint 依赖的 Pango/Cairo 在非系统路径时（如 conda env），注入搜索路径。
+    # 只作用于本子进程，不影响父进程（后端）加载。
+    lib_var = 'DYLD_LIBRARY_PATH' if sys.platform == 'darwin' else 'LD_LIBRARY_PATH'
+    existing = child_env.get(lib_var, '')
+    child_env[lib_var] = (
+      str(extra_lib_path) + (os.pathsep + existing if existing else '')
+    )
 
+  run_start = time.monotonic()
   proc = await asyncio.create_subprocess_exec(
     sys.executable, '-I', '-c', wrapper,
     cwd=cwd,
@@ -327,8 +334,9 @@ async def run_python(
   )
 
   logger.info(
-    'analysis sandbox: rc=%s timed_out=%s stdout=%dB stderr=%dB chart=%s artifacts=%d',
-    proc.returncode, timed_out, len(stdout), len(stderr),
+    'analysis sandbox: rc=%s timed_out=%s elapsed=%.2fs stdout=%dB stderr=%dB chart=%s artifacts=%d',
+    proc.returncode, timed_out, time.monotonic() - run_start,
+    len(stdout), len(stderr),
     'yes' if chart_data is not None else 'no',
     len(artifacts),
   )

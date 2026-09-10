@@ -9,11 +9,12 @@ from langchain_core.messages import AIMessage, ToolMessage
 
 logger = logging.getLogger(__name__)
 
-# 默认摘要 prompt（参照 DeerFlow 默认 prompt：提取关键事实、意图、操作、待解决问题）
+# 默认摘要 prompt（参照 DeerFlow 默认 prompt：提取关键事实、操作、待解决问题）
 DEFAULT_SUMMARY_PROMPT = (
-  '请将以下对话历史压缩为一段中文摘要，不超过 500 字。'
-  '摘要需包含：关键事实、用户意图、已完成的操作、待解决的问题。'
-  '只输出摘要本身，不要加任何前缀或解释。'
+  '请将以下对话历史压缩为一段简洁的中文摘要，不超过 300 字。'
+  '摘要需包含：关键事实、已完成的操作、待解决的问题。'
+  '注意：只记录已发生的事实与操作，**不要断言或推断用户的当前意图**'
+  '（用户意图以最新消息为准，可能随时改变）。只输出摘要本身，不要加任何前缀或解释。'
 )
 
 

@@ -84,7 +84,7 @@ class UserService:
           'resource': p.resource,
           'action': p.action,
           'description': p.description,
-          'created_at': datetime.utcnow(),
+          'created_at': datetime.now(),
         })
     logger.info('预置权限定义初始化完成')
 
@@ -102,7 +102,7 @@ class UserService:
           }}
         )
       else:
-        await self.roles.insert_one({**role_data, 'created_at': datetime.utcnow()})
+        await self.roles.insert_one({**role_data, 'created_at': datetime.now()})
     invalidate_role_cache()
     logger.info('预置角色初始化完成')
 
@@ -116,7 +116,7 @@ class UserService:
 
   async def create_user(self, phone: str, password: str = '') -> dict:
     """新用户注册申请: PENDING，角色待审批通过后授予"""
-    now = datetime.utcnow()
+    now = datetime.now()
     pw_hash, pw_salt = _hash_password(password) if password else ('', '')
     user = {
       'user_id': uuid.uuid4().hex,
@@ -141,7 +141,7 @@ class UserService:
   async def update_login_info(self, user_id: str, ip: str):
     await self.users.update_one(
       {'user_id': user_id},
-      {'$set': {'last_login_at': datetime.utcnow(), 'last_login_ip': ip}}
+      {'$set': {'last_login_at': datetime.now(), 'last_login_ip': ip}}
     )
 
   async def get_user_public(self, user: dict) -> dict:
@@ -164,9 +164,13 @@ class UserService:
       'permissions': sorted(effective_perms),
       'direct_permissions': sorted(direct_perms),
       'avatar': user.get('avatar', ''),
-      'created_at': user.get('created_at', datetime.utcnow()),
+      'created_at': user.get('created_at', datetime.now()),
       'mgmt_bound': bool(mgmt_username),
       'mgmt_username_masked': mask_mgmt_username(mgmt_username),
+      'mgmt_uid': user.get('mgmt_uid', ''),
+      'dept_name': user.get('dept_name', ''),
+      'lark_bound': bool(user.get('lark_open_id', '')),
+      'lark_name': user.get('lark_name', ''),
     }
 
   async def update_user(self, user_id: str, updates: dict):
@@ -174,6 +178,73 @@ class UserService:
       {'user_id': user_id},
       {'$set': updates}
     )
+
+  @staticmethod
+  def apply_mgmt_profile(profile: dict) -> dict:
+    """把 mgmt 档案 dict 转为可写回用户的字段（空值跳过）。
+
+    部门取 own_dept_name 优先（登录响应 deptName 常为空，部门在 ownDeptName）。
+    """
+    updates = {}
+    mapping = {
+      'name': 'name', 'company_name': 'company', 'mgmt_uid': 'mgmt_uid',
+    }
+    for src, dst in mapping.items():
+      val = (profile or {}).get(src, '')
+      if val:
+        updates[dst] = val
+    dept = (profile or {}).get('own_dept_name') or (profile or {}).get('dept_name', '')
+    if dept:
+      updates['dept_name'] = dept
+    return updates
+
+  async def create_user_from_mgmt(
+    self, phone: str, profile: dict, default_role: str, password: str,
+  ) -> str:
+    """按 mgmt 档案自动创建 rz 用户（SSO 登录：直接 ACTIVE + 默认角色 + 绑定 mgmt 账号）。
+
+    Returns:
+      user_id
+    """
+    now = datetime.now()
+    pw_hash, pw_salt = _hash_password(password) if password else ('', '')
+    user = {
+      'user_id': uuid.uuid4().hex,
+      'phone': phone,
+      'name': (profile or {}).get('name', ''),
+      'company': (profile or {}).get('company_name') or None,
+      'user_type': UserType.INTERNAL.value,
+      'status': UserStatus.ACTIVE.value,
+      'roles': [default_role] if default_role else [],
+      'permissions': [],
+      'password_hash': pw_hash,
+      'password_salt': pw_salt,
+      'created_at': now,
+      'last_login_at': None,
+      'last_login_ip': '',
+      'mgmt_username': phone,
+      'mgmt_password_enc': '',
+      **self.apply_mgmt_profile(profile),
+    }
+    await self.users.insert_one(user)
+    logger.info('SSO 自动创建用户 phone=%s role=%s', phone, default_role)
+    return user['user_id']
+
+  async def enrich_user_from_mgmt(self, user_id: str, phone: str) -> None:
+    """注册时一次性档案同步：默认密码拉 mgmt 档案回写（失败静默，不阻塞注册）。
+
+    只在注册时调用一次；后续 rz 登录不调用。
+    """
+    try:
+      from service.query.mgmt import http as mgmt_http
+      profile = await mgmt_http.fetch_mgmt_profile(phone)
+    except Exception:
+      logger.warning('注册时 mgmt 档案同步异常 user_id=%s phone=%s', user_id, phone, exc_info=True)
+      return
+    updates = self.apply_mgmt_profile(profile)
+    if updates:
+      await self.update_user(user_id, updates)
+      logger.info('注册时已从 mgmt 同步档案 user_id=%s fields=%s', user_id, list(updates.keys()))
 
   async def reset_password(self, user_id: str, new_password: str) -> str:
     """重置用户密码，返回新密码"""
@@ -223,14 +294,14 @@ class UserService:
       'description': description,
       'permissions': permissions,
       'is_builtin': False,
-      'created_at': datetime.utcnow(),
+      'created_at': datetime.now(),
     }
     await self.roles.insert_one(role)
     invalidate_role_cache(role_id)
     return role
 
   async def update_role(self, role_id: str, updates: dict):
-    updates['updated_at'] = datetime.utcnow()
+    updates['updated_at'] = datetime.now()
     await self.roles.update_one({'role_id': role_id}, {'$set': updates})
     invalidate_role_cache(role_id)
 
@@ -267,7 +338,7 @@ class UserService:
       'reviewer_id': None,
       'review_reason': None,
       'reviewed_at': None,
-      'created_at': datetime.utcnow(),
+      'created_at': datetime.now(),
     }
     try:
       await self.applications.insert_one(app)
@@ -298,8 +369,23 @@ class UserService:
       .skip((page - 1) * page_size) \
       .limit(page_size) \
       .to_list(None)
+
+    # 补申请人档案（部门/专业/职位/姓名），供审批管理展示
+    user_ids = [i.get('user_id') for i in items if i.get('user_id')]
+    user_map = {}
+    if user_ids:
+      cursor = self.users.find({'user_id': {'$in': user_ids}})
+      async for u in cursor:
+        user_map[u['user_id']] = u
     for item in items:
       item['_id'] = str(item['_id'])
+      u = user_map.get(item.get('user_id'))
+      if u:
+        if not item.get('name') and u.get('name'):
+          item['name'] = u['name']
+        item['dept_name'] = u.get('dept_name', '')
+      else:
+        item.setdefault('dept_name', '')
     return items, total
 
   async def get_user_applications(self, user_id: str) -> list:
@@ -317,7 +403,7 @@ class UserService:
       {'$set': {
         'status': ApplicationStatus.APPROVED.value,
         'reviewer_id': reviewer_id,
-        'reviewed_at': datetime.utcnow(),
+        'reviewed_at': datetime.now(),
       }}
     )
     if not app:
@@ -353,7 +439,7 @@ class UserService:
         'status': ApplicationStatus.REJECTED.value,
         'reviewer_id': reviewer_id,
         'review_reason': reason,
-        'reviewed_at': datetime.utcnow(),
+        'reviewed_at': datetime.now(),
       }}
     )
     if not app:

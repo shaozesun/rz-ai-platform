@@ -10,6 +10,7 @@ class AgentRequest(BaseModel):
   session_id: Optional[str] = Field(None, description='会话 ID，不传则自动创建')
   group_id: str = Field('default', description='知识库组 ID')
   interaction_mode: str = Field('trust', description='交互模式：trust 自主执行 / plan 先列计划确认后执行')
+  task_mode: str = Field('normal', description='任务模式：normal 常规 / full_analysis 全量分析（优先多维度数据分析）/ complex 复杂任务')
   plan_confirmed: bool = Field(False, description='计划模式下是否已确认执行')
   plan: Optional[dict] = Field(None, description='已确认的执行计划（前端编辑后回传）')
   interview_answers: Optional[dict] = Field(

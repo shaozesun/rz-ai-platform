@@ -1,5 +1,5 @@
-import { useState } from 'react';
-import { Link, useLocation } from 'react-router-dom';
+import { useEffect, useRef, useState } from 'react';
+import { Link, useLocation, useNavigate } from 'react-router-dom';
 import {
   LayoutDashboard,
   Lightbulb,
@@ -8,8 +8,10 @@ import {
   ShieldAlert,
   Flame,
   BookOpen,
+  Clock,
   Users,
   Shield,
+  KeyRound,
   Settings,
   Bell,
   Menu,
@@ -21,9 +23,24 @@ import {
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useAuthStore } from '@/stores/authStore';
+import { useNotificationStore, type AppNotification } from '@/stores/notificationStore';
+import { useChatStore } from '@/stores/chatStore';
+import { listNotifications } from '@/api/scheduledTasks';
+import { pushInAppNotification } from '@/lib/notifications';
 import { Button } from '@/components/ui/button';
 
 const SIDEBAR_COLLAPSED_KEY = 'sidebar-collapsed';
+
+/** 相对时间：刚刚 / X分钟前 / X小时前 / 日期。 */
+function formatRelativeTime(ts: number): string {
+  const diff = Date.now() - ts;
+  const min = Math.floor(diff / 60000);
+  if (min < 1) return '刚刚';
+  if (min < 60) return `${min} 分钟前`;
+  const hour = Math.floor(min / 60);
+  if (hour < 24) return `${hour} 小时前`;
+  return new Date(ts).toLocaleDateString('zh-CN', { month: 'numeric', day: 'numeric' });
+}
 
 interface NavItem {
   href: string;
@@ -50,6 +67,7 @@ const navGroups: NavGroup[] = [
     label: 'AI 能力',
     items: [
       { href: '/assistant', label: '对话助手', icon: MessageSquareText, perm: 'ai:chat' },
+      { href: '/scheduled-tasks', label: '定时任务', icon: Clock, perm: 'ai:agent' },
       { href: '/video', label: '视频生成', icon: Clapperboard, perm: 'ai:video' },
       { href: '/knowledge', label: '知识库', icon: BookOpen, perm: 'ai:knowledge' },
       { href: '/risk', label: '隐患识别', icon: ShieldAlert, perm: 'ai:risk' },
@@ -61,6 +79,7 @@ const navGroups: NavGroup[] = [
     items: [
       { href: '/admin', label: '用户与权限', icon: Users, role: 'admin' },
       { href: '/permission', label: '权限中心', icon: Shield },
+      { href: '/auth-center', label: '认证中心', icon: KeyRound },
       { href: '/settings', label: '个人设置', icon: Settings },
     ],
   },
@@ -84,12 +103,92 @@ export function PlatformShell({
   edgeToEdge?: boolean;
 }) {
   const location = useLocation();
+  const navigate = useNavigate();
   const user = useAuthStore((s) => s.user);
   const clearAuth = useAuthStore((s) => s.clearAuth);
   const [mobileOpen, setMobileOpen] = useState(false);
   const [collapsed, setCollapsed] = useState(
     () => localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === 'true',
   );
+  const [notifOpen, setNotifOpen] = useState(false);
+  const notifRef = useRef<HTMLDivElement>(null);
+  const notifItems = useNotificationStore((s) => s.items);
+  const notifUnread = useNotificationStore((s) => s.unread);
+  const notifMarkAllRead = useNotificationStore((s) => s.markAllRead);
+  const notifClear = useNotificationStore((s) => s.clear);
+  const jumpToAnswer = useChatStore((s) => s.jumpToAnswer);
+
+  // 点击通知：带通用跳转路径时直接跳转；否则带会话目标时切到「对话助手」页并定位对应回答；无目标仅收起
+  const handleOpenNotification = (n: AppNotification) => {
+    setNotifOpen(false);
+    if (n.href) {
+      navigate(n.href);
+      return;
+    }
+    if (!n.sessionId) return;
+    if (location.pathname !== '/assistant') navigate('/assistant');
+    void jumpToAnswer(n.sessionId, n.messageId);
+  };
+
+  // 定时任务完成通知轮询：拉后端通知推铃铛，localStorage 去重（首次仅播种，避免刷屏历史）
+  useEffect(() => {
+    const SEEN_KEY = 'rz_sched_notif_seen';
+    const readSeen = (): string[] => {
+      try {
+        const raw = localStorage.getItem(SEEN_KEY);
+        return raw ? (JSON.parse(raw) as string[]) : [];
+      } catch {
+        return [];
+      }
+    };
+    const writeSeen = (ids: string[]) => {
+      localStorage.setItem(SEEN_KEY, JSON.stringify(ids.slice(-200)));
+    };
+
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const items = await listNotifications();
+        if (cancelled) return;
+        if (localStorage.getItem(SEEN_KEY) === null) {
+          writeSeen(items.map((n) => n.notification_id));
+          return;
+        }
+        const seen = new Set(readSeen());
+        const fresh = items.filter((n) => !seen.has(n.notification_id));
+        if (fresh.length > 0) {
+          fresh.forEach((n) => pushInAppNotification(n.title, n.body, { href: '/scheduled-tasks' }));
+          writeSeen([...readSeen(), ...fresh.map((n) => n.notification_id)]);
+        }
+      } catch {
+        // 无权限/失败静默
+      }
+    };
+
+    void poll();
+    const timer = setInterval(() => void poll(), 30_000);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, []);
+
+  // 面板打开即视为已读
+  useEffect(() => {
+    if (notifOpen) notifMarkAllRead();
+  }, [notifOpen, notifMarkAllRead]);
+
+  // 点击面板外部关闭（header 有 backdrop-blur 会限制 fixed 定位，改用文档级监听）
+  useEffect(() => {
+    if (!notifOpen) return;
+    const onDocClick = (e: MouseEvent) => {
+      if (notifRef.current && !notifRef.current.contains(e.target as Node)) {
+        setNotifOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', onDocClick);
+    return () => document.removeEventListener('mousedown', onDocClick);
+  }, [notifOpen]);
 
   const toggleCollapsed = () => {
     const next = !collapsed;
@@ -127,7 +226,7 @@ export function PlatformShell({
         )}
       >
         <div className={cn('flex h-14 items-center gap-2.5 border-b border-sidebar-border px-5', collapsed && 'lg:justify-center lg:px-0')}>
-          <img src="/logo.jpg" alt="润泽科技" className="size-8 shrink-0 rounded-lg" />
+          <img src="/logo.png" alt="润泽科技" className="size-10 shrink-0 rounded-lg" />
           <div className={cn('flex flex-col leading-none', collapsed && 'lg:hidden')}>
             <span className="whitespace-nowrap text-sm font-semibold text-sidebar-foreground">智能运维平台</span>
             <span className="mt-0.5 whitespace-nowrap text-xs text-muted-foreground">润泽 AI 能力中心</span>
@@ -197,8 +296,12 @@ export function PlatformShell({
             <Button
               variant="ghost"
               size="icon-sm"
-              onClick={clearAuth}
-              title="退出登录"
+              onClick={() => {
+                if (window.confirm('确定退出登录吗？')) {
+                  clearAuth();
+                }
+              }}
+              data-tip="退出登录"
               className={collapsed ? 'lg:hidden' : undefined}
             >
               <LogOut className="size-4" />
@@ -236,12 +339,64 @@ export function PlatformShell({
 
           <div className="ml-auto flex items-center gap-2">
             {headerActions}
-            <button
-              className="relative rounded-lg p-2 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-              aria-label="通知"
-            >
-              <Bell className="size-5" />
-            </button>
+            <div className="relative" ref={notifRef}>
+              <button
+                onClick={() => setNotifOpen((v) => !v)}
+                className="relative rounded-lg p-2 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                aria-label="通知"
+              >
+                <Bell className="size-5" />
+                {notifUnread > 0 && (
+                  <span className="absolute right-0.5 top-0.5 flex size-4 min-w-4 items-center justify-center rounded-full bg-red-500 px-0.5 text-[10px] font-medium leading-none text-white">
+                    {notifUnread > 99 ? '99+' : notifUnread}
+                  </span>
+                )}
+              </button>
+              {notifOpen && (
+                  <div className="absolute right-0 top-10 z-50 w-80 overflow-hidden rounded-lg border border-border bg-background shadow-lg">
+                    <div className="flex items-center justify-between border-b border-border px-3 py-2">
+                      <span className="text-sm font-medium">通知</span>
+                      <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                        {notifItems.length > 0 && (
+                          <button
+                            className="hover:text-foreground"
+                            onClick={() => notifClear()}
+                          >
+                            清空
+                          </button>
+                        )}
+                        <button className="hover:text-foreground" onClick={() => setNotifOpen(false)}>
+                          关闭
+                        </button>
+                      </div>
+                    </div>
+                    <div className="max-h-96 overflow-y-auto">
+                      {notifItems.length === 0 ? (
+                        <p className="px-3 py-8 text-center text-xs text-muted-foreground">暂无通知</p>
+                      ) : (
+                        notifItems.map((n) => (
+                          <button
+                            key={n.id}
+                            type="button"
+                            onClick={() => handleOpenNotification(n)}
+                            className="block w-full border-b border-border/50 px-3 py-2 text-left transition-colors last:border-b-0 hover:bg-muted/40"
+                          >
+                            <span className="flex items-center justify-between gap-2">
+                              <span className="text-sm font-medium text-foreground">{n.title}</span>
+                              <span className="shrink-0 text-xs text-muted-foreground">
+                                {formatRelativeTime(n.createdAt)}
+                              </span>
+                            </span>
+                            {n.body && (
+                              <span className="mt-0.5 block text-xs text-muted-foreground">{n.body}</span>
+                            )}
+                          </button>
+                        ))
+                      )}
+                    </div>
+                  </div>
+              )}
+            </div>
             <div className="flex size-9 items-center justify-center overflow-hidden rounded-full bg-accent text-sm font-semibold text-accent-foreground lg:hidden">
               {user?.avatar ? (
                 <img src={user.avatar} alt="" className="size-full object-cover" />

@@ -38,11 +38,35 @@ _KINGDEEUID_KEY = 'mgmt:kingdeeuid'
 _KINGDEE_COMPANY_KEY = 'mgmt:kingdeecompany'
 _PEN_TOKEN_PREFIX = 'pen:token:'
 _PEN_COMPANY_MAP_KEY = 'pen:companymap'
+_USERINFO_PREFIX = 'mgmt:userinfo:'
+_REF_PREFIX = 'mgmt:ref:'   # 静态参考数据缓存前缀（公司/部门/pen 公司部门）
+
+
+def cache_get_json(key: str):
+  """读取 Redis JSON 缓存；无或解析失败返回 None。"""
+  raw = redis_manager.client.get(key)
+  if not raw:
+    return None
+  try:
+    return json.loads(raw)
+  except (TypeError, ValueError):
+    return None
+
+
+def cache_set_json(key: str, value, ttl: int) -> None:
+  """写入 Redis JSON 缓存。"""
+  redis_manager.client.setex(key, ttl, json.dumps(value, ensure_ascii=False))
+
+
+def ref_cache_key(capability_id: str, scope: str, params: dict | None = None) -> str:
+  """静态参考数据缓存 key（能力 + 用户/服务账号 + 参数）。"""
+  suffix = json.dumps(params or {}, sort_keys=True, ensure_ascii=False)
+  return redis_manager.key(f'{_REF_PREFIX}{capability_id}:{scope}:{suffix}')
 
 # 用户 mgmt 认证失败时的引导文案（默认账号密码无效/已绑定密码被改时返回给用户）
 _BIND_PROMPT = (
   '综合管理平台账号认证失败（默认账号或已绑定账号密码无效，可能已修改密码）。'
-  '请前往【设置 → 综合管理平台账号】绑定您的 mgmt 账号密码授权'
+  '请前往【认证中心】绑定您的 mgmt 账号密码授权'
 )
 
 
@@ -105,6 +129,14 @@ async def _login_with_credentials(username: str, password: str) -> dict:
     'company_id': user_info.get('companyId', ''),
     'kingdee_uid': user_info.get('kingdeeUid', ''),
     'kingdee_company_id': user_info.get('kingdeeCompanyId', ''),
+    # 用户档案（接口文档登记字段，供 query_my_info 解析「我」的身份）
+    'uid': user_info.get('uid', ''),
+    'name': user_info.get('name', ''),
+    'work_number': user_info.get('workNumber', ''),
+    'occupation': user_info.get('occupation', ''),
+    'dept_name': user_info.get('deptName', ''),
+    'own_dept_name': user_info.get('ownDeptName', ''),
+    'company_name': user_info.get('companyName', ''),
   }
   if not ctx['dept_id'] or not ctx['own_dept_id']:
     logger.warning(
@@ -148,9 +180,69 @@ async def login_user(user_id: str, username: str, password: str) -> tuple[str, s
   """
   ctx = await _login_with_credentials(username, password)
   _cache_context(_user_ctx_keys(user_id), ctx)
+  # 用户档案（去 token）JSON 落缓存，供 query_my_info 解析「我」的身份
+  profile = {k: v for k, v in ctx.items() if k != 'token'}
+  redis_manager.client.setex(
+    redis_manager.key(f'{_USERINFO_PREFIX}{user_id}'),
+    settings.MGMT_TOKEN_TTL, json.dumps(profile, ensure_ascii=False),
+  )
   logger.info('mgmt 用户登录成功 user_id=%s account=%s dept_id=%s',
               user_id, username, ctx['dept_id'] or '-')
   return ctx['token'], ctx['dept_id']
+
+
+async def cache_user_login(user_id: str, ctx: dict) -> None:
+  """把一次已完成的登录上下文写入用户 Redis 缓存（免二次登录）。
+
+  SSO 登录已通过 _login_with_credentials 拿到 ctx，直接缓存即可，避免再调一次
+  mgmt 登录接口。
+  """
+  _cache_context(_user_ctx_keys(user_id), ctx)
+  profile = {k: v for k, v in ctx.items() if k != 'token'}
+  redis_manager.client.setex(
+    redis_manager.key(f'{_USERINFO_PREFIX}{user_id}'),
+    settings.MGMT_TOKEN_TTL, json.dumps(profile, ensure_ascii=False),
+  )
+
+
+async def fetch_mgmt_profile(phone: str) -> dict:
+  """用默认密码拉取指定手机号在综合管理平台的档案（部门/专业/职位等）。
+
+  仅用于**注册时一次性档案同步**（Path B）：大部分账号密码还是默认 666666，
+  登录成功即视为该账号可用，返回去敏档案；默认密码登录失败（用户已改密码）或
+  平台无此账号/网络异常时**静默返回空 dict，不抛错**，不影响注册流程。
+  """
+  try:
+    ctx = await _login_with_credentials(phone, settings.MGMT_DEFAULT_PASSWORD)
+  except Exception:
+    return {}
+  return {
+    'name': ctx.get('name', ''),
+    'company_name': ctx.get('company_name', ''),
+    'dept_name': ctx.get('own_dept_name') or ctx.get('dept_name', ''),
+    'mgmt_uid': ctx.get('uid', ''),
+  }
+
+
+async def get_user_profile(user_id: str) -> dict:
+  """取指定用户登录缓存的个人档案（name/dept/company 等，不含 token）。
+
+  档案缓存 miss（如本次新增 key 前的旧会话只有 token 无档案）时清缓存强制重登
+  补齐；登录失败会抛 MgmtError（引导去认证中心绑定）。
+  """
+  key = redis_manager.key(f'{_USERINFO_PREFIX}{user_id}')
+  raw = redis_manager.client.get(key)
+  if not raw:
+    # token 命中也会跳过登录，故这里清掉用户缓存强制重登，登录时一并写档案
+    clear_user_token(user_id)
+    await get_user_token_and_dept(user_id)
+    raw = redis_manager.client.get(key)
+  if not raw:
+    return {}
+  try:
+    return json.loads(raw)
+  except (TypeError, ValueError):
+    return {}
 
 
 async def get_user_token_and_dept(user_id: str) -> tuple[str, str]:
@@ -207,6 +299,13 @@ def clear_user_token(user_id: str) -> None:
   for key in _user_ctx_keys(user_id):
     redis_manager.client.delete(redis_manager.key(key))
   redis_manager.client.delete(redis_manager.key(f'{_PEN_COMPANY_MAP_KEY}:{user_id}'))
+  redis_manager.client.delete(redis_manager.key(f'{_USERINFO_PREFIX}{user_id}'))
+  # 清静态参考缓存（公司/部门/pen 公司部门，key 含 user_id）
+  redis_manager.client.delete(redis_manager.key(f'{_REF_PREFIX}pen_company_dept:{user_id}'))
+  for key in redis_manager.client.scan_iter(
+    match=redis_manager.key(f'{_REF_PREFIX}*:{user_id}:*'),
+  ):
+    redis_manager.client.delete(key)
 
 
 async def get_user_kingdee_uid(user_id: str) -> str:
@@ -287,7 +386,9 @@ async def get_person_token(kingdee_uid: str, *, auth_user_id: str | None = None)
   """
   if not kingdee_uid:
     raise MgmtError('get_person_token 缺 kingdee_uid')
-  cache_key = redis_manager.key(f'{_PEN_TOKEN_PREFIX}{kingdee_uid}')
+  # 缓存 key 带授权人（auth_user_id），避免跨用户串用他人换发的 token（越权）
+  suffix = f':{auth_user_id}' if auth_user_id else ':service'
+  cache_key = redis_manager.key(f'{_PEN_TOKEN_PREFIX}{kingdee_uid}{suffix}')
   cached = redis_manager.client.get(cache_key)
   if cached:
     return cached
@@ -314,9 +415,10 @@ async def get_person_token(kingdee_uid: str, *, auth_user_id: str | None = None)
   return person_token
 
 
-def _clear_person_token(kingdee_uid: str) -> None:
+def _clear_person_token(kingdee_uid: str, auth_user_id: str | None = None) -> None:
   if kingdee_uid:
-    redis_manager.client.delete(redis_manager.key(f'{_PEN_TOKEN_PREFIX}{kingdee_uid}'))
+    suffix = f':{auth_user_id}' if auth_user_id else ':service'
+    redis_manager.client.delete(redis_manager.key(f'{_PEN_TOKEN_PREFIX}{kingdee_uid}{suffix}'))
 
 
 async def pen_request(
@@ -378,7 +480,7 @@ async def pen_request(
 
   if not _retried and _is_auth_error(body):
     logger.info('pen 请求鉴权失效，清该人 token 缓存重试一次 uid=%s path=%s', kingdee_uid, path)
-    _clear_person_token(kingdee_uid)
+    _clear_person_token(kingdee_uid, auth_user_id=auth_user_id)
     return await pen_request(
       path, params, json_body, kingdee_uid,
       auth_user_id=auth_user_id, _retried=True,
@@ -407,11 +509,18 @@ async def get_pen_company_kingdee_id(
     data = await pen_request(
       '/pen/pending/list/company', kingdee_uid=None, auth_user_id=auth_user_id,
     )
-    mapping = {
-      comp.get('companyId'): comp.get('kingdee')
-      for comp in data or []
-      if comp.get('companyId')
-    }
+    # 三种标识都能命中：mgmt 内部 companyId、公司名 companyName、pen kingdeeCompanyId(kingdee 字段)
+    mapping: dict[str, str] = {}
+    for comp in data or []:
+      kd = comp.get('kingdee') or ''
+      cid = comp.get('companyId')
+      cname = comp.get('companyName')
+      if cid and kd:
+        mapping[cid] = kd
+      if cname and kd:
+        mapping.setdefault(cname, kd)
+      if kd:
+        mapping.setdefault(kd, kd)  # 已是 kingdeeCompanyId → 原样返回
     redis_manager.client.setex(key, settings.MGMT_PEN_TOKEN_TTL, json.dumps(mapping))
     raw = redis_manager.client.get(key)
   try:

@@ -5,7 +5,7 @@ import type { AdminUser, Role, Application, AuditLog, PaginatedData } from '../t
 export async function getUsers(params: {
   page?: number;
   page_size?: number;
-  search?: string;
+  keyword?: string;
   status?: string;
 }): Promise<PaginatedData<AdminUser>> {
   const { data } = await client.get('/admin/users', { params });

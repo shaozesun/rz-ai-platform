@@ -22,6 +22,7 @@ matplotlib>=3.8.0
 # 沙箱内 PDF 报告（HTML+CSS→PDF，效果优于 reportlab；需系统库 libpango/cairo/gdk-pixbuf）
 weasyprint>=61.0
 # RAG / Repository
+langchain>=0.3.0
 langchain-core>=0.3.0
 langgraph
 langchain-openai>=0.2.0
@@ -41,3 +42,7 @@ psycopg[binary]>=3.2.0
 psycopg-pool>=3.2.0
 # 可观测性追踪（Langfuse，自建部署，LANGFUSE_ENABLED 默认关闭）
 langfuse>=2.0.0
+# 定时任务 cron 表达式 → 下次运行时间（SCHEDULED_TASKS_ENABLED 时使用）
+croniter>=2.0.0
+# 飞书 IM 机器人（LARK_ENABLED 时使用，WebSocket 长连接，无公网 IP）
+lark-oapi>=1.7.3

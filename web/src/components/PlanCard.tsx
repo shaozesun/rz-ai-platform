@@ -82,7 +82,7 @@ export default function PlanCard({ plan }: { plan: ExecutionPlan }) {
                   onClick={() => removeStep(i)}
                   disabled={steps.length <= 1}
                   className="mt-1 shrink-0 rounded p-1 text-muted-foreground hover:text-destructive disabled:opacity-40"
-                  title="删除步骤"
+                  data-tip="删除步骤"
                 >
                   <Trash2 className="size-3.5" />
                 </button>

@@ -190,6 +190,7 @@ export default function ApprovalsPage() {
                     </button>
                   </th>
                   <th className="px-4 py-2.5 font-medium">申请人</th>
+                  <th className="px-4 py-2.5 font-medium">部门</th>
                   <th className="px-4 py-2.5 font-medium">手机号</th>
                   <th className="px-4 py-2.5 font-medium">申请角色</th>
                   <th className="px-4 py-2.5 font-medium">申请权限</th>
@@ -201,9 +202,9 @@ export default function ApprovalsPage() {
               </thead>
               <tbody>
                 {loading ? (
-                  <tr><td colSpan={9} className="px-4 py-8 text-center text-muted-foreground">加载中...</td></tr>
+                  <tr><td colSpan={10} className="px-4 py-8 text-center text-muted-foreground">加载中...</td></tr>
                 ) : applications.length === 0 ? (
-                  <tr><td colSpan={9} className="px-4 py-8 text-center text-muted-foreground">暂无申请</td></tr>
+                  <tr><td colSpan={10} className="px-4 py-8 text-center text-muted-foreground">暂无申请</td></tr>
                 ) : (
                   applications.map((a) => (
                     <tr key={a.application_id} className="border-b border-border">
@@ -220,6 +221,7 @@ export default function ApprovalsPage() {
                         )}
                       </td>
                       <td className="px-4 py-2.5">{a.name || '-'}</td>
+                      <td className="px-4 py-2.5">{a.dept_name || '-'}</td>
                       <td className="px-4 py-2.5">{a.phone}</td>
                       <td className="px-4 py-2.5">
                         <div className="flex flex-wrap gap-1">

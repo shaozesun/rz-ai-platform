@@ -374,7 +374,7 @@ async def _log_usage(user_id, model, tokens_in, tokens_out, caller):
           'tokens_in': tokens_in,
           'tokens_out': tokens_out,
           'caller': caller,
-          'created_at': datetime.utcnow(),
+          'created_at': datetime.now(),
         },
       )
     except Exception:

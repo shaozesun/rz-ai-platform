@@ -27,6 +27,7 @@ class Message(MessageBase):
 
 
 class MessageListItem(BaseModel):
+    message_id: str = Field('', description="消息 ID（按条删除用）")
     role: str = Field(..., description="消息角色 (user/assistant)")
     content: str = Field(..., description="消息内容")
     created_at: Optional[datetime] = None

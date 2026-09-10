@@ -33,7 +33,7 @@ async def save_agent_audit_log(
       'tokens_out': tokens_used.get('output', 0),
       'duration_ms': duration_ms,
       'stopped_by_guard': stopped_by_guard,
-      'created_at': datetime.utcnow(),
+      'created_at': datetime.now(),
     }
 
     await asyncio.to_thread(

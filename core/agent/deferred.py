@@ -246,7 +246,7 @@ def deferred_tools_prompt(manifest: str) -> str:
   return (
     '\n\n<available-tools>\n'
     '平台工具默认隐藏，需先调用 tool_search 加载参数定义后再调用。'
-    '用自然语言描述要查的内容（如「查郭春磊的部门」「A7 机房告警」）。\n'
+    '用自然语言描述要查的内容（如「查某员工的部门」「A7 机房告警」）。\n'
     f'{manifest}\n'
     '</available-tools>'
   )

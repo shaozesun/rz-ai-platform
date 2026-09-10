@@ -27,6 +27,17 @@ export async function register(
   return data;
 }
 
+export async function mgmtLogin(
+  username: string, password: string,
+  captchaId: string, captchaCode: string, turnstileToken: string,
+) {
+  const { data } = await client.post('/auth/mgmt-login', {
+    username, password,
+    captcha_id: captchaId, captcha_code: captchaCode, turnstile_token: turnstileToken,
+  });
+  return data;
+}
+
 export async function refreshToken() {
   const { data } = await client.post('/auth/refresh', {
     refresh_token: sessionStorage.getItem('refresh_token'),

@@ -6,6 +6,7 @@ export interface OverviewData {
   compute_usage: number;
   compute_usage_change: number | null;
   user_count: number;
+  message_count: number;
   session_count: number;
   session_change: number | null;
   video_count: number;
@@ -18,7 +19,7 @@ export interface OverviewData {
 }
 
 export interface ActivityItem {
-  type: 'video';
+  type: 'video' | 'scheduled_task';
   text: string;
   time: string;
 }
@@ -29,6 +30,7 @@ const OVERVIEW_DEFAULTS: OverviewData = {
   compute_usage: 0,
   compute_usage_change: null,
   user_count: 0,
+  message_count: 0,
   session_count: 0,
   session_change: null,
   video_count: 0,

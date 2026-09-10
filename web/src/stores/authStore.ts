@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import type { User } from '../types';
 import { getMe } from '../api/auth';
 import { initTokenRefresh } from '../api/client';
+import { useChatStore } from './chatStore';
 
 const storage = sessionStorage;
 
@@ -45,6 +46,8 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       initialized: true,
       agentEnabled: user.agent_enabled === true,
     });
+    // 登录成功即清空聊天数据，避免换账号残留上个账号的会话/消息（同步调用，先于 loadSessions）
+    useChatStore.getState().resetForUser();
   },
 
   updateUser: (user) => {
@@ -109,6 +112,8 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       permissions: [],
       isAuthenticated: false,
     });
+    // 登出即清空聊天数据，避免换账号登录后残留上个账号的对话
+    useChatStore.getState().resetForUser();
   },
 
   hasPermission: (perm: string) => {

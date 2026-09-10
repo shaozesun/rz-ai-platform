@@ -1,4 +1,4 @@
-"""schedule_task 工具 — 用户通过对话用自然语言创建/管理定时任务（定时报告/巡检）。
+"""schedule_task 工具 — 用户通过对话用自然语言创建/管理定时任务（执行指令自定义）。
 
 复刻 DeerFlow schedule_task tool 的思路，适配我们的单例 Agent + 已建好的
 service/scheduled_task/ 持久化：
@@ -38,7 +38,7 @@ async def schedule_task(
   thread_strategy: str = 'new',
   config: RunnableConfig = None,
 ) -> str:
-  """创建、查看、启停、删除定时任务（到点自动跑一轮 Agent，用于定时报告/巡检）。
+  """创建、查看、启停、删除定时任务（到点自动执行一轮 Agent，执行指令由用户自定义，如定时报告、巡检、数据汇总等，不限于此）。
 
   用户用自然语言表达定时需求时，把它解析为调度参数并调用本工具：
   - 一次性：schedule_type='once'，once_at 填 ISO 时间（如需要当前时间，可先调用

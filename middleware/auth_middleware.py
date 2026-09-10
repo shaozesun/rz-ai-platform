@@ -32,7 +32,8 @@ class AuthMiddleware(BaseHTTPMiddleware):
         if (path in PUBLIC_PATHS
                 or path.startswith('/docs')
                 or path.startswith('/openapi')
-                or path.startswith('/api/v1/video/audio')):
+                or path.startswith('/api/v1/video/audio')
+                or path.startswith('/api/v1/feishu/artifacts')):
             return await call_next(request)
 
         # 提取 token（支持 Authorization header 和视频下载的 ?token= query param）

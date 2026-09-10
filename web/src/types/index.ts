@@ -34,6 +34,7 @@ export interface Session {
   created_at: string;
   updated_at: string;
   message_count: number;
+  pinned?: boolean;
 }
 
 export interface Message {
@@ -43,6 +44,8 @@ export interface Message {
   content: string;
   created_at: string;
   uploaded_filenames?: string[];
+  /** 流式生成失败时的友好错误提示（仅前端本地标记，不落库/不进历史） */
+  streamError?: string;
 }
 
 export interface PlanStep {
@@ -235,6 +238,8 @@ export interface AdminUser {
   permissions: string[];
   direct_permissions: string[];
   created_at: string;
+  dept_name?: string;
+  company?: string | null;
 }
 
 export interface Role {
@@ -250,6 +255,7 @@ export interface Application {
   user_id: string;
   phone: string;
   name: string;
+  dept_name?: string;
   requested_roles: string[];
   requested_permissions: string[];
   reason: string;

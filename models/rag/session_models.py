@@ -20,12 +20,14 @@ class SessionCreate(SessionBase):
 class SessionUpdate(BaseModel):
     session_name: Optional[str] = Field(None)
     group_id: Optional[str] = Field(None)
+    pinned: Optional[bool] = Field(None, description="置顶")
 
 
 class Session(SessionBase):
     id: str
     session_id: str
     updated_at: datetime
+    pinned: bool = False
 
 
 class SessionListResponse(BaseModel):

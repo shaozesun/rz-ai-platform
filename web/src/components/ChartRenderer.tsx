@@ -198,9 +198,48 @@ function ChartRenderer({ spec }: { spec: ChartSpec }) {
     document.addEventListener('fullscreenchange', onFsChange);
     return () => document.removeEventListener('fullscreenchange', onFsChange);
   }, []);
+  // 跟随应用明暗模式：深色（dark/black，黑色模式同时带 .dark）下图表默认用深色主题，
+  // 避免深色文字在深色背景上看不清；切主题时 MutationObserver 触发重渲染
+  const [isDark, setIsDark] = useState(() => document.documentElement.classList.contains('dark'));
+  useEffect(() => {
+    const el = document.documentElement;
+    const check = () => setIsDark(el.classList.contains('dark'));
+    check();
+    const mo = new MutationObserver(check);
+    mo.observe(el, { attributes: true, attributeFilter: ['class'] });
+    return () => mo.disconnect();
+  }, []);
+  // 懒加载：图表进入视口附近才真正 mount G2 图。历史会话里图表多时（单条最多 6 图），
+  // 全部立即 mount 会阻塞主线程数秒；滚动到哪张图哪张才渲染，首屏秒开。
+  const [inView, setInView] = useState(false);
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el || typeof IntersectionObserver === 'undefined') {
+      setInView(true); // 不支持 IntersectionObserver 的环境直接渲染，保底
+      return;
+    }
+    const io = new IntersectionObserver(
+      (entries) => {
+        for (const entry of entries) {
+          if (entry.isIntersecting) {
+            setInView(true);
+            io.disconnect();
+          }
+        }
+      },
+      { rootMargin: '200px 0px', threshold: 0 },
+    );
+    io.observe(el);
+    return () => io.disconnect();
+  }, []);
   const isGraph = GRAPH_TYPES.has(type);
   const theme = (attrs.theme || '').toLowerCase();
-  const validTheme = (isGraph ? GRAPH_THEMES : PLOT_THEMES).includes(theme) ? theme : '';
+  const llmTheme = (isGraph ? GRAPH_THEMES : PLOT_THEMES).includes(theme) ? theme : '';
+  // LLM 未指定主题时，按应用明暗模式默认：深色用 classicDark/dark，浅色用 classic/light
+  const defaultTheme = isDark
+    ? (isGraph ? 'dark' : 'classicDark')
+    : (isGraph ? 'light' : 'classic');
+  const validTheme = llmTheme || defaultTheme;
   const parsedHeight = Number(attrs.height);
   const baseHeight = attrs.height && Number.isFinite(parsedHeight) ? parsedHeight : HEIGHT;
   const height = isFullscreen ? Math.max(window.innerHeight - 120, 240) : baseHeight;
@@ -218,7 +257,7 @@ function ChartRenderer({ spec }: { spec: ChartSpec }) {
     height,
     autoFit: !width,
     ...(width ? { width } : {}),
-    ...(validTheme ? { theme: validTheme } : {}),
+    theme: validTheme,
   };
   const grouped = seriesField ? { seriesField } : {};
 
@@ -374,7 +413,7 @@ function ChartRenderer({ spec }: { spec: ChartSpec }) {
     const graphBase = {
       height,
       ...(width ? { width } : {}),
-      ...(validTheme ? { theme: validTheme } : {}),
+      theme: validTheme,
     };
     switch (type) {
       case 'mind_map': {
@@ -443,7 +482,12 @@ function ChartRenderer({ spec }: { spec: ChartSpec }) {
   return (
     <div
       ref={containerRef}
-      className="my-2 overflow-hidden rounded-lg border border-border bg-card/60 p-3"
+      className={
+        isFullscreen
+          // 全屏：撑满视口、去掉卡片边框圆角，图表区域由下方显式高度撑开
+          ? 'flex h-full w-full flex-col overflow-hidden rounded-none border-0 bg-background p-4'
+          : 'my-2 overflow-hidden rounded-lg border border-border bg-card/60 p-3'
+      }
       style={cardBg ? { backgroundColor: cardBg } : undefined}
     >
       <div className="mb-2 flex items-center justify-between gap-2">
@@ -462,14 +506,29 @@ function ChartRenderer({ spec }: { spec: ChartSpec }) {
             type="button"
             onClick={downloadChart}
             aria-label="下载图片"
-            title="下载图片"
+            data-tip="下载图片"
             className="rounded p-1 text-muted-foreground hover:bg-muted/60 hover:text-foreground"
           >
             <Download className="size-4" />
           </button>
         </div>
       </div>
-      {chart}
+      {inView ? (
+        // key 随 isFullscreen 变化：全屏切换时强制重挂载图表，让 G2 按全屏容器尺寸
+        // 重新初始化（autoFit 靠 ResizeObserver，requestFullscreen 的瞬时尺寸变化经常
+        // 触发不到，导致图表停留在小尺寸）；全屏时给显式高度撑满剩余视口。
+        <div key={isFullscreen ? 'chart-fs' : 'chart-norm'} style={isFullscreen ? { height } : undefined}>
+          {chart}
+        </div>
+      ) : (
+        // 未进入视口前渲染同高度占位，避免布局跳动；滚动到附近才真正 mount G2 图
+        <div
+          style={{ height }}
+          className="flex items-center justify-center text-xs text-muted-foreground"
+        >
+          图表加载中…
+        </div>
+      )}
     </div>
   );
 }

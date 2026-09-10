@@ -9,6 +9,8 @@ from api.v1.risk import router as risk_router
 from api.v1.video import router as video_router
 from api.v1.stats import router as stats_router
 from api.v1.feedback import router as feedback_router
+from api.v1.scheduled_tasks import router as scheduled_tasks_router
+from api.v1.feishu import router as feishu_router
 
 api_v1_router = APIRouter(prefix='/api/v1')
 api_v1_router.include_router(health_router, tags=['health'])
@@ -20,6 +22,8 @@ api_v1_router.include_router(risk_router, tags=['risk'])
 api_v1_router.include_router(video_router, tags=['video'])
 api_v1_router.include_router(stats_router, tags=['stats'])
 api_v1_router.include_router(feedback_router, tags=['feedback'])
+api_v1_router.include_router(scheduled_tasks_router, tags=['scheduled-tasks'])
+api_v1_router.include_router(feishu_router, tags=['feishu'])
 
 if settings.AGENT_ENABLED:
   from api.v1.agent import router as agent_router

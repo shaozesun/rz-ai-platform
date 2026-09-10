@@ -4,11 +4,12 @@ import json
 import logging
 import re
 import time
+import uuid
 from datetime import datetime
 
 from config.settings import settings
 from models.scheduled_task import RunStatus
-from service.scheduled_task.repository import create_run, finish_run
+from service.scheduled_task.repository import create_notification, create_run, finish_run
 
 logger = logging.getLogger(__name__)
 
@@ -23,8 +24,9 @@ async def run_task(task) -> None:
   """执行一个定时任务：调 Agent 跑一轮，捕获最终回复 + 产物 URL，写运行记录。"""
   from service.agent.agent_service import AgentService
 
-  run = await create_run(task.task_id)
-  thread_id = _thread_id_for(task, run.run_id)
+  run_id = uuid.uuid4().hex
+  thread_id = _thread_id_for(task, run_id)
+  run = await create_run(task.task_id, run_id=run_id, thread_id=thread_id)
   session_id = thread_id.removeprefix('rz-agent-')
 
   final_text = ''
@@ -63,6 +65,15 @@ async def run_task(task) -> None:
     error=error,
     duration_ms=duration_ms,
   )
+  await create_notification(
+    user_id=task.created_by,
+    task_id=task.task_id,
+    task_name=task.name,
+    run_id=run.run_id,
+    status=status.value,
+    title=f"定时任务「{task.name}」执行{'成功' if status == RunStatus.SUCCESS else '失败'}",
+    body=(error or final_text).strip()[:80],
+  )
   logger.info('定时任务执行完成 task_id=%s status=%s duration_ms=%s',
               task.task_id, status, duration_ms)
 
@@ -73,7 +84,8 @@ def _split_permissions() -> list[str]:
 
 def _thread_id_for(task, run_id: str) -> str:
   if task.thread_strategy == 'reuse':
-    return f'rz-agent-sched-{task.task_id}'
+    # 对话建任务时可指定复用某个会话（带上下文）；否则用任务专属固定 thread
+    return task.thread_id or f'rz-agent-sched-{task.task_id}'
   return f'rz-agent-sched-{task.task_id}-{run_id}'
 
 

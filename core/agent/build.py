@@ -1,7 +1,6 @@
 """RZ Agent 工厂 — 使用 langchain create_agent 构建（支持 AgentMiddleware）"""
 
 import logging
-from datetime import datetime
 from typing import TYPE_CHECKING
 
 from langchain.agents import create_agent
@@ -54,9 +53,8 @@ def build_rz_agent(
   wrapped_tools = apply_tool_middlewares(tools)
   all_tools = wrapped_tools + (raw_tools or [])
 
-  # 构建系统提示词（注入当前时间）
-  current_time = datetime.now().strftime('%Y年%m月%d日 %H:%M')
-  system_msg = SYSTEM_PROMPT.format(current_time=current_time, user_name='运维工程师')
+  # 系统提示词不再烘焙当前时间（缓存单例会过期）；当前时间由 streaming.py 每请求注入
+  system_msg = SYSTEM_PROMPT.format(user_name='运维工程师')
   if extra_prompt:
     system_msg = system_msg + extra_prompt
 

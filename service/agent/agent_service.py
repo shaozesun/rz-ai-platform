@@ -11,6 +11,38 @@ from service.agent.streaming import stream_agent
 logger = logging.getLogger(__name__)
 
 
+async def _collect_recent_context(session_id: str, max_turns: int = 3) -> dict:
+  """取会话最近几轮上下文（用户问题 + 用过的工具名），供意图路由判断省略延续追问。
+
+  从 MongoDB 会话消息取最近若干条，提取最后 max_turns 个 user 消息文本（天然含对象实体）
+  与 assistant 里的 `<tool-call name=...>` 工具名（中性事实，不断言意图）。无数据返回空 dict。
+  """
+  import re
+  from service.rag.conversation.message_service import message_service
+  try:
+    msgs = await message_service.get_messages(session_id, limit=100)
+  except Exception:
+    return {}
+  user_msgs: list[str] = []
+  tools: list[str] = []
+  for m in reversed(msgs):
+    if m.role == 'user' and m.content and len(user_msgs) < max_turns:
+      user_msgs.append(m.content.strip())
+    elif m.role == 'assistant':
+      for name in re.findall(r'<tool-call name="([^"]+)"', m.content or ''):
+        readable = name.replace('__', '.')
+        if readable not in tools and len(tools) < max_turns * 2:
+          tools.append(readable)
+    if len(user_msgs) >= max_turns and len(tools) >= max_turns:
+      break
+  if not user_msgs and not tools:
+    return {}
+  return {
+    'user_messages': list(reversed(user_msgs)),
+    'tools': list(reversed(tools))[:max_turns],
+  }
+
+
 class AgentService:
   """Agent 服务单例。
 
@@ -88,6 +120,7 @@ class AgentService:
       settings.SECURITY_ENABLED,
       settings.AGENT_CHECKPOINT_BACKEND,
       settings.LANGFUSE_ENABLED,
+      settings.LARK_ENABLED,
       get_skills_version(),
     )
 
@@ -123,12 +156,29 @@ class AgentService:
     # （不依赖任何平台开关），按用户隔离，写盘后 bump skills_version 触发重建。
     skill_manage_tool = wrap_async_tool_with_error_handling(skill_manage)
 
+    # 定时任务工具（对话用语言创建/管理定时报告）：仅 SCHEDULED_TASKS_ENABLED 时注入
+    scheduled_tools = []
+    if settings.SCHEDULED_TASKS_ENABLED:
+      from tools.schedule_task_tool import schedule_task
+      scheduled_tools = [wrap_async_tool_with_error_handling(schedule_task)]
+
     # 上传文件工具（async，走 raw_tools）：列出/读取本会话已上传文件、把上传表格物化为
     # 沙箱数据集。始终注入（不依赖任何平台开关），文件上传是基础能力，不隐藏在 tool_search 后面。
     from tools.upload_tools import build_upload_tools
     upload_tools = [
       wrap_async_tool_with_error_handling(t) for t in build_upload_tools()
     ]
+
+    # 飞书消息工具（async，走 raw_tools）：读取群消息 / 私聊记录，供自然语言触发。
+    # 仅 LARK_ENABLED 时注入。
+    feishu_tools = []
+    if settings.LARK_ENABLED:
+      from tools.feishu_tools import fetch_group_messages, fetch_p2p_messages, list_joined_chats
+      feishu_tools = [
+        wrap_async_tool_with_error_handling(fetch_group_messages),
+        wrap_async_tool_with_error_handling(fetch_p2p_messages),
+        wrap_async_tool_with_error_handling(list_joined_chats),
+      ]
 
     # 平台 deferred 工具：任一 <PLATFORM>_ENABLED 开关开启时，把已注册平台的能力
     # 生成为真工具（带 schema 强校验），交给 deferred filter 隐藏 schema，LLM 经
@@ -158,14 +208,14 @@ class AgentService:
         platform_tools, top_k=settings.DCIM_RETRIEVAL_TOP_K,
       )
       # deferred 工具 + tool_search 是 async / 返回 Command，走 raw 通道不包装
-      raw_tools = deferred_tools + analysis_tools + [skill_manage_tool] + upload_tools
+      raw_tools = deferred_tools + analysis_tools + [skill_manage_tool] + upload_tools + scheduled_tools + feishu_tools
       middleware.append(deferred_mw)
       # P-2：<available-tools> 从全量工具名改为分类清单（build_category_manifest），
       # 每轮省 ~2.7k token；deferred_names 不再进 prompt。
       extra_prompt = deferred_tools_prompt(build_category_manifest())
       self._catalog_hash = catalog_hash
     else:
-      raw_tools = list(analysis_tools) + [skill_manage_tool] + upload_tools
+      raw_tools = list(analysis_tools) + [skill_manage_tool] + upload_tools + scheduled_tools + feishu_tools
       self._catalog_hash = None
 
     # 权限不触发重建：RBAC 走 stream() 里 set_current_permissions 设置的运行时
@@ -191,6 +241,7 @@ class AgentService:
     session_id: str,
     permissions: set[str] | None = None,
     interaction_mode: str = 'trust',
+    task_mode: str = 'normal',
     plan_confirmed: bool = False,
     plan: dict | None = None,
     interview_answers: dict | None = None,
@@ -206,6 +257,7 @@ class AgentService:
       session_id: 前端会话 ID
       permissions: 用户权限集合，用于 RBAC 工具过滤
       interaction_mode: 'trust' 自主执行 / 'plan' 先列计划确认后执行
+      task_mode: 'normal' 常规 / 'full_analysis' 全量分析（优先多维度数据分析，每轮注入模式指令）
       plan_confirmed: 计划模式下是否已确认执行
       plan: 已确认的执行计划（前端编辑后回传）
       interview_answers: 计划模式下访谈轮用户回答（{问题 id: 值}）
@@ -291,7 +343,11 @@ class AgentService:
       from service.query.base.intent_bindings import all_intent_labels
       if all_intent_labels():
         from core.agent.orchestrator import build_initial_state
-        initial_state = await build_initial_state(message, self._catalog_hash)
+        recent = await _collect_recent_context(session_id)
+        initial_state = await build_initial_state(message, self._catalog_hash, history=recent)
+
+    from core.agent.prompts import MODE_INSTRUCTIONS
+    mode_instruction = MODE_INSTRUCTIONS.get(task_mode)
 
     async for sse_chunk in stream_agent(
       agent=self._agent,
@@ -301,10 +357,12 @@ class AgentService:
       session_id=session_id,
       initial_state=initial_state,
       plan_instruction=plan_instruction,
+      mode_instruction=mode_instruction,
       uploaded_filenames=uploaded_filenames,
       tracing_callbacks=self._tracing_callbacks,
     ):
       yield sse_chunk
+
 
   async def teardown(self):
     """关闭时清理连接池。

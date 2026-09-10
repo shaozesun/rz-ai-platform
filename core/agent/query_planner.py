@@ -1,7 +1,6 @@
 """意图识别器 —— 多标签编排的 Step 1（LLM 结构化输出）。
 
 用一次快速 LLM 调用，把用户问题解析成结构化的 IntentPlan：
-- query_type：single/parallel/detect/chain，决定编排策略。
 - domains：命中哪些平台（驱动路由，闭合枚举）。
 - intent_labels：命中哪些意图标签（驱动路由，闭合枚举）。
 - subtasks/focus：自由文本，仅供 LLM 理解上下文，不驱动代码判断。
@@ -24,22 +23,18 @@ from pydantic import BaseModel, Field, create_model
 
 logger = logging.getLogger(__name__)
 
-QueryType = Literal['single', 'parallel', 'detect', 'chain']
-
 
 @dataclass
 class IntentPlan:
   """意图识别结果（内部稳定契约，与 LLM 动态输出 schema 解耦）。
 
   Attributes:
-    query_type: 查询类型，决定编排策略。
     domains: 命中的平台名列表（如 ['dcim', 'mgmt']）。
     intent_labels: 命中的意图标签列表（闭合词汇表内）。
     subtasks: 拆解出的子问题描述，自由文本。
     focus: 用户核心诉求，自由文本。
   """
 
-  query_type: str = 'detect'
   domains: list[str] = field(default_factory=list)
   intent_labels: list[str] = field(default_factory=list)
   subtasks: list[str] = field(default_factory=list)
@@ -50,7 +45,7 @@ def _build_output_model(domains: list[str], labels: list[str]) -> type[BaseModel
   """按当前注册表状态动态构造结构化输出模型。
 
   domains/labels 非空时用 Literal 锁死值域；为空时退化为 list[str]（Literal
-  不允许空枚举），此时靠代码层过滤兜底。query_type 始终是固定四值。
+  不允许空枚举），此时靠代码层过滤兜底。
   """
   # domains 字段：有平台则 Literal 锁死，否则自由 str
   if domains:
@@ -66,10 +61,6 @@ def _build_output_model(domains: list[str], labels: list[str]) -> type[BaseModel
 
   return create_model(
     'IntentPlanOut',
-    query_type=(QueryType, Field(description=(
-      '查询类型：single=单域简单查询；parallel=多域各自独立结果；'
-      'detect=模糊异常排查需先探测；chain=需分步推理的复杂分析'
-    ))),
     domains=(domain_type, Field(default_factory=list, description='涉及的平台')),
     intent_labels=(label_type, Field(default_factory=list, description='命中的意图标签')),
     subtasks=(list[str], Field(default_factory=list, description='拆解出的子问题，自然语言')),
@@ -77,27 +68,76 @@ def _build_output_model(domains: list[str], labels: list[str]) -> type[BaseModel
   )
 
 
-def _build_prompt(message: str, domains: list[str], labels: list[str]) -> str:
-  """构造意图识别提示词，把合法值域显式列进 prompt（prompt 层约束）。"""
-  domain_hint = '、'.join(domains) if domains else '（暂无已注册平台）'
-  label_hint = '、'.join(labels) if labels else '（意图词汇表尚未定义，intent_labels 请留空）'
+def _build_history_block(history: dict | None) -> str:
+  """构造最近对话上下文段（中性事实：近几轮用户问题 + 工具名）。
+
+  仅供意图识别判断「当前问题是否在延续上一轮」（省略追问如「剩余数据」）；不含任何
+  意图断言，避免污染。无历史或内容为空时返回空串。
+  """
+  if not history:
+    return ''
+  parts: list[str] = []
+  umsgs = history.get('user_messages') or []
+  tools = history.get('tools') or []
+  if umsgs:
+    parts.append('近几轮用户问题：\n' + '\n'.join(f'- {m}' for m in umsgs))
+  if tools:
+    parts.append('最近使用过的工具：\n' + '\n'.join(f'- {t}' for t in tools))
+  if not parts:
+    return ''
   return (
-    '你是运维 Agent 的意图识别器。分析用户问题，输出结构化意图。\n\n'
-    '规则：\n'
-    '1. query_type 判断：\n'
-    '   - single：只涉及一个域的简单查询\n'
-    '   - parallel：明确同时需要多个域的独立结果\n'
-    '   - detect：模糊的异常排查，需先探测再聚焦\n'
-    '   - chain：需分步骤推理的复杂分析\n'
-    f'2. domains 只能从以下平台中选：{domain_hint}\n'
-    f'3. intent_labels 只能从以下标签中选：{label_hint}\n'
-    '4. subtasks：把问题拆成可执行的子问题（自然语言，可多条）\n'
-    '5. focus：一句话概括用户到底想要什么\n\n'
-    f'用户问题：{message}'
+    '\n\n【最近对话上下文（仅作中性参考）】\n'
+    '下面是此前几轮的用户问题与用过的工具，用于判断当前问题是不是省略了主语的延续追问'
+    '（如「剩余数据」「还有呢」）。\n'
+    + '\n'.join(parts)
   )
 
 
-async def plan_query(message: str, history: list | None = None) -> IntentPlan:
+def _build_prompt(message: str, domains: list[str], labels: list[str], history: dict | None = None) -> str:
+  """构造意图识别提示词，把合法值域显式列进 prompt（prompt 层约束）。
+
+  平台/标签注入中文语义（复用 manifest 的 _PLATFORM_LABELS/_CATEGORY_LABELS），
+  避免 LLM 面对 mgmt/org/skill 这类英文缩写无法理解而误判（如「制冷专业人员」
+  被猜成 skill 而非 org）。规则区强调按语义归类，勿按字面。
+  """
+  from service.query.base.manifest import (
+    build_category_manifest,
+    build_label_hints,
+    platform_display_name,
+  )
+
+  domain_hint = '、'.join(
+    f'{d}（{platform_display_name(d)}）' for d in domains
+  ) if domains else '（暂无已注册平台）'
+
+  if labels:
+    hints = build_label_hints(labels)
+    label_lines = '\n'.join(f'     - {label}（{hints[label]}）' for label in labels)
+    label_hint = f'\n{label_lines}'
+  else:
+    label_hint = '（意图词汇表尚未定义，intent_labels 请留空）'
+
+  manifest = build_category_manifest()
+  history_block = _build_history_block(history)
+
+  return (
+    '你是运维 Agent 的意图识别器。分析用户问题，输出结构化意图。\n\n'
+    '规则：\n'
+    f'1. domains 只能从以下平台中选：{domain_hint}\n'
+    f'2. intent_labels 只能从以下标签中选：{label_hint}\n'
+    '3. 按语义归类，勿按字面猜：如「制冷专业人员」属组织人事（org），不是技能（skill）\n'
+    '4. subtasks：把问题拆成可执行的子问题（自然语言，可多条）\n'
+    '5. focus：一句话概括用户到底想要什么\n'
+    '6. 若当前问题是延续上一轮的省略追问（本身不含明确对象/类别，如「剩余数据」「还有呢」），'
+    '结合【最近对话上下文】判断它指代哪个工具/类别；若当前问题能独立说明要查什么，'
+    '以当前问题为准，忽略最近上下文。\n'
+    + history_block
+    + (f'\n平台能力分类参考（用于理解各平台/标签含义）：\n{manifest}\n' if manifest else '')
+    + f'\n用户问题：{message}'
+  )
+
+
+async def plan_query(message: str, history: dict | None = None) -> IntentPlan:
   """对用户问题做意图识别，返回结构化 IntentPlan。
 
   失败（LLM 异常/无平台）时返回 detect 型空 plan，使编排层走 tool_search
@@ -105,7 +145,8 @@ async def plan_query(message: str, history: list | None = None) -> IntentPlan:
 
   Args:
     message: 用户消息。
-    history: 预留的历史上下文（暂未使用）。
+    history: 最近对话上下文 {'user_messages': [...], 'tools': [...]}，供省略/
+      延续追问（如「剩余数据」）判断指代哪个工具/类别；完整独立查询以当前问题为准。
 
   Returns:
     IntentPlan；异常时为 detect 型空 plan。
@@ -121,21 +162,20 @@ async def plan_query(message: str, history: list | None = None) -> IntentPlan:
     out_model = _build_output_model(domains, labels)
     llm = model_gateway.as_langchain_model()
     structured = llm.with_structured_output(out_model)
-    prompt = _build_prompt(message, domains, labels)
+    prompt = _build_prompt(message, domains, labels, history=history)
     result = await structured.ainvoke(prompt)
 
     plan = IntentPlan(
-      query_type=result.query_type,
       domains=list(result.domains or []),
       intent_labels=list(result.intent_labels or []),
       subtasks=list(result.subtasks or []),
       focus=result.focus or '',
     )
     logger.info(
-      'plan_query type=%s domains=%s labels=%s subtasks=%d',
-      plan.query_type, plan.domains, plan.intent_labels, len(plan.subtasks),
+      'plan_query domains=%s labels=%s subtasks=%d',
+      plan.domains, plan.intent_labels, len(plan.subtasks),
     )
     return plan
   except Exception as e:
-    logger.warning('plan_query 失败，退化为 detect 空 plan: %s', e)
-    return IntentPlan(query_type='detect', focus=message)
+    logger.warning('plan_query 失败，退化为空 plan（走 tool_search）: %s', e)
+    return IntentPlan(focus=message)

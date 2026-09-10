@@ -236,10 +236,11 @@ ENDPOINTS: dict[str, EndpointSpec] = {
   ),
   # query_person_training 实测：POST /user/records/training/v1，body {uid,year,
   # startTime,endTime,isPass,month,planStatus}。data 即 {userInfo, studyDurations}
-  # （培训时长/完成度/每日学习时长），无分页。uid/year/month 必须带（实测缺任一
-  # 返回空 data，缺 startTime/endTime 也返回空）；startTime/endTime 给定时宽范围
-  # 即可（跨年也按 year+month 过滤），故用 default_params 兜底为宽范围，LLM 只
-  # 需传 uid+year+month。
+  # （培训时长/完成度/每日学习时长），无分页。**month 是季度索引**（1=1-3月 /
+  # 2=4-6月 / 3=7-9月 / 4=10-12月），且 startTime/endTime 必须对齐该季度范围——
+  # 传宽范围（如 2020~2030）与 month 一起会报「获取用户培训信息失败」。startTime/
+  # endTime 由 client.call 按 year+month 自动补全（见 _quarter_range），不在
+  # EndpointSpec 兜底。
   'mgmt.query_person_training': EndpointSpec(
     method='POST',
     path='/user/records/training/v1',
@@ -252,10 +253,6 @@ ENDPOINTS: dict[str, EndpointSpec] = {
     },
     page_style='none',
     result_path='',  # data 即 {userInfo, studyDurations}，原样返回
-    default_params={
-      'startTime': '2020-01-01 00:00:00',
-      'endTime': '2030-12-31 23:59:59',
-    },
   ),
   # query_person_maintenance_plan 实测：POST /user/records/maintenanceplan/v1，
   # body {uid,deptId,companyId,page,pageSize}。deptId 必填且必须用人员档案的

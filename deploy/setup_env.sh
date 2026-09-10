@@ -22,4 +22,7 @@ echo "==> 写入 deploy/.env: $ENV_FILE"
 append LANGFUSE_DB_PASSWORD "$(openssl rand -base64 24)"
 append LANGFUSE_NEXTAUTH_SECRET "$(openssl rand -base64 32)"
 append LANGFUSE_SALT "$(openssl rand -base64 32)"
-echo "==> 完成。deploy/.env 已含 LANGFUSE 变量，可继续 docker compose up -d --build"
+# Langfuse v3 必填（ENCRYPTION_KEY）与完整栈组件
+append LANGFUSE_ENCRYPTION_KEY "$(openssl rand -hex 32)"
+append CLICKHOUSE_PASSWORD "$(openssl rand -base64 24)"
+echo "==> 完成。deploy/.env 已含 LANGFUSE v3 变量，可继续 docker compose up -d --build"

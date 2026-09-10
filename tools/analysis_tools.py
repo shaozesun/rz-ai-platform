@@ -115,6 +115,34 @@ def _validate_html_artifact(html_text: str) -> str | None:
   return None
 
 
+def _is_blank_image(path: str) -> bool:
+  """粗略判断图片是否空白（全透明 / 纯单色），防模型交付空图。
+
+  空白典型成因：空数据画了空画布、没注册中文字体、保存成 transparent 背景。
+  判定失败（读不了/非图）返回 False，不误拦。只拦截明显空图，不拦有内容图。
+  """
+  try:
+    from PIL import Image
+    with Image.open(path) as im:
+      # 全透明（空画布 + transparent=True 保存）→ 空图
+      if im.mode in ('RGBA', 'LA', 'P') or 'transparency' in im.info:
+        alpha = im.convert('RGBA').getchannel('A')
+        if alpha.getextrema() == (0, 0):
+          return True
+      rgb = im.convert('RGB')
+      colors = rgb.getcolors(maxcolors=1 << 20)
+      if not colors:
+        return False  # 颜色种类多，非空白
+      total = sum(c for c, _ in colors)
+      top = max(c for _, c in colors)
+      return len(colors) <= 1 or top / total > 0.999
+  except Exception:
+    return False
+
+
+_IMAGE_EXTS = {'png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp'}
+
+
 def _extract_total(resp) -> int | None:
   """从响应里尝试取总数，取不到返回 None。"""
   if not isinstance(resp, dict):
@@ -134,27 +162,41 @@ async def analysis_load(
   dataset_name: str = 'data',
   config: RunnableConfig = None,
 ) -> str:
-  """把平台能力的数据全量物化为数据集，供沙箱分析。
+  """把平台能力的数据全量物化为数据集，供沙箱分析或做右侧可交互表格。
 
-  适用于需要对全量/大量记录做统计聚合的场景（如「统计所有工单状态分布」）。
-  仅当参数范围能覆盖全量数据时使用；只查单条/前几条用平台能力工具即可。
+  两类使用场景：
+  1. **统计分布/占比/汇总/趋势**（如「XX部门人员专业分布」「各状态工单占比」
+     「各专业人数」）：物化全量数据后，用 analysis_exec 聚合出 chart_data 出图，
+     禁止拿单页明细工具的结果当样本统计。
+  2. **查看/列出超过 20 条的全部明细**（如「列出全部 200 条」「把所有工单都列出来」）：
+     物化全量数据；先用 analysis_exec 把 df 整理成可读视图（字段改中文/保留关键列/
+     枚举解码，存 view.csv），再用返回的 records_url 输出 <file url=.../>，右侧表格
+     即展示整理后的可读内容（本工具只回数据集摘要，明细不出现在上下文里）。
+
+  仅当参数范围能覆盖全量数据时使用；只查单条/少量（≤20 条）明细用平台能力工具直接列即可。
 
   Args:
-    capability_id: 平台能力 id，如 'mgmt.query_person_maintenance_plan'
+    capability_id: 平台能力 id，如 'mgmt.query_breakdown_ticket'（点号形式）；
+      也兼容工具名形式 'mgmt__query_breakdown_ticket'（双下划线，自动转换）
     params: 查询筛选参数（除分页外，如 uid/dept_id/company_id/year 等），
       分页由工具自动翻页拉全量
     dataset_name: 数据集展示名，用于 dataset_id 前缀
   """
   thread_id = _get_thread_id(config)
 
-  cap = get_capability(capability_id)
+  # 兼容两种写法：模型手里拿到的常是工具名（mgmt__query_breakdown_ticket，双下划线），
+  # 能力表按点号 capability_id（mgmt.query_breakdown_ticket）注册 → 归一后再查。
+  from service.query.base.tools_factory import tool_name_to_capability
+  cap_id = capability_id if '.' in capability_id else tool_name_to_capability(capability_id)
+
+  cap = get_capability(cap_id)
   if cap is None:
     return json.dumps({
-      'error': f'未知能力 {capability_id}，请先从分类清单确认可用的能力 id',
+      'error': f'未知能力 {cap_id}，请先从分类清单确认可用的能力 id',
     }, ensure_ascii=False)
-  caller = get_caller(capability_id)
+  caller = get_caller(cap_id)
   if caller is None:
-    return json.dumps({'error': f'能力 {capability_id} 无可用后端'}, ensure_ascii=False)
+    return json.dumps({'error': f'能力 {cap_id} 无可用后端'}, ensure_ascii=False)
 
   max_rows = settings.AGENT_ANALYSIS_MAX_ROWS
   page_size = settings.AGENT_ANALYSIS_PAGE_SIZE
@@ -167,7 +209,7 @@ async def analysis_load(
     if len(records) >= max_rows:
       truncated = True
       break
-    resp = await caller(capability_id, {
+    resp = await caller(cap_id, {
       **(params or {}),
       'page': str(page),
       'page_size': str(page_size),
@@ -194,11 +236,35 @@ async def analysis_load(
     }, ensure_ascii=False)
 
   await _emit_status('analysis_load', f'数据已就绪（{len(records)} 行）')
-  info = save_dataset(thread_id, capability_id, params or {}, records, dataset_name)
+  info = save_dataset(thread_id, cap_id, params or {}, records, dataset_name)
   info['truncated'] = truncated  # 是否因达到上限截断
+  info['records_url'] = (
+    f'/api/v1/chat/agent/artifacts/{quote(thread_id, safe="")}/'
+    f'{quote(info["dataset_id"], safe="")}/records'
+  )
   info['note'] = (
     '数据已物化到沙箱，原始记录未进入上下文。'
-    '请调用 analysis_exec 写 pandas 代码分析，df 已预载。'
+    '若用户是要查看/浏览完整列表或明细：先调用一次 analysis_exec 用 pandas 把数据整理成'
+    '可读视图——字段名改成中文、只保留有意义的关键列、状态/类型等编码列解码成中文标签；'
+    '保留的每一列都必须给中文表头，拿不准含义的列宁可不保留、禁止残留英文列名'
+    '（依据你掌握的字段含义与枚举映射），把整理结果存为 '
+    'df.to_csv(\'view.csv\', index=False)；右侧表格会优先展示 view.csv 的整理结果，'
+    '因此不要直接展示原始英文字段。对象型列（如 发起人/审批人 是 {userId,name,headimg} 这类 JSON）'
+    '只保留其中的名称字段（name/姓名/label），不要整段输出 JSON；'
+    '只含内部 ID 的列（列名含 id/uid/编号、值是不可读的长数字且没有配套名称列）不保留，'
+    '部门/公司 ID 有名称列就用名称展示。'
+    '枚举码列（如 专业 specialty、状态 status、阶段 stage、类型 type 等）整理时按业务含义'
+    '转成中文，不要保留纯数字码。已知稳定映射：专业 specialty 1=供配电/2=制冷/4=智能化/8=其他；'
+    '故障阶段 stage 7=故障派发/2=故障处理/3=故障验收/5=故障关闭；其它枚举按你从该能力描述见过的'
+    'code→含义转（不确定的列宁可去掉也别留数字码）。'
+    '（视图文件固定命名 view.csv、会被自动剔除，'
+    '不要另存成别的文件名当下载产物；不要询问用户是否要生成表格。）整理好后输出一行 '
+    '<file url="{records_url}" name="{能力名}列表"/>'
+    '（url 用上面 records_url，name 用能力名+“列表”），用户即可在右侧查看。'
+    '物化成交互表是列表的必需一步、不属于“自动分析”；出完表就此结束，'
+    '不要再基于已物化的数据自动做统计/多维度分析或出图。'
+    '仅当用户明确要求统计/分布/占比/汇总/对比/趋势等分析（或处于全量分析模式）时，'
+    '才调用 analysis_exec 聚合出 chart_data 出图。'
   )
   return json.dumps(info, ensure_ascii=False)
 
@@ -224,7 +290,12 @@ async def analysis_exec(
   如需生成可下载的产物文件（CSV/Excel/图表图片/PPT/PDF），在代码里把文件写到
   当前目录（如 df.to_csv('xxx.csv')、fig.savefig('xxx.png')），工具会自动回传，
   返回的 artifacts 列表里每条有 url 和 name——组装 <file url="..." name="..."/>
-  标签时原样引用，禁止改写。计算应简洁（聚合/分布/趋势），不要打印原始全量数据。
+  标签时原样引用，禁止改写。**若只是把数据集整理成“右侧交互列表”的视图，文件必须固定命名
+  view.csv（会被自动剔除、不作为下载产物），不要另存成别的 .csv 当交付。**
+  **图片产物必须真实画出内容**：空数据画空画布、
+  没按 RZ_CJK_FONT 注册中文字体、或以透明背景保存，都会得到空白图——工具会丢弃
+  空白/全透明图片并要求重画，请确保背景不透明（plt.savefig(..., transparent=False)）
+  且数据/文字确实绘制到画布上。计算应简洁（聚合/分布/趋势），不要打印原始全量数据。
   输出截断为上限字符。
 
   Args:
@@ -314,13 +385,36 @@ async def analysis_exec(
   if result['stderr'].strip():
     out += f'\n\n[stderr]\n{result["stderr"].strip()[:1000]}'
 
+  # 产物文件 → 生成鉴权下载 URL（URL 由工具权威生成，LLM 只原样引用）。
+  # 先校验图片产物：空白/全透明空图直接丢弃并在返回里说明，让 LLM 修正后重画
+  # （自愈闭环，防交付空图；与 analysis_exec 的 HTML 校验同一思路）。
+  artifacts = result.get('artifacts') or []
+  if artifacts:
+    kept: list = []
+    dropped: list[str] = []
+    for a in artifacts:
+      name = a.get('name', '')
+      if name.rsplit('.', 1)[-1].lower() in _IMAGE_EXTS:
+        fp = os.path.abspath(os.path.join(str(ds_dir), name))
+        if os.path.isfile(fp) and _is_blank_image(fp):
+          dropped.append(name)
+          continue
+      kept.append(a)
+    if dropped:
+      out += (
+        '\n\n[图片校验] 图片产物「' + '、'.join(dropped) + '」内容为空白/全透明空图，未交付。'
+        '请修正绘图代码后重画再交付：确认真实把数据绘制到画布、中文按 RZ_CJK_FONT 注册字体、'
+        '保存为不透明背景（如 plt.savefig(..., transparent=False)）。'
+      )
+    artifacts = kept
+  # view.csv 是「整理后供 records 接口渲染」的保留文件，不是可下载产物，剔除避免重复卡片
+  artifacts = [a for a in artifacts if a.get('name') != 'view.csv']
+
   payload = {'result': out}
   if result.get('chart_data') is not None:
     payload['chart_data'] = result['chart_data']
   if result.get('chart_note'):
     payload['note'] = result['chart_note']
-  # 产物文件 → 生成鉴权下载 URL（URL 由工具权威生成，LLM 只原样引用）
-  artifacts = result.get('artifacts') or []
   if artifacts:
     payload['artifacts'] = [{
       'name': a['name'],

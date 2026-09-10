@@ -58,6 +58,7 @@ class SessionService:
             "session_name": session.session_name,
             "user_id": session.user_id,
             "group_id": session.group_id,
+            "pinned": False,
             "created_at": from_datetime,
             "updated_at": datetime.now(),
             "last_activity_at": datetime.now(),
@@ -99,9 +100,10 @@ class SessionService:
     async def get_user_sessions(
         self, user_id: str, skip: int = 0, limit: int = 100
     ) -> list[Session]:
+        # 置顶优先，其次按创建时间倒序（旧会话无 pinned 字段，-1 排序时空值排最后）
         cursor = self.sessions.find(
             {"user_id": user_id}
-        ).sort("created_at", -1).skip(skip).limit(limit)
+        ).sort([("pinned", -1), ("created_at", -1)]).skip(skip).limit(limit)
 
         sessions = []
         async for doc in cursor:
@@ -116,6 +118,8 @@ class SessionService:
             update_fields["session_name"] = session.session_name
         if session.group_id is not None:
             update_fields["group_id"] = session.group_id
+        if session.pinned is not None:
+            update_fields["pinned"] = session.pinned
         update_fields["updated_at"] = datetime.now()
 
         query: dict = {"session_id": session_id}
@@ -208,6 +212,7 @@ class SessionService:
             group_id=str(doc.get("group_id", "")),
             created_at=doc.get("created_at"),
             updated_at=doc.get("updated_at") or datetime.now(),
+            pinned=bool(doc.get("pinned", False)),
         )
 
 

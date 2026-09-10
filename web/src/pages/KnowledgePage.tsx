@@ -430,7 +430,7 @@ export default function KnowledgePage() {
                   <button
                     onClick={(e) => { e.stopPropagation(); handleDeleteGroup(group.group_id); }}
                     className="shrink-0 rounded p-1 text-muted-foreground opacity-0 group-hover:opacity-100 hover:text-destructive transition-opacity"
-                    title="删除知识库"
+                    data-tip="删除知识库"
                   >
                     <Trash2 className="size-3.5" />
                   </button>

@@ -38,6 +38,18 @@ export function FileCard({ url, name, size }: FileCardProps) {
 
   // LLM 可能编造 url，先归一化成权威相对路径（已是权威前缀则原样）
   const safeUrl = useMemo(() => normalizeArtifactUrl(url, sessionId), [url, sessionId]);
+  // records 数据集产物（analysis_load 物化列表），url 以 /records（或 /records?file=…）结尾
+  const isRecords = /\/records(?:\?|$)/.test(safeUrl);
+  // 数据集内的 .csv 产物（模型误把列表导出成 csv 下载卡）：给「查看表格」兜底，
+  // 点开用同数据集 /records?file=xxx 渲染成可搜索表格
+  const isDatasetCsv =
+    safeUrl.endsWith('.csv') && safeUrl.includes('/chat/agent/artifacts/') && !isRecords;
+  const datasetCsvRecordsUrl = isDatasetCsv
+    ? safeUrl.replace(
+        /\/[^/]+\.csv$/,
+        `/records?file=${encodeURIComponent(decodeURIComponent(safeUrl.split('/').pop() || ''))}`,
+      )
+    : '';
 
   // 相对路径供 axios client（自动带 token + 401 刷新）
   const rel = safeUrl.replace(/^\/api\/v1/, '');
@@ -141,6 +153,24 @@ export function FileCard({ url, name, size }: FileCardProps) {
               在看板中查看
             </button>
           )}
+          {isRecords && (
+            <button
+              onClick={() => pushArtifact(safeUrl, name, true)}
+              className="flex items-center gap-1.5 rounded bg-muted px-2 py-1 text-xs hover:bg-muted/70 transition-colors"
+            >
+              <Eye className="size-3.5" />
+              查看表格
+            </button>
+          )}
+          {isDatasetCsv && (
+            <button
+              onClick={() => pushArtifact(datasetCsvRecordsUrl, name, true)}
+              className="flex items-center gap-1.5 rounded bg-muted px-2 py-1 text-xs hover:bg-muted/70 transition-colors"
+            >
+              <Eye className="size-3.5" />
+              查看表格
+            </button>
+          )}
         </div>
       </div>
     </div>
@@ -154,14 +184,14 @@ export function FileCard({ url, name, size }: FileCardProps) {
           <button
             onClick={handleDownload}
             className="rounded p-1.5 text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
-            title="下载"
+            data-tip="下载"
           >
             <Download className="size-4" />
           </button>
           <button
             onClick={closePreview}
             className="inline-flex shrink-0 items-center gap-1 rounded-md border border-border px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
-            title="关闭预览"
+            data-tip="关闭预览"
           >
             <X className="size-3.5" />
             关闭

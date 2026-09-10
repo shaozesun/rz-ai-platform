@@ -3,11 +3,22 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+
+def _ensure_utc(v):
+  """naive → 补 UTC tz；aware → 转 UTC。保证 JSON 序列化带 Z，前端能正确转本地时间。"""
+  if v is None:
+    return None
+  if isinstance(v, datetime):
+    if v.tzinfo is None:
+      return v.replace(tzinfo=timezone.utc)
+    return v.astimezone(timezone.utc)
+  return v
 
 
 class ScheduleType(str, Enum):
@@ -39,7 +50,13 @@ class ScheduledTaskBase(BaseModel):
   prompt: str                               # 作为用户消息喂给 Agent 的任务指令
   task_mode: str = 'normal'                 # normal / full_analysis（全量分析）
   thread_strategy: str = 'new'              # 'new' 每次新会话 / 'reuse' 固定会话累积历史
+  thread_id: Optional[str] = None           # reuse 时复用指定会话（对话建任务时取当前会话 thread_id）
   enabled: bool = True
+
+  @field_validator('once_at')
+  @classmethod
+  def _v_once_at(cls, v):
+    return _ensure_utc(v)
 
 
 class ScheduledTaskCreate(ScheduledTaskBase):
@@ -58,24 +75,58 @@ class ScheduledTaskUpdate(BaseModel):
   thread_strategy: Optional[str] = None
   enabled: Optional[bool] = None
 
+  @field_validator('once_at')
+  @classmethod
+  def _v_once_at(cls, v):
+    return _ensure_utc(v)
+
 
 class ScheduledTask(ScheduledTaskBase):
   """定时任务定义（MongoDB scheduled_tasks，task_id 唯一）"""
   task_id: str = Field(default_factory=_new_id)
   next_run_at: Optional[datetime] = None
   created_by: str = ''
-  created_at: datetime = Field(default_factory=datetime.utcnow)
-  updated_at: datetime = Field(default_factory=datetime.utcnow)
+  created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+  updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+  @field_validator('next_run_at', 'created_at', 'updated_at')
+  @classmethod
+  def _v_times(cls, v):
+    return _ensure_utc(v)
 
 
 class ScheduledTaskRun(BaseModel):
   """单次定时运行记录（MongoDB scheduled_task_runs，run_id 唯一）"""
   run_id: str = Field(default_factory=_new_id)
   task_id: str
+  thread_id: str = ''          # 本轮运行的 Agent 线程 id（rz-agent-sched-...），供「查看对话」拉会话消息
   status: RunStatus = RunStatus.PENDING
-  triggered_at: datetime = Field(default_factory=datetime.utcnow)
+  triggered_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
   final_reply: str = ''        # Agent 本轮最终文本回复（含 <file> 标签）
   artifact_urls: list[str] = []  # 产物下载 URL（/api/v1/chat/agent/artifacts/...）
   error: str = ''
   duration_ms: int = 0
-  created_at: datetime = Field(default_factory=datetime.utcnow)
+  created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+  @field_validator('triggered_at', 'created_at')
+  @classmethod
+  def _v_times(cls, v):
+    return _ensure_utc(v)
+
+
+class ScheduledTaskNotification(BaseModel):
+  """定时任务完成通知（MongoDB scheduled_task_notifications，按创建人关联）"""
+  notification_id: str = Field(default_factory=_new_id)
+  user_id: str = ''            # 任务创建人（铃铛/首页动态按此关联）
+  task_id: str = ''
+  task_name: str = ''
+  run_id: str = ''
+  status: str = ''             # success / failed
+  title: str = ''
+  body: str = ''
+  created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+  @field_validator('created_at')
+  @classmethod
+  def _v_time(cls, v):
+    return _ensure_utc(v)

@@ -153,6 +153,15 @@ class MongoDBManager:
       [('user_id', ASCENDING), ('group_id', ASCENDING)], unique=True
     ))
 
+    # scheduled_tasks（定时任务定义）
+    await _safe_index('scheduled_tasks', lambda: db.scheduled_tasks.create_index('task_id', unique=True))
+    await _safe_index('scheduled_tasks', lambda: db.scheduled_tasks.create_index([('enabled', ASCENDING), ('next_run_at', ASCENDING)]))
+    await _safe_index('scheduled_tasks', lambda: db.scheduled_tasks.create_index('created_by'))
+
+    # scheduled_task_runs（定时任务运行记录）
+    await _safe_index('scheduled_task_runs', lambda: db.scheduled_task_runs.create_index('run_id', unique=True))
+    await _safe_index('scheduled_task_runs', lambda: db.scheduled_task_runs.create_index([('task_id', ASCENDING), ('triggered_at', DESCENDING)]))
+
     if errors:
       import logging
       logging.getLogger(__name__).warning('部分索引创建跳过: %s', '; '.join(errors))

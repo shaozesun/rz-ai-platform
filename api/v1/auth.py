@@ -32,14 +32,11 @@ def _inject_agent_enabled(user_info: dict) -> dict:
 # ==================== Pillow 图形验证码 ====================
 
 def _generate_captcha_image() -> tuple[str, str]:
-  """生成数学算式图片，返回 (answer, base64_png)"""
-  a = random.randint(1, 30)
-  b = random.randint(1, 30)
+  """生成「三位数 ±1」算式图片（好算），返回 (answer, base64_png)"""
+  n = random.randint(100, 999)
   op = random.choice(['+', '-'])
-  if op == '-':
-    a, b = max(a, b), min(a, b)
-  answer = str(a + b if op == '+' else a - b)
-  text = f'{a} {op} {b} = ?'
+  answer = str(n + 1 if op == '+' else n - 1)
+  text = f'{n} {op} 1 = ?'
 
   width, height = 160, 50
   img = Image.new('RGB', (width, height), (255, 255, 255))
@@ -204,6 +201,30 @@ async def login(body: LoginRequest, request: Request):
     raise HTTPException(400, str(e))
 
 
+class MgmtLoginRequest(BaseModel):
+  username: str = Field(..., min_length=1)
+  password: str = Field(..., min_length=1)
+  captcha_id: str = ''
+  captcha_code: str = ''
+  turnstile_token: str = ''
+
+
+@router.post('/mgmt-login')
+async def mgmt_login(body: MgmtLoginRequest, request: Request):
+  """综合管理平台账号登录（SSO）：mgmt 账号+密码 → 建/合并 rz 用户 → 发 JWT。"""
+  if not settings.MGMT_SSO_ENABLED:
+    raise HTTPException(403, '综合管理平台登录未开启')
+  verify = _validate_captcha(body)
+  if verify: await verify
+  ip = request.client.host if request.client else ''
+  try:
+    result = await auth_service.mgmt_login(body.username.strip(), body.password, ip)
+    result['user'] = _inject_agent_enabled(result['user'])
+    return {'ok': True, 'data': result}
+  except (mgmt_http.MgmtError, ValueError) as e:
+    raise HTTPException(400, str(e))
+
+
 @router.post('/register')
 async def register(body: RegisterRequest, request: Request):
   verify = _validate_captcha(body)
@@ -363,10 +384,10 @@ async def mgmt_bind(body: BindMgmtRequest, request: Request):
   except Exception:
     raise HTTPException(500, '加密服务未就绪，请联系管理员')
 
-  await user_service.update_user(user_id, {
-    'mgmt_username': username,
-    'mgmt_password_enc': password_enc,
-  })
+  # 绑定同时回写档案（部门/专业/姓名/公司），与 SSO 登录一致；先取档案再 clear
+  updates = user_service.apply_mgmt_profile(await mgmt_http.get_user_profile(user_id))
+  updates.update({'mgmt_username': username, 'mgmt_password_enc': password_enc})
+  await user_service.update_user(user_id, updates)
   mgmt_http.clear_user_token(user_id)  # 重绑时清旧 token 缓存，强制用新账号
 
   user = await user_service.get_by_id(user_id)

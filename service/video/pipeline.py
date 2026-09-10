@@ -87,7 +87,7 @@ async def run_video_pipeline(task_id: str):
         'progress': 100,
         'progress_text': '完成',
         'result_url': result_url,
-        'updated_at': datetime.utcnow(),
+        'updated_at': datetime.now(),
       }}
     )
 
@@ -98,7 +98,7 @@ async def run_video_pipeline(task_id: str):
       {'$set': {
         'status': VideoTaskStatus.FAILED,
         'error': str(e),
-        'updated_at': datetime.utcnow(),
+        'updated_at': datetime.now(),
       }}
     )
   finally:
@@ -134,7 +134,7 @@ async def _update_status(db, task_id: str, status: VideoTaskStatus,
       'status': status,
       'progress': progress,
       'progress_text': text,
-      'updated_at': datetime.utcnow(),
+      'updated_at': datetime.now(),
     }}
   )
 

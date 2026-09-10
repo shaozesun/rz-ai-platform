@@ -49,6 +49,27 @@ def _chunk_to_text(chunk) -> str:
     return str(content) if content is not None else ""
 
 
+async def _save_chat_message(
+  session_id: str, user_id: str | None, role: str, content: str,
+) -> None:
+  """带去重的聊天消息落库（user/assistant 通用）。
+
+  user 消息也补存：仅存 assistant 会导致 assistant 为空/流失败时整轮空会话。
+  去重：最后一条同 role 同 content 则跳过（重试/重复请求不重复落库）。
+  """
+  try:
+    all_msgs = await message_service.get_messages(session_id, user_id=user_id)
+    last = all_msgs[-1] if all_msgs else None
+    if last is not None and last.role == role and last.content == content:
+      return
+    await message_service.create_message(MessageCreate(
+      session_id=session_id, role=role, content=content,
+      user_id=user_id, created_at=datetime.now(),
+    ))
+  except Exception:
+    logger.exception('[Chat] 保存%s消息失败', role)
+
+
 async def generate_rag_stream(
     text: str,
     session_id: str,
@@ -67,6 +88,9 @@ async def generate_rag_stream(
         question = text.strip()
         stream_filter = ThinkingStreamFilter()
         answer_parts: list[str] = []
+
+        # 先存 user 消息：assistant 为空/流失败时会话也至少有用户问题，不整轮空
+        await _save_chat_message(session_id, user_id, "user", question)
 
         try:
             async for chunk in chain.astream(
@@ -87,34 +111,22 @@ async def generate_rag_stream(
                 answer_parts.append(tail)
                 yield f"data: {json.dumps({'content': tail}, ensure_ascii=False)}\n\n"
 
-            yield "data: [DONE]\n\n"
-
-            final_answer = strip_thinking_text("".join(answer_parts))
-            logger.info("[Chat][RAG] 最终回答 q=%s answer_len=%d", question[:100], len(final_answer))
-        except Exception as e:
-            logger.error("[RAG 流式] 生成失败: %s", e)
-            yield f"data: {json.dumps({'content': f'[错误] 生成回复失败: {str(e)}'}, ensure_ascii=False)}\n\n"
-        finally:
+            # 先落库 assistant、再发 [DONE]：前端收到 DONE 即刷新会话列表，
+            # 若保存发生在 DONE 之后，用户立刻点回会话会读到空（「点好几次才出来」）
             ai_content = strip_thinking_text("".join(answer_parts)).strip()
             if ai_content:
-                try:
-                    all_msgs = await message_service.get_messages(session_id, user_id=user_id)
-                    last_msg = all_msgs[-1] if all_msgs else None
-                    already_saved = (
-                        last_msg is not None
-                        and last_msg.role == "assistant"
-                        and last_msg.content == ai_content
-                    )
-                    if not already_saved:
-                        await message_service.create_message(MessageCreate(
-                            session_id=session_id,
-                            role="assistant",
-                            content=ai_content,
-                            user_id=user_id,
-                            created_at=datetime.now(),
-                        ))
-                except Exception:
-                    logger.exception("[Chat] 保存AI回复失败")
+                await _save_chat_message(session_id, user_id, "assistant", ai_content)
+
+            yield "data: [DONE]\n\n"
+
+            logger.info("[Chat][RAG] 最终回答 q=%s answer_len=%d", question[:100], len(ai_content))
+        except Exception as e:
+            logger.error("[RAG 流式] 生成失败: %s", e)
+            # 流中途失败：尽量把已生成的部分内容落库（user 已存，assistant 有内容才补）
+            partial = strip_thinking_text("".join(answer_parts)).strip()
+            if partial:
+                await _save_chat_message(session_id, user_id, "assistant", partial)
+            yield f"data: {json.dumps({'content': f'[错误] 生成回复失败: {str(e)}'}, ensure_ascii=False)}\n\n"
     finally:
         _current_user_id.reset(token)
 
@@ -134,6 +146,9 @@ async def generate_no_rag_stream(text: str, session_id: str, trace_id: str = "",
         question = text.strip()
         stream_filter = ThinkingStreamFilter()
         answer_parts: list[str] = []
+
+        # 先存 user 消息：assistant 为空/流失败时会话也至少有用户问题，不整轮空
+        await _save_chat_message(session_id, user_id, "user", question)
 
         async def stream_llm(send_func):
             try:
@@ -160,6 +175,10 @@ async def generate_no_rag_stream(text: str, session_id: str, trace_id: str = "",
             while True:
                 tok = await queue.get()
                 if tok is None:
+                    # 先落库 assistant、再发 [DONE]：前端收到 DONE 刷新列表时消息已在库
+                    ai_content = strip_thinking_text("".join(answer_parts)).strip()
+                    if ai_content:
+                        await _save_chat_message(session_id, user_id, "assistant", ai_content)
                     yield "data: [DONE]\n\n"
                     break
                 yield tok
@@ -170,26 +189,10 @@ async def generate_no_rag_stream(text: str, session_id: str, trace_id: str = "",
                     await task
                 except asyncio.CancelledError:
                     pass
+            # 兜底：流被取消/异常未走 DONE 分支时，也尽量保存已生成内容（去重防重复）
             ai_content = strip_thinking_text("".join(answer_parts)).strip()
             if ai_content:
-                try:
-                    all_msgs = await message_service.get_messages(session_id, user_id=user_id)
-                    last_msg = all_msgs[-1] if all_msgs else None
-                    already_saved = (
-                        last_msg is not None
-                        and last_msg.role == "assistant"
-                        and last_msg.content == ai_content
-                    )
-                    if not already_saved:
-                        await message_service.create_message(MessageCreate(
-                            session_id=session_id,
-                            role="assistant",
-                            content=ai_content,
-                            user_id=user_id,
-                            created_at=datetime.now(),
-                        ))
-                except Exception:
-                    logger.exception("[Chat] 保存AI回复失败")
+                await _save_chat_message(session_id, user_id, "assistant", ai_content)
     finally:
         _current_user_id.reset(token)
 
@@ -335,6 +338,25 @@ async def delete_session_endpoint(
     return DeleteSessionResponse(ok=True, msg="已删除")
 
 
+@router.delete("/sessions/{session_id}/messages/{message_id}")
+@require_permission("ai:chat")
+async def delete_message_endpoint(
+    request: Request,
+    session_id: str,
+    message_id: str,
+):
+    """按条删除会话消息（视图级：仅移除消息历史，Agent checkpoint 上下文仍保留）"""
+    try:
+        await session_service.ensure_session_exists(session_id, user_id=request.state.user_id)
+    except ValueError as e:
+        return JSONResponse(status_code=403, content={"ok": False, "msg": str(e)})
+    ok = await message_service.delete_message(
+        session_id, message_id, user_id=request.state.user_id)
+    if not ok:
+        return JSONResponse(status_code=404, content={"ok": False, "msg": "消息不存在"})
+    return {"ok": True}
+
+
 @router.patch("/sessions/{session_id}")
 @require_permission("ai:chat")
 async def update_session_endpoint(
@@ -344,10 +366,16 @@ async def update_session_endpoint(
 ):
     from models.rag.session_models import SessionUpdate
     title = (body.get("title") or body.get("session_name") or "").strip()
-    if not title:
-        return JSONResponse(status_code=400, content={"ok": False, "msg": "标题不能为空"})
+    pinned = body.get("pinned")
+    if not title and pinned is None:
+        return JSONResponse(status_code=400, content={"ok": False, "msg": "缺少更新字段"})
+    update_data: dict = {}
+    if title:
+        update_data["session_name"] = title
+    if pinned is not None:
+        update_data["pinned"] = bool(pinned)
     updated = await session_service.update_session(
-        session_id, SessionUpdate(session_name=title), user_id=request.state.user_id)
+        session_id, SessionUpdate(**update_data), user_id=request.state.user_id)
     if not updated:
         return JSONResponse(status_code=404, content={"ok": False, "msg": "会话不存在"})
     return {"ok": True, "session": updated.model_dump(mode="json")}

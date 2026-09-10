@@ -110,7 +110,7 @@ export default memo(function MermaidRenderer({ code }: { code: string }) {
         onClick={zoomOut}
         disabled={scale <= 0.5}
         className="rounded p-1 text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-30"
-        title="缩小"
+        data-tip="缩小"
       >
         <ZoomOut className="size-3.5" />
       </button>
@@ -121,7 +121,7 @@ export default memo(function MermaidRenderer({ code }: { code: string }) {
         onClick={zoomIn}
         disabled={scale >= 3}
         className="rounded p-1 text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-30"
-        title="放大"
+        data-tip="放大"
       >
         <ZoomIn className="size-3.5" />
       </button>
@@ -129,7 +129,7 @@ export default memo(function MermaidRenderer({ code }: { code: string }) {
       <button
         onClick={() => setFullscreen(true)}
         className="rounded p-1 text-muted-foreground hover:bg-accent hover:text-foreground"
-        title="全屏"
+        data-tip="全屏"
       >
         <Maximize className="size-3.5" />
       </button>
@@ -186,7 +186,7 @@ export default memo(function MermaidRenderer({ code }: { code: string }) {
               <button
                 onClick={() => setFullscreen(false)}
                 className="rounded-md p-1.5 text-muted-foreground hover:bg-accent hover:text-foreground"
-                title="关闭全屏"
+                data-tip="关闭全屏"
               >
                 <X className="size-4" />
               </button>
