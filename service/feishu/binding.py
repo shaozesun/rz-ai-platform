@@ -2,49 +2,30 @@
 
 绑定码生命周期：Web 端点生成 → Redis 存（TTL）→ 飞书侧 `/connect <code>` 或
 卡片输入框提交 → 消费（GETDEL 单次有效）→ 把 lark_open_id 写回系统用户。
+码本身由 `service/channels/connect_code.py` 通用实现（各通道用不同 prefix）。
 """
 
 import logging
-import secrets
-from typing import Optional
 
 from config.settings import settings
-from config.redis_conn import redis_manager
 from service.auth.user_service import user_service
+from service.channels import connect_code
 
 logger = logging.getLogger(__name__)
 
-_CODE_KEY = 'lark:connect:'
+_CODE_PREFIX = 'lark:connect:'
 
 
 def create_connect_code(user_id: str) -> str:
   """生成一次性绑定码并写入 Redis，返回码。"""
-  code = secrets.token_urlsafe(16)
-  redis_manager.client.set(
-    redis_manager.key(f'{_CODE_KEY}{code}'),
-    user_id,
-    ex=settings.LARK_CONNECT_CODE_TTL,
+  return connect_code.create_connect_code(
+    user_id, prefix=_CODE_PREFIX, ttl=settings.LARK_CONNECT_CODE_TTL,
   )
-  return code
 
 
-def consume_connect_code(code: str) -> Optional[str]:
+def consume_connect_code(code: str) -> str | None:
   """消费一次性码，返回绑定的 user_id；无效/已用返回 None。"""
-  code = _normalize_code(code)
-  if not code:
-    return None
-  user_id = redis_manager.client.getdel(redis_manager.key(f'{_CODE_KEY}{code}'))
-  return user_id or None
-
-
-def _normalize_code(code: str) -> str:
-  """剥离用户可能多带的 `/connect ` 前缀与空白。"""
-  code = (code or '').strip()
-  for prefix in ('/connect ', '/connect', 'connect '):
-    if code.startswith(prefix):
-      code = code[len(prefix):].strip()
-      break
-  return code
+  return connect_code.consume_connect_code(code, prefix=_CODE_PREFIX)
 
 
 async def bind_open_id(user_id: str, open_id: str, name: str = '') -> bool:
@@ -65,7 +46,7 @@ async def bind_open_id(user_id: str, open_id: str, name: str = '') -> bool:
   return True
 
 
-async def resolve_user_by_open_id(open_id: str) -> Optional[dict]:
+async def resolve_user_by_open_id(open_id: str) -> dict | None:
   """按飞书 open_id 查系统用户。"""
   return await user_service.users.find_one({'lark_open_id': open_id})
 

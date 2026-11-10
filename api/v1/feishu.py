@@ -1,7 +1,7 @@
 """飞书 IM 绑定 API（登录态，不加 require_permission）。
 
 任何已登录用户可绑定/查看/解绑自己的飞书账号。绑定码经一次性码流转，最终由
-飞书侧 `/connect <code>` 或卡片输入框消费，把 open_id 写回当前用户。
+飞书侧把验证码直接发给机器人消费，把 open_id 写回当前用户。
 """
 
 from pathlib import Path
@@ -33,12 +33,12 @@ async def feishu_status(request: Request):
 
 @router.post('/connect')
 async def feishu_connect(request: Request):
-  """生成一次性绑定码，用户到飞书发 `/connect <code>` 或卡片输入框提交。"""
+  """生成一次性绑定码，用户到飞书把验证码直接发给机器人完成绑定。"""
   user_id = request.state.user_id
   code = binding.create_connect_code(user_id)
   return {
     'ok': True,
-    'data': {'code': code, 'instruction': f'/connect {code}'},
+    'data': {'code': code, 'instruction': f'把验证码直接发给飞书机器人即可绑定：{code}'},
   }
 
 

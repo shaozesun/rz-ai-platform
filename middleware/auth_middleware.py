@@ -29,11 +29,21 @@ class AuthMiddleware(BaseHTTPMiddleware):
         path = request.url.path.rstrip('/')
 
         # 公开路径跳过认证
+        # 讲解视频的播放路径：带 ?t=<签名 token> 时不需要登录态（token 即授权，
+        # 端点内部会校验 token 与 task_id 绑定 + 会话归属）。**只放行这一条路径**，
+        # 列表/状态接口仍需登录。注意 token 在 query 里，这里能读到。
+        is_signed_video = (
+            path.startswith('/api/v1/chat/agent-video/')
+            and path.endswith('/video')
+            and bool(request.query_params.get('t'))
+        )
         if (path in PUBLIC_PATHS
                 or path.startswith('/docs')
                 or path.startswith('/openapi')
                 or path.startswith('/api/v1/video/audio')
-                or path.startswith('/api/v1/feishu/artifacts')):
+                or path.startswith('/api/v1/feishu/artifacts')
+                or path.startswith('/api/v1/wechat/artifacts')
+                or is_signed_video):
             return await call_next(request)
 
         # 提取 token（支持 Authorization header 和视频下载的 ?token= query param）

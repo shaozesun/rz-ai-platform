@@ -7,10 +7,13 @@ core/mgmt_credentials.py）后，Agent 查询 mgmt/pen 接口用**该用户自�
 默认用「rz 手机号 + MGMT_DEFAULT_PASSWORD」登录。用户通道（auth_user_id）优先，
 服务账号仅在非用户通道（user_id 为空）兜底。
 
-pen 流程服务（MGMT_PEN_BASE_URL，mgmt 能力延伸非新平台）：认证头是
-`Authorization: Bearer` 且认 token 归属人。用该用户自己的 mgmt token 调
-`/user/dandang/user/token/{kingdeeUid}` 换发指定人员的 token（path 参数区分人），
-按人缓存后查询（get_person_token / pen_request）。
+工单服务（MGMT_TICKET_BASE_URL = `https://ticket-api.ddbes.com`，mgmt 能力延伸
+非新平台）：**2026-10-26 对方整体重做后**，工单接口全走 `ticket_request()`，认证
+与 mgmt 同一套 `token` + `Deptid` 头，路径去掉老的 `/ticket`、`/pen` 前缀
+（`/wiporder/*`、`/pending/list/v1`、`/company/user/{uid}`），入参与信封不变。
+老的 pen 流程服务（MGMT_PEN_BASE_URL，`Authorization: Bearer` + 用 mgmt token 换发
+人员 token `/user/dandang/user/token/{kingdeeUid}`）的实现保留在
+`get_person_token / pen_request`，但**已不在主链路上**。
 
 写法参考 service/video/pipeline.py 的 `_call_plugin`（本项目现有最简 httpx 调用
 范式：AsyncClient + timeout + header 认证），复杂之处在于这里需要 token 续期
@@ -19,6 +22,7 @@ pen 流程服务（MGMT_PEN_BASE_URL，mgmt 能力延伸非新平台）：认证
 
 import json
 import logging
+import re
 from urllib.parse import quote
 
 import httpx
@@ -37,7 +41,8 @@ _COMPANYID_KEY = 'mgmt:companyid'
 _KINGDEEUID_KEY = 'mgmt:kingdeeuid'
 _KINGDEE_COMPANY_KEY = 'mgmt:kingdeecompany'
 _PEN_TOKEN_PREFIX = 'pen:token:'
-_PEN_COMPANY_MAP_KEY = 'pen:companymap'
+# pen 的 kingdeeCompanyId 格式（sA8 + 12 位）；园区预设传的就是这个格式
+_KINGDEE_RE = re.compile(r'^sA8[A-Za-z0-9]{8,}$')
 _USERINFO_PREFIX = 'mgmt:userinfo:'
 _REF_PREFIX = 'mgmt:ref:'   # 静态参考数据缓存前缀（公司/部门/pen 公司部门）
 
@@ -97,6 +102,36 @@ def _cache_context(keys: tuple[str, str, str, str, str, str], ctx: dict) -> None
     redis_manager.client.setex(redis_manager.key(kingdee_company_key), ttl, ctx['kingdee_company_id'])
 
 
+# 登录失败原因上游是英文（实测 "wrong password"），直接透出会在登录页显示成中英混排。
+# 已知文案给中文对照；认不出的英文按「账号或密码错误」兜底（原始文案进日志便于排查），
+# 已是中文的原样返回。
+_LOGIN_FAIL_CN = {
+  'wrong password': '账号或密码错误',
+  'invalid password': '账号或密码错误',
+  'incorrect password': '账号或密码错误',
+  'user not exist': '账号不存在',
+  'user not exists': '账号不存在',
+  'user not found': '账号不存在',
+  'account not exist': '账号不存在',
+  'account locked': '账号已被锁定',
+  'account disabled': '账号已被禁用',
+}
+
+
+def _login_fail_text(msg: str) -> str:
+  """把登录接口返回的 msg 转成中文口径。"""
+  text = (msg or '').strip()
+  if not text:
+    return '未知错误'
+  mapped = _LOGIN_FAIL_CN.get(text.lower())
+  if mapped:
+    return mapped
+  if any('\u4e00' <= ch <= '\u9fff' for ch in text):
+    return text
+  logger.info('综合管理平台登录失败（未登记的上游文案）: %s', text)
+  return '账号或密码错误'
+
+
 async def _login_with_credentials(username: str, password: str) -> dict:
   """调用登录接口，返回解析后的账号上下文（token/dept/own_dept/company/kingdee...）。"""
   if not username or not password:
@@ -110,7 +145,7 @@ async def _login_with_credentials(username: str, password: str) -> dict:
 
   # 实测确认：真实平台成功码是 code=1（msg="请求成功"），不是 code=0。
   if body.get('code') != 1:
-    raise MgmtError(f'综合管理平台登录失败: {body.get("msg", "未知错误")}')
+    raise MgmtError(f'综合管理平台登录失败：{_login_fail_text(body.get("msg", ""))}')
 
   data = body.get('data') or {}
   token = data.get('token')
@@ -298,7 +333,6 @@ def clear_user_token(user_id: str) -> None:
     return
   for key in _user_ctx_keys(user_id):
     redis_manager.client.delete(redis_manager.key(key))
-  redis_manager.client.delete(redis_manager.key(f'{_PEN_COMPANY_MAP_KEY}:{user_id}'))
   redis_manager.client.delete(redis_manager.key(f'{_USERINFO_PREFIX}{user_id}'))
   # 清静态参考缓存（公司/部门/pen 公司部门，key 含 user_id）
   redis_manager.client.delete(redis_manager.key(f'{_REF_PREFIX}pen_company_dept:{user_id}'))
@@ -489,44 +523,57 @@ async def pen_request(
   raise MgmtError(f'pen 流程服务调用失败 path={path}: {body.get("msg", "未知错误")}')
 
 
+async def company_registry(auth_user_id: str | None = None) -> list[dict]:
+  """公司档案列表 `[{companyId 内部, companyName, kingdee, gardenName}]`。
+
+  唯一来源＝文档内的 `mgmt.query_company_list`（GET /authority/userrole/v1/current/company，
+  一次给全账号可见公司），经 `client.call()` 复用 `_STATIC_REF_CACHE`
+  （TTL `settings.MGMT_REF_CACHE_TTL`）。
+
+  **不要回头调 pen 的 `/pen/pending/list/company`**：那是未登记的逆向接口，2026-10-25
+  pen 全局故障（所有鉴权后请求返回 code:-1）时它一挂，全国口径取数与园区公司的
+  kingdee 映射同时失效 —— 24 份预设报告在 129~529ms 内全部失败。公司清单是低频参考
+  数据，与 pen 健康与否无关；mgmt 与 pen 是两个不同后端，查清单不必绕道 pen。
+  """
+  from service.query.mgmt.client import call   # 延迟导入：client 依赖本模块
+
+  data = await call('mgmt.query_company_list', {}, on_behalf_of=auth_user_id)
+  rows = data if isinstance(data, list) else (data or {}).get('records') or []
+  out: list[dict] = []
+  for comp in rows:
+    if not isinstance(comp, dict):
+      continue
+    out.append({
+      'companyId': str(comp.get('companyId') or ''),
+      'companyName': str(comp.get('companyName') or ''),
+      'kingdee': str(comp.get('kingdeeCompanyId') or comp.get('kingdee') or ''),
+      'gardenName': str(comp.get('gardenName') or ''),
+    })
+  return out
+
+
 async def get_pen_company_kingdee_id(
   internal_company_id: str, *, auth_user_id: str | None = None,
 ) -> str:
-  """把 mgmt 内部 companyId 映射为 pen 平台的 kingdeeCompanyId（跨公司查变更工单用）。
+  """把 mgmt 内部 companyId（或公司名）映射为 pen 平台的 kingdeeCompanyId。
 
-  pen 的变更工单接口 companyId 只认 kingdee 格式（sA8...，实测内部格式 27Wq...
-  返回 0 条），而 query_company_list 返回的是内部 id——映射表来自
-  `GET /pen/pending/list/company`（Bearer 该用户/服务账号 token），data 为
-  [{companyId 内部, companyName, kingdee}, ...]，按用户缓存 Redis
-  `pen:companymap:{user_id}`（JSON，用户可见公司不同映射不同）。查不到返回空串
+  pen 的工单接口 companyId 只认 kingdee 格式（sA8...，实测内部格式 27Wq... 返回 0 条）。
+  映射来自 `company_registry()`（mgmt.query_company_list）。
+
+  **入参已是 kingdee 则原样返回、不查映射**：园区预设传的正是 kingdee，此前仍要先拉一次
+  公司清单才算「原样返回」，清单接口一挂 40 份园区报告的取数就跟着全灭。查不到返回空串
   （调用方抛错提示公司不可见）。
   """
   if not internal_company_id:
     return ''
-  key = redis_manager.key(f'{_PEN_COMPANY_MAP_KEY}:{auth_user_id or "service"}')
-  raw = redis_manager.client.get(key)
-  if not raw:
-    data = await pen_request(
-      '/pen/pending/list/company', kingdee_uid=None, auth_user_id=auth_user_id,
-    )
-    # 三种标识都能命中：mgmt 内部 companyId、公司名 companyName、pen kingdeeCompanyId(kingdee 字段)
-    mapping: dict[str, str] = {}
-    for comp in data or []:
-      kd = comp.get('kingdee') or ''
-      cid = comp.get('companyId')
-      cname = comp.get('companyName')
-      if cid and kd:
-        mapping[cid] = kd
-      if cname and kd:
-        mapping.setdefault(cname, kd)
-      if kd:
-        mapping.setdefault(kd, kd)  # 已是 kingdeeCompanyId → 原样返回
-    redis_manager.client.setex(key, settings.MGMT_PEN_TOKEN_TTL, json.dumps(mapping))
-    raw = redis_manager.client.get(key)
-  try:
-    return json.loads(raw or '{}').get(internal_company_id, '') or ''
-  except (TypeError, ValueError):
-    return ''
+  company = str(internal_company_id).strip()
+  if _KINGDEE_RE.match(company):
+    return company
+  for comp in await company_registry(auth_user_id):
+    kid = comp['kingdee']
+    if kid and company in (comp['companyId'], comp['companyName'], kid):
+      return kid
+  return ''
 
 
 def _is_auth_error(body: dict) -> bool:
@@ -604,4 +651,43 @@ async def request(
       dept_id=dept_id, base_url=base_url, user_id=user_id, _retried=True,
     )
 
+  # 实测：GET /user/info/v2/{name} 查无此人时平台返回 code=0、msg=「服务器错误」，
+  # 而 Web 人员页 GET /user/dept/v4/page 无人时是 code=1、users=[]。Agent 用 v2，
+  # 此处归一为空列表，避免 tools 层抛 MgmtError、模型误报「平台故障」。
+  if (
+    method == 'GET'
+    and path.startswith('/user/info/v2/')
+    and code != 1
+    and str(body.get('msg', '')).strip() == '服务器错误'
+  ):
+    logger.info('mgmt 按姓名查人无匹配，归一为空列表 path=%s', path)
+    return []
+
   raise MgmtError(f'综合管理平台调用失败 path={path}: {body.get("msg", "未知错误")}')
+
+
+async def ticket_request(
+  path: str,
+  params: dict | None = None,
+  json_body: dict | None = None,
+  *,
+  auth_user_id: str | None = None,
+) -> dict:
+  """调用工单服务（ticket-api），返回拆包后的 `data`。
+
+  2026-10-26 对方把工单接口整体从 `api.ddbes.com` 迁到 `ticket-api.ddbes.com`：
+  - 路径去掉 `/ticket` 前缀：`/ticket/wiporder/*` → `/wiporder/*`；
+    `/pen/pending/list/v1` → `/pending/list/v1`；`/ticket/company/user/{uid}` → `/company/user/{uid}`
+  - 认证改为 mgmt 同一套 `token` + `Deptid` 头（不再认 pen 的 Bearer 人员 token）
+  - 入参与返回信封（`{code:1, data:{simpleTicketVOList,total}}`）不变
+
+  直接复用 `request()`：它已带 401 清缓存重登一次，且 `_is_auth_error` 能识别
+  新服务的「未登录或登录已失效」。
+  """
+  if not settings.MGMT_TICKET_BASE_URL:
+    raise MgmtError('未配置 MGMT_TICKET_BASE_URL，无法调用工单服务')
+  return await request(
+    'POST' if json_body is not None else 'GET', path,
+    params=params, json_body=json_body,
+    base_url=settings.MGMT_TICKET_BASE_URL, user_id=auth_user_id,
+  )

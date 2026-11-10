@@ -1,11 +1,18 @@
 import { useState, useEffect } from 'react';
-import { KeyRound, ShieldCheck, Bot, Copy } from 'lucide-react';
+import {
+  KeyRound, ShieldCheck, Bot, Copy, Check, MessageCircle,
+} from 'lucide-react';
 import { PlatformShell } from '@/components/platform-shell';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { getMgmtStatus, bindMgmtAccount, unbindMgmtAccount } from '@/api/auth';
 import { getFeishuStatus, connectFeishu, unbindFeishu } from '@/api/feishu';
+import { getWechatStatus, connectWechat, unbindWechat } from '@/api/wechat';
+import { copyText } from '@/lib/clipboard';
+
+// 微信通道入口开关：暂先关闭（扫码接入方案确定后再打开）
+const WECHAT_ENTRY_ENABLED: boolean = false;
 
 export default function AuthCenterPage() {
   const [bound, setBound] = useState(false);
@@ -18,6 +25,11 @@ export default function AuthCenterPage() {
   const [larkBound, setLarkBound] = useState(false);
   const [larkName, setLarkName] = useState('');
   const [larkCode, setLarkCode] = useState('');
+  const [copied, setCopied] = useState(false);
+  const [wechatBound, setWechatBound] = useState(false);
+  const [wechatName, setWechatName] = useState('');
+  const [wechatCode, setWechatCode] = useState('');
+  const [wechatCopied, setWechatCopied] = useState(false);
 
   const showMsg = (text: string, type: 'success' | 'error' = 'success') => {
     setMsg(text);
@@ -41,6 +53,15 @@ export default function AuthCenterPage() {
         setLarkName(s.lark_name);
       })
       .catch(() => {});
+    if (WECHAT_ENTRY_ENABLED) {
+      getWechatStatus()
+        .then((s) => {
+          if (cancelled) return;
+          setWechatBound(s.wechat_bound);
+          setWechatName(s.wechat_name);
+        })
+        .catch(() => {});
+    }
     return () => { cancelled = true; };
   }, []);
 
@@ -66,20 +87,37 @@ export default function AuthCenterPage() {
   };
 
   const copyCode = async () => {
-    const text = larkCode;
+    // 降级逻辑收敛到 lib/clipboard（这里原来有一份本地实现，重复了）
+    const ok = await copyText(larkCode);
+    setCopied(ok);
+    setTimeout(() => setCopied(false), 2000);
+  };
+
+  const handleGenerateWechatCode = async () => {
     try {
-      await navigator.clipboard.writeText(text);
+      const d = await connectWechat();
+      setWechatCode(d.code);
     } catch {
-      const ta = document.createElement('textarea');
-      ta.value = text;
-      ta.style.position = 'fixed';
-      ta.style.opacity = '0';
-      document.body.appendChild(ta);
-      ta.select();
-      document.execCommand('copy');
-      document.body.removeChild(ta);
+      showMsg('生成绑定码失败', 'error');
     }
-    showMsg('已复制到剪贴板');
+  };
+
+  const handleUnbindWechat = async () => {
+    try {
+      await unbindWechat();
+      setWechatBound(false);
+      setWechatName('');
+      setWechatCode('');
+      showMsg('已解绑微信');
+    } catch {
+      showMsg('解绑失败', 'error');
+    }
+  };
+
+  const copyWechatCode = async () => {
+    const ok = await copyText(wechatCode);
+    setWechatCopied(ok);
+    setTimeout(() => setWechatCopied(false), 2000);
   };
 
   const handleBind = async () => {
@@ -143,6 +181,16 @@ export default function AuthCenterPage() {
               未绑定时默认使用「手机号 + 初始密码」登录；若您已修改综合管理平台密码，请绑定正确的
               账号密码，否则相关查询会提示认证失败。
             </p>
+            <p>
+              绑定飞书机器人后，可在飞书群聊 @机器人 或私聊与 Agent 对话，并支持拉取群消息、总结
+              群消息、查看私聊记录。绑定方式：生成一次性验证码后，把验证码直接发给飞书机器人即可完成绑定。
+            </p>
+            {WECHAT_ENTRY_ENABLED && (
+              <p>
+                绑定微信机器人后，可在微信私聊与 Agent 对话（暂不支持读取微信群消息）。绑定方式：
+                生成一次性验证码后，把验证码直接发给微信机器人即可完成绑定。
+              </p>
+            )}
           </CardContent>
         </Card>
 
@@ -236,21 +284,19 @@ export default function AuthCenterPage() {
             ) : (
               <div className="space-y-3">
                 <p className="text-sm text-muted-foreground">
-                  绑定后即可在飞书里 @机器人 问答、私聊，或总结群消息。点击生成一次性绑定码，再到飞书私聊
-                  机器人发送，或直接 @机器人 后在卡片输入框粘贴。
+                  绑定后即可在飞书里 @机器人 问答、私聊，或总结群消息。点击生成一次性验证码，
+                  再到飞书私聊机器人直接发送，或群聊 @机器人 发送。
                 </p>
                 {larkCode ? (
                   <div className="space-y-2">
                     <p className="text-sm text-muted-foreground">
-                      在飞书私聊机器人，发送命令{' '}
-                      <code className="font-mono text-foreground">/connect</code>{' '}
-                      并粘贴下方绑定码
+                      把下方验证码直接发给飞书机器人即可完成绑定
                     </p>
                     <div className="flex items-center gap-2 rounded-lg border border-border bg-muted/40 px-3 py-2">
                       <code className="flex-1 truncate text-sm font-mono">{larkCode}</code>
                       <Button size="sm" variant="ghost" onClick={copyCode}>
-                        <Copy className="size-3.5" />
-                        复制
+                        {copied ? <Check className="size-3.5" /> : <Copy className="size-3.5" />}
+                        {copied ? '已复制' : '复制'}
                       </Button>
                     </div>
                   </div>
@@ -263,6 +309,60 @@ export default function AuthCenterPage() {
             )}
           </CardContent>
         </Card>
+
+        {/* 微信绑定（入口暂关） */}
+        {WECHAT_ENTRY_ENABLED && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <MessageCircle className="size-4" />
+              微信机器人
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            {wechatBound ? (
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-sm font-medium text-foreground">
+                    已绑定微信{wechatName ? `：${wechatName}` : ''}
+                  </p>
+                  <p className="text-xs text-muted-foreground mt-0.5">
+                    可在微信私聊直接与平台 Agent 对话
+                  </p>
+                </div>
+                <Button size="sm" variant="outline" onClick={handleUnbindWechat}>
+                  解绑
+                </Button>
+              </div>
+            ) : (
+              <div className="space-y-3">
+                <p className="text-sm text-muted-foreground">
+                  绑定后即可在微信私聊与 Agent 问答。点击生成一次性验证码，再到微信把这个
+                  验证码直接发给机器人即可完成绑定。
+                </p>
+                {wechatCode ? (
+                  <div className="space-y-2">
+                    <p className="text-sm text-muted-foreground">
+                      把下方验证码直接发给微信机器人即可完成绑定
+                    </p>
+                    <div className="flex items-center gap-2 rounded-lg border border-border bg-muted/40 px-3 py-2">
+                      <code className="flex-1 truncate text-sm font-mono">{wechatCode}</code>
+                      <Button size="sm" variant="ghost" onClick={copyWechatCode}>
+                        {wechatCopied ? <Check className="size-3.5" /> : <Copy className="size-3.5" />}
+                        {wechatCopied ? '已复制' : '复制'}
+                      </Button>
+                    </div>
+                  </div>
+                ) : null}
+                <Button size="sm" onClick={handleGenerateWechatCode}>
+                  <MessageCircle className="size-3.5" />
+                  生成绑定码
+                </Button>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+        )}
       </div>
     </PlatformShell>
   );

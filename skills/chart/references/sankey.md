@@ -1,6 +1,6 @@
 ---
 name: 生成桑基图
-description: 流量与流向、转化路径，适合跨节点流转分析。data 每行含 `source`、`target` 与 `value`。调用本工具返回完整数据字段规范（必填/可选），按规范组装
+description: 流量与流向、转化路径，适合跨节点流转分析。data 每行给「源 + 目标 + 数值」三列（前两列文本、第三列数值，字段名中英文均可）。调用本工具返回完整数据字段规范（必填/可选），按规范组装
   `<chart>` 标签输出。
 ---
 # sankey — 桑基图
@@ -10,7 +10,8 @@ description: 流量与流向、转化路径，适合跨节点流转分析。data
 
 ## 输入字段
 ### 必填
-- `data`: array<object>，每条记录包含 `source`（string）、`target`（string）与 `value`（number）。
+- `data`: array<object>，每条记录按顺序给「源（string）、目标（string）、数值（number）」三列，
+  如 `{"源":"供配电","目标":"制冷","数值":12}`。列按位置与类型识别，字段名用中文或英文都可以。
 
 ### 可选
 - `nodeAlign`: string，默认 `center`，可选 `left`/`right`/`justify`/`center`。

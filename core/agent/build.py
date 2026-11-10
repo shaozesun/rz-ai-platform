@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING
 from langchain.agents import create_agent
 from langgraph.checkpoint.memory import MemorySaver
 
-from core.agent.prompts import SYSTEM_PROMPT
+from core.agent.prompts import system_prompt
 from core.agent.middlewares import apply_tool_middlewares
 from core.agent.state import RzAgentState
 
@@ -54,7 +54,9 @@ def build_rz_agent(
   all_tools = wrapped_tools + (raw_tools or [])
 
   # 系统提示词不再烘焙当前时间（缓存单例会过期）；当前时间由 streaming.py 每请求注入
-  system_msg = SYSTEM_PROMPT.format(user_name='运维工程师')
+  # 用 system_prompt() 而不是直接 .format：提示词里的字面量花括号没转义会让 .format 抛
+  # KeyError（实测事故：`{"error": …}` → 建 agent 失败、整个对话挂掉），包装器会给可读报错
+  system_msg = system_prompt('运维工程师')
   if extra_prompt:
     system_msg = system_msg + extra_prompt
 

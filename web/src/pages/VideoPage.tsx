@@ -5,8 +5,10 @@ import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Select } from '@/components/ui/select';
+import { isAxiosError } from 'axios';
 import { useVideoStore } from '@/stores/videoStore';
 import { getAccessToken } from '@/api/client';
+import { MAX_UPLOAD_MB } from '@/api/video';
 import type { VideoTask } from '@/types';
 
 async function downloadVideo(taskId: string, filename: string) {
@@ -34,6 +36,18 @@ async function loadVideoBlobUrl(taskId: string): Promise<string> {
   if (!resp.ok) throw new Error('加载失败');
   const blob = await resp.blob();
   return URL.createObjectURL(blob);
+}
+
+/** 把提交阶段的异常翻译成用户能看懂、可自救的提示。 */
+function describeSubmitError(e: unknown): string {
+  if (!isAxiosError(e)) return '提交失败';
+  const status = e.response?.status;
+  if (status === 413) return `文件过大，服务端上限 ${MAX_UPLOAD_MB} MB，请压缩后重试`;
+  if (e.code === 'ECONNABORTED' || e.code === 'ETIMEDOUT') return '上传超时，请检查网络后重试';
+  const detail = (e.response?.data as { detail?: string } | undefined)?.detail;
+  if (detail) return `提交失败：${detail}`;
+  if (status) return `提交失败（HTTP ${status}）`;
+  return '提交失败：无法连接服务器';
 }
 
 const STATUS_COLOR: Record<string, 'default' | 'primary' | 'success' | 'destructive' | 'warning'> = {
@@ -196,6 +210,8 @@ export default function VideoPage() {
   const [aspectRatio, setAspectRatio] = useState('16:9');
   const [resolution, setResolution] = useState('1080p');
   const [voice, setVoice] = useState('male');
+  const [speechLanguage, setSpeechLanguage] = useState('zh-CN');
+  const [subtitleLanguage, setSubtitleLanguage] = useState('zh-CN');
   const [logMsg, setLogMsg] = useState('');
   const fileRef = useRef<HTMLInputElement>(null);
 
@@ -209,20 +225,32 @@ export default function VideoPage() {
   }, [tasks, pollActiveTasks]);
 
   const handleUpload = useCallback(async (file: File) => {
+    // 超过服务端上限时本地直接拒绝，省掉一次注定失败的上传
+    const sizeMb = file.size / (1024 * 1024);
+    if (sizeMb > MAX_UPLOAD_MB) {
+      setLogMsg(`文件 ${sizeMb.toFixed(0)} MB，超过 ${MAX_UPLOAD_MB} MB 上限，请压缩后重试`);
+      setTimeout(() => setLogMsg(''), 4000);
+      return;
+    }
     setUploading(true);
     try {
       await submitTask(file, {
-        aspect_ratio: aspectRatio, resolution, voice, subtitle_style: 'default',
+        aspect_ratio: aspectRatio,
+        resolution,
+        voice,
+        subtitle_style: 'default',
+        speech_language: speechLanguage,
+        subtitle_language: subtitleLanguage,
       });
       setLogMsg('任务已提交');
       setTimeout(() => setLogMsg(''), 3000);
-    } catch {
-      setLogMsg('提交失败');
-      setTimeout(() => setLogMsg(''), 3000);
+    } catch (e) {
+      setLogMsg(describeSubmitError(e));
+      setTimeout(() => setLogMsg(''), 4000);
     } finally {
       setUploading(false);
     }
-  }, [submitTask, aspectRatio, resolution, voice]);
+  }, [submitTask, aspectRatio, resolution, voice, speechLanguage, subtitleLanguage]);
 
   const handleDelete = useCallback(async (taskId: string) => {
     try {
@@ -301,7 +329,7 @@ export default function VideoPage() {
         </div>
 
         {/* Parameters */}
-        <div className="mt-4 grid grid-cols-1 sm:grid-cols-3 gap-3 sm:gap-4">
+        <div className="mt-4 grid grid-cols-1 sm:grid-cols-3 lg:grid-cols-5 gap-3 sm:gap-4">
           <div>
             <label className="mb-1 block text-xs text-muted-foreground">画面比例</label>
             <Select value={aspectRatio} onChange={(e) => setAspectRatio(e.target.value)}>
@@ -320,6 +348,20 @@ export default function VideoPage() {
             <label className="mb-1 block text-xs text-muted-foreground">语音</label>
             <Select value={voice} onChange={(e) => setVoice(e.target.value)}>
               <option value="male">通用男声</option>
+            </Select>
+          </div>
+          <div>
+            <label className="mb-1 block text-xs text-muted-foreground">语音语言</label>
+            <Select value={speechLanguage} onChange={(e) => setSpeechLanguage(e.target.value)}>
+              <option value="zh-CN">中文</option>
+              <option value="en-US">English</option>
+            </Select>
+          </div>
+          <div>
+            <label className="mb-1 block text-xs text-muted-foreground">字幕语言</label>
+            <Select value={subtitleLanguage} onChange={(e) => setSubtitleLanguage(e.target.value)}>
+              <option value="zh-CN">中文</option>
+              <option value="en-US">English</option>
             </Select>
           </div>
         </div>

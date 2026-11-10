@@ -19,6 +19,8 @@
   --color-sidebar: var(--sidebar);
   --color-chart-5: var(--chart-5);
   --color-chart-6: var(--chart-6);
+  --color-chart-7: var(--chart-7);
+  --color-chart-8: var(--chart-8);
   --color-chart-4: var(--chart-4);
   --color-chart-3: var(--chart-3);
   --color-chart-2: var(--chart-2);
@@ -55,17 +57,38 @@
 
 :root {
   color-scheme: light;
-  --background: oklch(0.985 0.003 247);
+  /* 浅色底对齐 DeerFlow 浅色模式的暖白（它整套中性色是 hue 87.47 / chroma 0.0098 的暖灰阶，
+     我们原来是 hue 247 的冷白）。**只改这一个 token**，作用域天然隔离：
+     - `.dark` / `.black` 各自重声明了 --background，且在文件里位于 `:root` 之后 → 不受影响；
+     - `.login-page` 在容器作用域重声明了整套浅色 token（登录页根节点即该 class），
+       且登录页用 idc.jpg 背景图 + bg-white/10 卡片、不引用 --background → 不受影响。 */
+  --background: oklch(0.9855 0.0098 87.47);
+  /* 聊天气泡（回答框 / 提问框）专用底色 = 浅米色（DeerFlow 浅色 --secondary 同款暖色）。
+     刻意不复用全局 --secondary：后者还被输入框的附件胶囊(bg-secondary/60)、按钮、徽标、
+     搜索框、会话列表 hover 等一大片复用，改它会连带改到输入区。 */
+  --bubble: oklch(0.955 0.0098 87.47);
   --foreground: oklch(0.21 0.02 257);
-  --card: oklch(1 0 0);
+  /* 卡面/浮层不再用中性纯白 oklch(1 0 0)：a neutral white 摆在暖色页面底旁边会显得"发蓝"。
+     取 DeerFlow 浅色 --card 同款（同亮度、带 hue 87.47 暖调），仍比页面底(0.9855)略亮，
+     保持"卡面浮起"的层次。--card 是全局卡面：工具卡片、图表卡、会话侧栏、输入框容器、
+     各页面的 Card 组件等都走它。 */
+  --card: oklch(1 0.0098 87.47);
+  /* 工具调用框（内嵌面板）底色：比气泡(--bubble 0.967)再深一档，读作"嵌进气泡里的一块"。
+     原来用 bg-card/85，而 --card 是 1.0（最亮）→ 叠在气泡上≈0.99，比气泡还亮，方向是反的。 */
+  --panel: oklch(0.925 0.0098 87.47);
   --card-foreground: oklch(0.21 0.02 257);
-  --popover: oklch(1 0 0);
+  --popover: oklch(1 0.0098 87.47);
   --popover-foreground: oklch(0.21 0.02 257);
   --primary: oklch(0.55 0.17 256);
   --primary-foreground: oklch(0.99 0.005 247);
-  --secondary: oklch(0.967 0.005 247);
+  /* --secondary 与 --muted 浅色下同值，必须一起改（否则同一种浅灰会分裂成冷/暖两套：
+     按钮 secondary 变体、输入框附件胶囊走 --secondary；行内代码、工具卡 hover 走 --muted）。
+     保持原亮度 0.967，只换到暖族 hue 87.47 / chroma 0.0098，与 --card / --bubble / 表头同族。
+     覆盖到的面：产物卡的「下载/查看/在看板中查看/查看表格」按钮、badge、secondary 按钮、
+     附件胶囊、会话搜索框、行内代码、工具卡 hover 等。 */
+  --secondary: oklch(0.967 0.0098 87.47);
   --secondary-foreground: oklch(0.34 0.02 257);
-  --muted: oklch(0.967 0.005 247);
+  --muted: oklch(0.967 0.0098 87.47);
   --muted-foreground: oklch(0.55 0.015 257);
   --accent: oklch(0.95 0.02 256);
   --accent-foreground: oklch(0.4 0.12 256);
@@ -82,22 +105,30 @@
   --chart-4: oklch(0.62 0.15 155);
   --chart-5: oklch(0.58 0.21 27);
   --chart-6: oklch(0.55 0.18 290);
+  --chart-7: oklch(0.60 0.17 335);
+  --chart-8: oklch(0.62 0.14 110);
   --radius: 0.625rem;
-  --sidebar: oklch(1 0 0);
+  /* 导航面（<aside> 用 bg-sidebar）对齐 DeerFlow 浅色：比页面底(--background 0.9855)略深的暖灰，
+     这样导航读作"一块独立的面"而不是贴白。accent/border 一并换同族，否则暖色导航上会浮出冷蓝
+     hover 与冷灰描边。品牌蓝（--sidebar-primary / --sidebar-accent-foreground）不动。
+     作用域隔离：.dark / .black 各自声明了本族 token；登录页不用 sidebar 类且自带 token 作用域。 */
+  --sidebar: oklch(0.965 0.0098 87.47);
   --sidebar-foreground: oklch(0.21 0.02 257);
   --sidebar-primary: oklch(0.55 0.17 256);
   --sidebar-primary-foreground: oklch(0.99 0.005 247);
-  --sidebar-accent: oklch(0.95 0.02 256);
+  --sidebar-accent: oklch(0.925 0.0098 87.47);
   --sidebar-accent-foreground: oklch(0.4 0.12 256);
-  --sidebar-border: oklch(0.92 0.006 247);
+  --sidebar-border: oklch(0.922 0.0098 87.47);
   --sidebar-ring: oklch(0.55 0.17 256);
 }
 
 .dark {
   color-scheme: dark;
   --background: oklch(0.208 0.04 265);
+  --bubble: oklch(0.33 0.04 260);   /* = 深色 --secondary，观感与改动前一致 */
   --foreground: oklch(0.968 0.007 247);
   --card: oklch(0.279 0.04 260);
+  --panel: oklch(0.287 0.04 260);   /* ≈ 原 bg-card/85 叠气泡的合成色，观感不变 */
   --card-foreground: oklch(0.968 0.007 247);
   --popover: oklch(0.31 0.04 260);
   --popover-foreground: oklch(0.968 0.007 247);
@@ -122,6 +153,8 @@
   --chart-4: oklch(0.7 0.14 175);
   --chart-5: oklch(0.704 0.191 22);
   --chart-6: oklch(0.68 0.19 310);
+  --chart-7: oklch(0.70 0.17 335);
+  --chart-8: oklch(0.72 0.14 110);
   --sidebar: oklch(0.19 0.04 265);
   --sidebar-foreground: oklch(0.93 0.01 252);
   --sidebar-primary: oklch(0.715 0.143 215);
@@ -138,8 +171,10 @@
 .black {
   color-scheme: dark;
   --background: oklch(0.24 0.0036 106.64);
+  --bubble: oklch(0.31 0.0036 106.64);   /* = 黑色 --secondary，观感与改动前一致 */
   --foreground: oklch(0.985 0 0);
   --card: oklch(0.27 0.0036 106.64);
+  --panel: oklch(0.276 0.0036 106.64);   /* ≈ 原 bg-card/85 叠气泡的合成色，观感不变 */
   --card-foreground: oklch(0.985 0 0);
   --popover: oklch(0.29 0.0036 106.64);
   --popover-foreground: oklch(0.985 0 0);
@@ -164,6 +199,8 @@
   --chart-4: oklch(0.627 0.265 303.9);
   --chart-5: oklch(0.556 0 0);
   --chart-6: oklch(0.68 0.17 290);
+  --chart-7: oklch(0.68 0.17 335);
+  --chart-8: oklch(0.70 0.14 110);
   --sidebar: oklch(0.25 0.0036 106.64);
   --sidebar-foreground: oklch(0.985 0 0);
   --sidebar-primary: oklch(1 0 0);
@@ -248,7 +285,8 @@
   text-align: left;
   font-weight: 600;
   color: var(--foreground);
-  background: oklch(0.967 0.005 247);
+  /* 表头：浅米色（DeerFlow 浅色 --muted 同值），不再冷色 */
+  background: oklch(0.97 0.0098 87.47);
   white-space: nowrap;
   border-right: 1px solid var(--border);
 }
@@ -268,7 +306,7 @@
   border-bottom: none;
 }
 .assistant-table tbody tr:hover td {
-  background: oklch(0.93 0.015 250);
+  background: oklch(0.94 0.0098 87.47);
 }
 
 .dark .assistant-table th {
@@ -298,19 +336,23 @@
   line-height: 1.3;
   margin: 1em 0 0.5em;
 }
+/* 回答里的标题整体调小一档：正文是气泡的 text-sm(14px)，原来 h1=20px/h2=18px 比正文大四成，
+   像「阶段 1 · 广度扫描」这类章节标题显得压正文一头（h1 的 20px 在全仓 UI 里也没别处用）。
+   现改为 16/15/14/13.5px——层级仍可辨（h2 保留下划线、h4 保留弱化色）。
+   注意：这块样式对话回答与 .md 产物预览共用（MarkdownContent 外层即 .assistant-msg）。 */
 .assistant-msg h1 {
-  font-size: 1.25rem;
+  font-size: 1rem;
 }
 .assistant-msg h2 {
-  font-size: 1.125rem;
+  font-size: 0.9375rem;
   padding-bottom: 0.2em;
   border-bottom: 1px solid var(--border);
 }
 .assistant-msg h3 {
-  font-size: 1rem;
+  font-size: 0.875rem;
 }
 .assistant-msg h4 {
-  font-size: 0.9375rem;
+  font-size: 0.84375rem;
   color: oklch(0.45 0.02 257);
 }
 .assistant-msg h1:first-child,
@@ -365,7 +407,8 @@
 .assistant-msg pre {
   overflow-x: auto;
   border-radius: 0.5rem;
-  background: oklch(0.967 0.005 247);
+  /* 代码块底色：浅米色（同表头），不再冷色 */
+  background: oklch(0.97 0.0098 87.47);
   padding: 0.75rem 1rem;
   margin: 0.75rem 0;
 }
@@ -432,4 +475,42 @@
 [data-tip]:hover::after {
   opacity: 1;
   visibility: visible;
+}
+
+/* ========== 日期区间日历（react-day-picker）==========
+   只覆盖 .rdp-root 作用域内的变量与少量交互色，全部映射到平台 token，
+   明暗主题自动跟随；不动全局 token，也不影响其它页面。 */
+.rdp-root.rdp-root {
+  --rdp-accent-color: var(--primary);
+  --rdp-accent-background-color: var(--muted);
+  --rdp-today-color: var(--primary);
+  /* 端点不再画饱和实心蓝圆：浅色圆底 + 主色文字，靠形状区分起止 */
+  --rdp-selected-border: 2px solid transparent;
+  --rdp-range_middle-background-color: color-mix(in oklch, var(--primary) 10%, var(--popover));
+  --rdp-range_start-date-background-color: color-mix(in oklch, var(--primary) 40%, var(--popover));
+  --rdp-range_end-date-background-color: color-mix(in oklch, var(--primary) 40%, var(--popover));
+  --rdp-range_start-color: var(--primary);
+  --rdp-range_end-color: var(--primary);
+  --rdp-day-height: 2.25rem;
+  --rdp-day-width: 2.25rem;
+  --rdp-day_button-height: 2.1rem;
+  --rdp-day_button-width: 2.1rem;
+  --rdp-months-gap: 1.5rem;
+  color: var(--popover-foreground);
+  font-size: 0.8rem;
+}
+.rdp-root .rdp-caption_label {
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+/* 库默认把选中日放大加粗（font-size: large），一选整段都在跳；只保留一点字重 */
+.rdp-root .rdp-selected {
+  font-size: inherit;
+  font-weight: 600;
+}
+.rdp-root .rdp-day:not(.rdp-selected, .rdp-disabled) .rdp-day_button:hover {
+  background-color: var(--muted);
+}
+.rdp-root .rdp-outside {
+  color: var(--muted-foreground);
 }

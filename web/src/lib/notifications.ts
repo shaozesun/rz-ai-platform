@@ -28,19 +28,6 @@ export function pushInAppNotification(
   });
 }
 
-/** 标题闪烁：后台完成时改标签标题，回到页面后恢复。 */
-function flashTitle(title: string): void {
-  const original = document.title;
-  document.title = `${title} · ${original}`;
-  const restore = () => {
-    document.title = original;
-    window.removeEventListener('focus', restore);
-    document.removeEventListener('visibilitychange', restore);
-  };
-  window.addEventListener('focus', restore);
-  document.addEventListener('visibilitychange', restore);
-}
-
 export function isNotificationSupported(): boolean {
   return typeof Notification !== 'undefined';
 }
@@ -72,7 +59,6 @@ export function notifyTurnFinished(text?: string, target?: NotifyTarget): void {
   const title = '对话生成完成';
   const body = trimmed ? `「${trimmed}」的回复已生成，点击查看` : 'AI 回复已生成完毕，点击查看';
   pushInAppNotification(title, body, target);
-  if (document.hidden) flashTitle(`🔔 ${title}`);
   if (isNotificationSupported() && Notification.permission === 'granted') {
     showNotification(title, body);
   }

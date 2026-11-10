@@ -29,6 +29,9 @@ async def save_agent_audit_log(
       'question': question[:500],
       'answer': answer[:2000] if answer else '',
       'tool_calls': json.dumps(tool_calls, ensure_ascii=False),
+      # 工具调用次数单独存一份数字：tool_calls 是 JSON 字符串没法 $sum，
+      # 仪表盘「API 调用总量」可以直接聚合这个字段（2026-09-28 加）
+      'tool_call_count': len(tool_calls or []),
       'tokens_in': tokens_used.get('input', 0),
       'tokens_out': tokens_used.get('output', 0),
       'duration_ms': duration_ms,

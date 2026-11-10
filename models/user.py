@@ -68,6 +68,9 @@ class User(BaseModel):
   # 飞书 IM 绑定（空 = 未绑定；open_id 非敏感，无需加密）
   lark_open_id: str = ''      # 飞书用户 open_id
   lark_name: str = ''         # 飞书昵称
+  # 个人微信 iLink 绑定（空 = 未绑定）
+  wechat_user_id: str = ''    # iLink 用户 id（形如 xxx@im.wechat）
+  wechat_name: str = ''       # 微信昵称
 
 
 class UserPublic(BaseModel):
@@ -85,6 +88,8 @@ class UserPublic(BaseModel):
   mgmt_uid: str = ''
   dept_name: str = ''
   lark_bound: bool = False    # 飞书是否已绑定（open_id != ''）
+  wechat_bound: bool = False  # 个人微信是否已绑定（wechat_user_id != ''）
+  wechat_name: str = ''       # 微信昵称
 
 
 # ==================== 权限申请 ====================

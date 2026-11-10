@@ -142,6 +142,11 @@ class MongoDBManager:
 
     # llm_usage
     await _safe_index('llm_usage', lambda: db.llm_usage.create_index([('caller', ASCENDING), ('created_at', ASCENDING)]))
+    # 仪表盘按周区间统计用量（无 caller 过滤），上面的复合索引首列是 caller 用不上
+    await _safe_index('llm_usage', lambda: db.llm_usage.create_index([('created_at', ASCENDING)]))
+
+    # agent_runs（Agent 运行审计）—— 总览页按周区间扫 tool_calls 统计调用数
+    await _safe_index('agent_runs', lambda: db.agent_runs.create_index([('created_at', ASCENDING)]))
 
     # kb_files 文件索引
     await _safe_index('kb_files', lambda: db.kb_files.create_index(
@@ -161,6 +166,15 @@ class MongoDBManager:
     # scheduled_task_runs（定时任务运行记录）
     await _safe_index('scheduled_task_runs', lambda: db.scheduled_task_runs.create_index('run_id', unique=True))
     await _safe_index('scheduled_task_runs', lambda: db.scheduled_task_runs.create_index([('task_id', ASCENDING), ('triggered_at', DESCENDING)]))
+
+    # doc_update_snapshots（月度文档更新检查：一期快照一条文档，同 period_key 覆盖）
+    await _safe_index('doc_update_snapshots', lambda: db.doc_update_snapshots.create_index('snapshot_id', unique=True))
+    await _safe_index('doc_update_snapshots', lambda: db.doc_update_snapshots.create_index([('taken_at', DESCENDING)]))
+
+    # skill_states（用户级技能启用状态：一人一技能一条）
+    await _safe_index('skill_states', lambda: db.skill_states.create_index(
+      [('user_id', ASCENDING), ('skill_name', ASCENDING)], unique=True
+    ))
 
     if errors:
       import logging

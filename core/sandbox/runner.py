@@ -22,6 +22,8 @@ import time
 import sys
 from pathlib import Path
 
+from core.sandbox.report_style import RZ_MPL_SRC
+
 logger = logging.getLogger(__name__)
 
 # 产物扫描时忽略的沙箱内部文件（数据集 + chart 提取物 + 分析脚本）
@@ -101,8 +103,16 @@ def _apply_limits():
 _apply_limits()
 
 # 2. 禁用网络外连（socket / urllib 置为抛异常）
+# 异常同时继承 OSError：部分库只按 OSError 降级。matplotlib 的 fontconfig 探测
+# （不设 MPL_IGNORE_SYSTEM_FONTS 时会调 `fc-list`）只捕获 OSError/CalledProcessError，
+# 纯 RuntimeError 会让它在字体缓存缺失时直接崩掉 —— 2026-10-19 事故：容器重建后
+# 缓存文件不在，所有报告卡在 import matplotlib → 这里。
+class _SandboxBlocked(RuntimeError, OSError):
+    pass
+
+
 def _block(*args, **kwargs):
-    raise RuntimeError('沙箱内网络访问已禁用')
+    raise _SandboxBlocked('沙箱内网络访问已禁用')
 import socket
 # socket.socket 不能替换成普通函数：ssl.py 的 `class SSLSocket(socket)` 需要子类化
 # 真实 socket 类，换成函数会让 reportlab / python-pptx（模块级 import ssl）整体导入
@@ -110,7 +120,7 @@ import socket
 # 连接/发送/监听等方法，保留可被 ssl 子类化，网络外联依然全封。
 class _NoNetSocket(socket.socket):
     def _deny(self, *args, **kwargs):
-        raise RuntimeError('沙箱内网络访问已禁用')
+        raise _SandboxBlocked('沙箱内网络访问已禁用')
     connect = _deny
     connect_ex = _deny
     send = _deny
@@ -155,16 +165,34 @@ try:
 except Exception:
     pass
 
-# 3. 预载数据集（cwd 内 data.csv）
-import pandas as pd
-df = pd.read_csv('data.csv')
+# 3. 预载数据集（cwd 内 data.csv）。**容忍没有 data.csv**：workspace（成文/文档类脚本的
+# 保留目录）按设计就不放数据集，早先这里硬读会让那些脚本在预载这一行就崩、一行都跑不到
+# （2026-09 实测：模型要生成 Word，连撞 4 次同一个 read_csv traceback，最后退回 Markdown）。
+try:
+    import pandas as pd
+    df = pd.read_csv('data.csv')
+except FileNotFoundError:
+    df = None
+    # 口吻必须中性：沙箱里任何"出错/异常"字样都会被模型当成环境故障，进而放弃作业
+    print('（本目录无 data.csv：df 未预载，适合成文/文档类脚本）')
 
 # 3.4 预热 WeasyPrint（HTML→PDF 报告依赖）：其底层用 cffi dlopen Pango/Cairo，
 # 首次 import 时会触发 `import ctypes.util`。这发生在下面 3.5 给 ctypes 打桩*之前*，
 # 让 cffi 拿到真实 ctypes 完成 dlopen；用户代码后续 import weasyprint 时模块已在
 # sys.modules 缓存里，不会重新触发 ctypes.util 导入。不装 weasyprint 的环境静默跳过。
+#
+# **必须静音 stdout**：缺 Pango/Cairo 时 WeasyPrint 会自己往 stdout 打一段多行告警
+# （"WeasyPrint could not import some external libraries... troubleshooting"）。
+# 每次沙箱执行都是新进程 → **每一次执行**（哪怕只是算个 pandas 均值）的输出里都带着它，
+# 模型读到后判断成"执行环境有问题"，于是要点名产出 Word/PDF 时放弃产文件、退回 Markdown
+# （2026-09 实测：模型原话「由于 Word 文档生成遇到技术困难，我已生成 Markdown 版本」，
+# 而实际 docx 在沙箱里跑得通）。预热本身照旧，只吞掉这段噪音。
 try:
-    import weasyprint  # noqa: F401
+    import contextlib as _ctxlib
+    import io as _io
+
+    with _ctxlib.redirect_stdout(_io.StringIO()):
+        import weasyprint  # noqa: F401
 except Exception:
     pass
 
@@ -179,21 +207,119 @@ class _NoNativeModule:
 for _m in ('ctypes', '_ctypes', 'multiprocessing'):
     sys.modules[_m] = _NoNativeModule()
 
+# 3.5b HTML→PDF 兜底：把 weasyprint.HTML 换成**自带本地资源加载器**的子类。
+# 为什么必须兜底（实测三次翻车）：提示词里连写"用 render_pdf / 别自己调 WeasyPrint"，
+# 模型三轮回回都自己写 —— `HTML(string=.., base_url='.')`、`<img src="file://charts/x.png">`；
+# 而沙箱禁网把 urllib 一起禁掉，WeasyPrint 读不到本地图片与字体 → **图静默全丢**（不报错）。
+# 换成子类后，模型怎么写都能读到本地图（相对路径按 cwd 解析），也不再受 base_url 写法影响。
+def _rz_url_response(url, file_obj, mime):
+    """构造 url_fetcher 的返回值：WeasyPrint <70 只认 dict；>=70 要求
+    URLFetcherResponse（70.0 删掉了 dict 兼容转换，返回 dict 会断言失败）。"""
+    try:
+        from weasyprint.urls import URLFetcherResponse
+    except ImportError:
+        return {'file_obj': file_obj, 'mime_type': mime, 'redirected_url': url}
+    return URLFetcherResponse(
+        url=url, body=file_obj, headers={'Content-Type': mime})
+
+
+def _rz_local_fetch(url, *args, **kwargs):
+    import mimetypes
+    from pathlib import Path as _P
+    raw = str(url)
+    if raw.startswith('http://') or raw.startswith('https://'):
+        raise RuntimeError('沙箱内不允许联网加载资源')
+    p = _P(raw[7:] if raw.startswith('file://') else raw)
+    if not p.is_absolute():
+        p = _P.cwd() / p
+    mime = mimetypes.guess_type(str(p))[0] or 'application/octet-stream'
+    return _rz_url_response(p.as_uri(), p.open('rb'), mime)
+
+
+try:
+    import weasyprint as _wp
+    class _RzHTML(_wp.HTML):
+        def __init__(self, *args, **kwargs):
+            kwargs.setdefault('url_fetcher', _rz_local_fetch)
+            super().__init__(*args, **kwargs)
+    _wp.HTML = _RzHTML
+except Exception:
+    pass
+
+
+# 3.6 平台提供的 HTML→PDF（报告脚本请用它，别自己调 WeasyPrint）
+#
+# 为什么必须用它：**WeasyPrint 默认用 urllib 取资源（图片/字体），而沙箱为了防外泄把
+# urllib 禁了** → 本地图片也读不到，PDF 里图表**静默全丢**（实测：只报
+# "Failed to load image ... 沙箱内网络访问已禁用"，文字照常、看不出缺图）。
+# 这里给它一个自己的 url_fetcher：**只认本地文件（纯 open 读）**，http/https 一律拒绝 ——
+# 既能读图，又不会绕过禁网（真正的网络出口 socket 依然是封的）。顺带把两种"写法坑"也治了：
+#   ① `base_url='.'` 这类相对基准 → 统一按 HTML 所在目录解析
+#   ② `<img src="file://charts/x.png">`（非法 URL）→ 取其路径部分再按 ① 解析
+# 用法：render_pdf('report.html', '事件工单分析报告.pdf')；需要独立 CSS 时传 css='...'
+def render_pdf(html_path, pdf_path, css=None):
+    import mimetypes
+    import re as _re
+    from pathlib import Path as _P
+    from weasyprint import HTML as _HTML, CSS as _CSS
+
+    _html_file = _P(html_path).resolve()
+    _base = _html_file.parent
+
+    # 先把 HTML 里"畸形 file:// URL"（`file://charts/x.png` 这种，host 被当成 charts，
+    # 路径会变 `//charts/x.png`）掰正成相对路径；再把相对路径统一锚到 HTML 所在目录。
+    _div = open(_html_file, encoding='utf-8').read()
+    _div = _re.sub(r'(?<!:)file://(?![/])', '', _div)
+
+    def _fetch(url, *args, **kwargs):
+        raw = str(url)
+        if raw.startswith('http://') or raw.startswith('https://'):
+            raise RuntimeError('沙箱内不允许联网加载资源')
+        path = raw[7:] if raw.startswith('file://') else raw
+        p = _P(path)
+        if not p.is_absolute():
+            p = _base / p
+        mime = mimetypes.guess_type(str(p))[0] or 'application/octet-stream'
+        # 直接给文件对象：绕开 urllib 与二次路径解析；url 用真实绝对路径
+        return _rz_url_response(p.as_uri(), p.open('rb'), mime)
+
+    stylesheets = [_CSS(string=css)] if css else None
+    _HTML(string=_div, base_url=_base.as_uri() + '/', url_fetcher=_fetch).write_pdf(
+        str(pdf_path), stylesheets=stylesheets)
+    return str(pdf_path)
+
+
+# 3.7 报告统一样式（定义 rz_setup/rz_fig/rz_save/RZ_COLORS，并把 render_pdf 的缺省 CSS
+# 换成统一版式）。只是**定义**、不 import matplotlib —— 不画图的脚本一分钱不付。
+# 源码唯一定义在 core/sandbox/report_style.py，由 _build_wrapper() 注入。
+__RZ_STYLE__
+
 # 4. 用户代码
 __USER_CODE__
 
-# 5. 结构化图表数据提取：用户把结果赋给 `result`（DataFrame/Series/list[dict]/dict）
+# 5. 结构化图表数据提取：用户把结果赋给 `result`
+#    （DataFrame/Series，或 dict/list 且内部可嵌套 DataFrame/Series——支持一次
+#      exec 产出多组聚合：result = {'trend': df1, 'pie': df2}）
+def __rz_jsonable(_o, _d=0):
+    if _d > 6:
+        return None
+    if isinstance(_o, pd.DataFrame):
+        return json.loads(_o.to_json(orient='records', force_ascii=False))
+    if isinstance(_o, pd.Series):
+        return json.loads(_o.reset_index().to_json(orient='records', force_ascii=False))
+    if isinstance(_o, dict):
+        return {k: __rz_jsonable(v, _d + 1) for k, v in _o.items()}
+    if isinstance(_o, (list, tuple)):
+        return [__rz_jsonable(v, _d + 1) for v in _o]
+    return _o
+
+
 __CHART_DATA__ = None
 if 'result' in dir():
     _r = result
     if _r is not None:
         try:
-            if isinstance(_r, pd.DataFrame):
-                __CHART_DATA__ = json.loads(_r.to_json(orient='records', force_ascii=False))
-            elif isinstance(_r, pd.Series):
-                __CHART_DATA__ = json.loads(_r.reset_index().to_json(orient='records', force_ascii=False))
-            else:
-                __CHART_DATA__ = _r
+            __CHART_DATA__ = __rz_jsonable(_r)
             json.dumps(__CHART_DATA__, ensure_ascii=False)  # 序列化校验
         except Exception:
             __CHART_DATA__ = None
@@ -212,6 +338,7 @@ def _build_wrapper(code: str, *, timeout: int, max_memory_mb: int) -> str:
     _WRAPPER_TEMPLATE
     .replace('__MAX_MEMORY_MB__', str(max_memory_mb))
     .replace('__TIMEOUT__', str(timeout))
+    .replace('__RZ_STYLE__', RZ_MPL_SRC)
     .replace('__USER_CODE__', code)
   )
 
@@ -267,7 +394,17 @@ async def run_python(
   child_env['OMP_NUM_THREADS'] = '1'
   child_env['MKL_NUM_THREADS'] = '1'
   child_env['NUMEXPR_NUM_THREADS'] = '1'
+  # 无 DISPLAY 环境下 matplotlib 必须用 Agg：模型即使没调 rz_setup() 也不会因为
+  # 选中交互后端而崩。挂环境变量而不是在 wrapper 里 import（不画图的脚本零代价）。
+  child_env['MPLBACKEND'] = 'Agg'
   if cjk_font_path:
+    # 字体文件是构建不变式（随仓库提交、镜像里也在），不存在说明构建坏了：早报错，
+    # 否则脚本里 matplotlib.addfont 会抛难懂的 FileNotFoundError、WeasyPrint 直接静默丢汉字
+    if not Path(str(cjk_font_path)).is_file():
+      raise RuntimeError(
+        f'中文字体文件不存在: {cjk_font_path}（报告出图会缺字）；'
+        'assets/fonts/wqy-microhei.ttc 需提交进 git 并重建镜像'
+      )
     child_env['RZ_CJK_FONT'] = str(cjk_font_path)
   if extra_lib_path:
     # WeasyPrint 依赖的 Pango/Cairo 在非系统路径时（如 conda env），注入搜索路径。

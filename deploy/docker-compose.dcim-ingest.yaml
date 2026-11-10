@@ -1,0 +1,114 @@
+# DCIM Kafka 接入：消费端叠加片段（overlay）—— worker + kafka-ui
+#
+# 用法（**必须与主 compose 叠加**，一条命令起）：
+#   cd deploy
+#   docker compose -f docker-compose.yaml -f docker-compose.dcim-ingest.yaml up -d
+#   注意：单独用本文件时 app-net 会被当成新网络另建，worker 连不上 postgres，务必带 -f docker-compose.yaml。
+#
+# 架构（2026-09 变更）：
+#   broker 与各 topic（配置 ×3 / 实时 / 告警 / 告警工单）均由 **DCIM 提供**，我方**只消费**，不再自建 Kafka。
+#   （原自建方案保留在 deploy/kafka-prod/，见该目录 README，生产不再使用。）
+#
+# 说明：
+#   - 同镜像、不同 command（python -m service.dcim_ingest），与 web 解耦；
+#   - worker **自动建表**（幂等），无需手工执行 SQL；只需 PG 里先建好空库 dcim；
+#   - Kafka 连接参数（地址/协议/SASL 账号）全部来自 config/.env.production 的 KAFKA_* 段，
+#     本文件**不再覆盖**，避免两处真相；
+#   - 容器出站访问对方 broker 走 docker 桥的默认 NAT，不需要专用网络；
+#   - **extra_hosts 是必需的**：对方 5 个园区的 advertised.listeners 报的是域名（实测），
+#     容器里解析不了就会连不上。映射到 broker 的 IP（不是中转机），让服务器侧的改道规则命中。
+services:
+  dcim-ingest:
+    image: rz-ai-backend:latest
+    container_name: rz-dcim-ingest
+    command: ["python", "-m", "service.dcim_ingest"]
+    restart: unless-stopped
+    ulimits:
+      # ⚠️ 容器默认的 fd 软限只有 1024，而本进程要维护大量 Kafka 连接（11 园区 × 6 topic，
+      # 实时按 `DCIM_REALTIME_CONCURRENCY` 每园区多条，默认 4 时约 99 条；调到 8 时约 143 条）
+      # + TDengine + PG。实测已用 389（38%）；规模化或断线重连风暴下会撞上 →
+      # `Too many open files` → 消费线程连不上 Kafka，**进程看着还活着**、
+      # 只是某个园区的数据不再更新（只能翻日志才发现）。
+      # 「fd 耗尽」是本机**已经发生过一次**的事故类型（TDengine udfd 循环那次），
+      # 而 TDengine 自己配的就是 65536 —— 这里与它保持一致。
+      nofile:
+        soft: 65536
+        hard: 65536
+    # 资源上限是**保险丝，不是性能配置**：它的职责是「几个容器一起失控也不会撑爆宿主机」。
+    # 为什么必须有：本服务是链路里唯一会把消息堆在内存里的组件 —— 消费追不上时
+    # librdkafka 的接收队列一直涨。没有上限，涨到吃光内存时内核 OOM killer 挑的
+    # 不一定是它，可能是 rz-backend（平台本体）。
+    # 取值 10g = 当前 182MB 的 55 倍、宿主机内存的 6%：远高于正常峰值，又远低于会伤到别人。
+    # 真实规模上来后按 `docker stats` 的峰值 ×2 校准。
+    # ⚠️ 撞上限的表现是容器反复重启（`RestartCount` 涨）—— 那是「该调大了」的信号，
+    #    不是「限制有害」，别直接删掉这几行。代价可控：各类消费者都是**写库成功才提交
+    #    offset**（手动提交、at-least-once），被 kill 后按 `(子表, ts)` 覆盖重放，不丢数据。
+    # 多进程（`DCIM_INGEST_PROCESSES>1`）时这些连接与内存按进程数分摊，上限仍按整个容器算。
+    # 实测 6 进程 + 并发 8 的常驻内存约 6~7G（librdkafka 接收队列按园区分摊，不额外放大）。
+    mem_limit: 10g
+    # 禁用 swap：swap 抖动会让整台机器变卡（比被杀掉更糟）。
+    # Docker 默认 memswap 是 mem_limit 的 2 倍，显式对齐才真的「只给 10g」。
+    memswap_limit: 10g
+    # 与 backend 用同一份容器配置；DCIM_KAFKA_ENABLED / DCIM_PG_DSN / KAFKA_* 都从这里注入
+    env_file:
+      - config/.env.production
+    volumes:
+      # 园区集群清单：挂进来而不是打进镜像，改清单只需重启容器（rsync 后即生效）
+      - ./config/dcim-clusters.json:/app/deploy/config/dcim-clusters.json:ro
+    # 对方有 5 个园区的 advertised.listeners 报的是**域名**（实测，见 docs/dcim-kafka-relay-network.md）：
+    # 客户端连上 bootstrap 后会被引导到这些域名，容器里解析不了 → 必须映射。
+    # **映射到 broker 的 IP（不是中转机）**：我们服务器侧的改道规则是按 broker IP 匹配的，
+    # 解析到 IP 后正好命中（`-d 10.4.0.60 --dport 9092 → 中转机:19001`）。
+    # 其余 6 个园区（惠州×4 / 重庆 / 佛山）advertised 本来就是 IP，不需要在这里配。
+    extra_hosts:
+      - "dcim-broker-rztohj:10.4.0.60"
+      - "dcim-broker-lfrzb:10.12.251.18"
+      - "dcim-broker-lfbstohj:10.12.250.18"
+      - "dcim-broker-phtolf:172.20.222.46"
+      - "dcim-broker-phbtohj:172.20.233.31"
+    networks:
+      - app-net          # 主 compose 定义（rz-app-net）：连 postgres 用
+    # 覆盖镜像自带的 HEALTHCHECK：那个打的是 http://localhost:8000/api/v1/health，
+    # 而本容器跑的是 worker、**没有 HTTP 服务** —— 不覆盖就会从第一天起一直 unhealthy
+    # （实测连续失败 28092 次 ≈ 9.7 天，纯属误报）。
+    # 改成看「心跳文件新鲜度」：每条消费线程每 30s 刷一次（全容器约 99~143 条，任一进程
+    # 在轮转都会刷），卡死/全挂就会变红。
+    healthcheck:
+      test: ["CMD-SHELL", "find /tmp/dcim-ingest.alive -mmin -3 2>/dev/null | grep -q ."]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 90s
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+  # Kafka 可视化管理界面：看对方推的消息原文 + 我们消费组的 lag
+  # 连接参数单独放 config/kafka-ui.env（**刻意不用 config/.env.production**）：
+  #   那是自家镜像的密钥集（含 JWT_PRIVATE_KEY、Mongo/LLM/MinerU 凭据），
+  #   不该塞进这个第三方镜像。kafka-ui 的变量名也和 worker 不同（KAFKA_CLUSTERS_0_*），本就该分开维护。
+  # 安全：界面默认无登录认证，端口只绑内网网卡，不放公网。
+  kafka-ui:
+    image: docker.m.daocloud.io/provectuslabs/kafka-ui:latest
+    container_name: rz-dcim-kafka-ui
+    restart: unless-stopped
+    env_file:
+      - config/kafka-ui.env
+    # 同 worker：对方 5 个园区的 advertised 是域名，容器里要能解析（映射到 broker IP）
+    extra_hosts:
+      - "dcim-broker-rztohj:10.4.0.60"
+      - "dcim-broker-lfrzb:10.12.251.18"
+      - "dcim-broker-lfbstohj:10.12.250.18"
+      - "dcim-broker-phtolf:172.20.222.46"
+      - "dcim-broker-phbtohj:172.20.233.31"
+    ports:
+      - "10.100.17.151:8085:8080"
+    networks:
+      - app-net
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "3"

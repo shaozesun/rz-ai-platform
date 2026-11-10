@@ -128,10 +128,8 @@ class ModelGateway:
     )
 
     if usage:
-      asyncio.ensure_future(_log_usage(
-        user_id=None, model=model_name,
-        tokens_in=usage.prompt_tokens, tokens_out=usage.completion_tokens,
-        caller=caller,
+      asyncio.ensure_future(log_llm_usage(
+        caller, model_name, usage.prompt_tokens, usage.completion_tokens,
       ))
 
     if cache:
@@ -183,11 +181,8 @@ class ModelGateway:
 
     elapsed = time.time() - start
     if usage:
-      asyncio.ensure_future(_log_usage(
-        user_id=None, model=model_name,
-        tokens_in=usage.prompt_tokens,
-        tokens_out=usage.completion_tokens,
-        caller=caller,
+      asyncio.ensure_future(log_llm_usage(
+        caller, model_name, usage.prompt_tokens, usage.completion_tokens,
       ))
     logger.info(
       f'model={model_name} stream '
@@ -258,10 +253,8 @@ class ModelGateway:
     )
 
     if usage:
-      asyncio.ensure_future(_log_usage(
-        user_id=None, model=model_name,
-        tokens_in=usage.prompt_tokens, tokens_out=usage.completion_tokens or 0,
-        caller='vision',
+      asyncio.ensure_future(log_llm_usage(
+        'vision', model_name, usage.prompt_tokens, usage.completion_tokens or 0,
       ))
 
     return content_text
@@ -346,8 +339,16 @@ class ModelGateway:
     return scores
 
   def as_langchain_model(self, model_name: str | None = None, temperature: float | None = None):
-    """返回 LangChain BaseChatModel，供 langgraph Agent 使用"""
+    """返回 LangChain BaseChatModel，供 langgraph Agent 使用。
+
+    挂 `UsageLoggingHandler` 记账：LangChain 这条链路**不经过** chat()/vision()，
+    原先完全不写 `llm_usage`（仪表盘「算力消耗」因此少算一个数量级，2026-09-28 事故）。
+    挂在这里是因为本方法覆盖了 Agent 侧全部 LangChain 调用 —— 意图规划
+    （query_planner）与图的主循环/工具循环都用它，一处挂上就不会漏。
+    """
     from langchain_openai import ChatOpenAI
+
+    from core.agent.usage import UsageLoggingHandler
 
     name = model_name or settings.LLM_MODEL
     return ChatOpenAI(
@@ -358,24 +359,47 @@ class ModelGateway:
       timeout=settings.AGENT_LLM_TIMEOUT,
       max_retries=settings.AGENT_LLM_MAX_RETRIES,
       extra_body={'chat_template_kwargs': {'enable_thinking': False}},
+      # 流式请求带 stream_options={"include_usage": true}：不开的话响应里没有 usage，
+      # AIMessage.usage_metadata 恒为 None —— 摘要压缩就没法用「模型上报的真实 token」
+      # 触发，streaming.py 的断流诊断（has_usage_block）也永远为假。已实测本端点支持。
+      stream_usage=True,
+      callbacks=[UsageLoggingHandler('agent')],
     )
 
 
-async def _log_usage(user_id, model, tokens_in, tokens_out, caller):
-    """Fire-and-forget 写入 LLM 用量到 MongoDB（用同步客户端避免事件循环绑定问题）"""
-    import asyncio
+def _usage_doc(user_id, model, tokens_in, tokens_out, caller) -> dict:
+  return {
+    'user_id': user_id,
+    'model': model,
+    'tokens_in': tokens_in,
+    'tokens_out': tokens_out,
+    'caller': caller,
+    'created_at': datetime.now(),
+  }
+
+
+async def log_llm_usage(caller, model, tokens_in, tokens_out, user_id=None):
+    """异步写一条 LLM 用量到 MongoDB（用同步客户端 + to_thread，避免事件循环绑定问题）"""
     try:
       from config.mongodb_conn import mongodb_manager
       await asyncio.to_thread(
         mongodb_manager.sync_db.llm_usage.insert_one,
-        {
-          'user_id': user_id,
-          'model': model,
-          'tokens_in': tokens_in,
-          'tokens_out': tokens_out,
-          'caller': caller,
-          'created_at': datetime.now(),
-        },
+        _usage_doc(user_id, model, tokens_in, tokens_out, caller),
+      )
+    except Exception:
+      logger.warning('LLM 用量写入失败 caller=%s', caller, exc_info=True)
+
+
+def log_llm_usage_sync(caller, model, tokens_in, tokens_out, user_id=None):
+    """同步写一条 LLM 用量。
+
+    供**无运行事件循环**的上下文调用（LangChain 同步链的回调 `on_llm_end`）。
+    在事件循环线程里请用 `log_llm_usage` —— 本函数会阻塞 loop。
+    """
+    try:
+      from config.mongodb_conn import mongodb_manager
+      mongodb_manager.sync_db.llm_usage.insert_one(
+        _usage_doc(user_id, model, tokens_in, tokens_out, caller),
       )
     except Exception:
       logger.warning('LLM 用量写入失败 caller=%s', caller, exc_info=True)

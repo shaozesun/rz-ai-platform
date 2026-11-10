@@ -25,8 +25,66 @@ def _err(message: str) -> dict:
   return {'text_preview': '', 'outline': [], 'error': message}
 
 
+def _docx_structure(doc, path) -> list[str]:
+  """docx 的**结构概要**：告诉模型"有哪些容器、哪些东西必须保住"。
+
+  为什么需要：原来只给纯文本，模型看不到图片/表格/页眉页脚，于是"改文档"只剩"重写"一条路
+  （重写必然丢格式）。要保格式地改，模型得先知道该遍历哪些容器、哪些是改不了的。
+  """
+  import zipfile
+
+  from docx.oxml.ns import qn
+
+  lines: list[str] = []
+  paras = doc.paragraphs
+  headings = sum(
+    1 for p in paras
+    if p.style and ('Heading' in (p.style.name or '') or 'Title' in (p.style.name or ''))
+  )
+  lines.append(f'段落 {len(paras)} 个（其中标题样式 {headings} 个）')
+
+  if doc.tables:
+    detail = '、'.join(
+      f'表{i + 1}（{len(t.rows)}行×{len(t.columns)}列）' for i, t in enumerate(doc.tables)
+    )
+    lines.append(f'表格 {len(doc.tables)} 个：{detail}（在 doc.tables，不在 doc.paragraphs 里）')
+
+  img_pos = [i + 1 for i, p in enumerate(paras) if p._p.findall('.//' + qn('w:drawing'))]
+  if img_pos:
+    shown = '、'.join(map(str, img_pos[:10])) + ('…' if len(img_pos) > 10 else '')
+    lines.append(f'图片/图形 {len(img_pos)} 处（位于第 {shown} 个段落）')
+
+  # 页眉/页脚：逐节统计（不同节可以不同）；脚注/批注是独立的 XML part，只能从包里看
+  hdr = sum(
+    1 for s in doc.sections
+    if any(p.text.strip() for p in s.header.paragraphs)
+  )
+  ftr = sum(
+    1 for s in doc.sections
+    if any(p.text.strip() for p in s.footer.paragraphs)
+  )
+  parts = [f'页眉 {hdr} 节', f'页脚 {ftr} 节']
+  try:
+    names = zipfile.ZipFile(str(path)).namelist()
+    for part, label in (('word/footnotes.xml', '脚注'), ('word/comments.xml', '批注')):
+      if part in names:
+        parts.append(f'{label}（独立 part）')
+  except Exception:
+    pass
+  lines.append('、'.join(parts))
+
+  # 东亚排版：首行缩进 2 字符（firstLineChars）等属性，翻译成英文后应清理
+  ind = sum(
+    1 for e in doc.element.body.findall('.//' + qn('w:ind'))
+    if e.get(qn('w:firstLineChars'))
+  )
+  if ind:
+    lines.append(f'东亚排版：{ind} 段带「首行缩进 N 字符」——改写成英文后应清掉这类属性')
+  return lines
+
+
 def _extract_docx(path) -> dict:
-  """提取 docx：标题样式作为大纲节点，全文段落拼接做预览。"""
+  """提取 docx：标题样式作为大纲节点，全文段落拼接做预览，另给一份结构概要。"""
   import docx
 
   try:
@@ -54,11 +112,78 @@ def _extract_docx(path) -> dict:
   preview = full_text[:_TEXT_PREVIEW_CHARS]
   if table_summary:
     preview += '\n\n[文档内表格] ' + '；'.join(table_summary)
-  return {'text_preview': preview, 'outline': outline, 'error': None, 'full_text': full_text}
+  try:
+    structure = _docx_structure(doc, path)
+  except Exception:
+    logger.exception('docx 结构概要生成失败（不影响文本提取）: %s', path)
+    structure = []
+  return {
+    'text_preview': preview, 'outline': outline, 'error': None,
+    'full_text': full_text, 'structure': structure,
+  }
+
+
+def _pptx_structure(prs) -> list[str]:
+  """pptx 的结构概要：逐页统计容器 + 指出"改不了的地方"。
+
+  PPT 特有的三个坑（都在这份概要里点出来，具体处理见 `skills/doc_translate/`）：
+  母版/版式文字只能读、表格是 shape、备注页常被漏翻。
+  """
+  from pptx.enum.shapes import MSO_SHAPE_TYPE
+
+  n_tf = n_tbl = n_pic = n_notes = 0
+  for slide in prs.slides:
+    try:
+      if slide.has_notes_slide and slide.notes_slide.notes_text_frame.text.strip():
+        n_notes += 1
+    except Exception:
+      pass
+    for sh in slide.shapes:
+      try:
+        if sh.has_table:
+          n_tbl += 1
+        elif sh.shape_type == MSO_SHAPE_TYPE.PICTURE:
+          n_pic += 1
+        elif sh.has_text_frame and sh.text_frame.text.strip():
+          n_tf += 1
+      except Exception:
+        continue
+
+  lines = [
+    f'幻灯片 {len(prs.slides)} 页',
+    f'文本框 {n_tf} 个、表格 {n_tbl} 个（table 是 shape，不在文本框里）、图片 {n_pic} 张',
+  ]
+  if n_notes:
+    lines.append(f'备注页：{n_notes} 页有备注（也常需要一起翻译，容易漏）')
+
+  def _texts(shapes) -> int:
+    n = 0
+    for sh in shapes:
+      try:
+        if sh.has_text_frame and sh.text_frame.text.strip():
+          n += 1
+      except Exception:
+        continue
+    return n
+
+  master_n = sum(_texts(m.shapes) for m in prs.slide_masters)
+  layout_n = 0
+  for m in prs.slide_masters:
+    for lay in m.slide_layouts:
+      layout_n += _texts(lay.shapes)
+  # 刻意**不给数量**：母版/版式里绝大多数是 Office 自带的占位符提示语
+  # （"单击此处编辑母版标题样式"），报个「50 处」只会误导成"有 50 处要翻"。
+  if master_n or layout_n:
+    lines.append(
+      '母版/版式里有文字（页脚、占位符提示语等）——这类文字通常改不了，'
+      '若其中含需要翻译的内容，要在回复里如实说明',
+    )
+  lines.append('图片里的文字、SmartArt 内的文字**无法翻译**，要提前告知用户')
+  return lines
 
 
 def _extract_pptx(path) -> dict:
-  """提取 pptx：每张幻灯片标题作为大纲节点，按顺序拼接全部文本框内容做预览。"""
+  """提取 pptx：每张幻灯片标题作为大纲节点，按顺序拼接全部文本框内容做预览，另给结构概要。"""
   from pptx import Presentation
 
   try:
@@ -89,7 +214,15 @@ def _extract_pptx(path) -> dict:
 
   full_text = '\n\n'.join(full_text_parts)
   preview = full_text[:_TEXT_PREVIEW_CHARS]
-  return {'text_preview': preview, 'outline': outline, 'error': None, 'full_text': full_text}
+  try:
+    structure = _pptx_structure(prs)
+  except Exception:
+    logger.exception('pptx 结构概要生成失败（不影响文本提取）: %s', path)
+    structure = []
+  return {
+    'text_preview': preview, 'outline': outline, 'error': None,
+    'full_text': full_text, 'structure': structure,
+  }
 
 
 def _extract_pdf(path) -> dict:

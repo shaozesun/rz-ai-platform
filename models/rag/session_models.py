@@ -28,6 +28,12 @@ class Session(SessionBase):
     session_id: str
     updated_at: datetime
     pinned: bool = False
+    message_count: int = Field(
+        0,
+        description="该会话的消息条数（get_user_sessions 批量聚合填充）。前端据此判断"
+                    "会话是不是空壳——**不能用标题判断**（标题可能长期停在占位名「新对话」，"
+                    "按标题过滤会把有内容的会话一起藏掉）",
+    )
 
 
 class SessionListResponse(BaseModel):

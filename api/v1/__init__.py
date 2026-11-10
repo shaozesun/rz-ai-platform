@@ -11,6 +11,9 @@ from api.v1.stats import router as stats_router
 from api.v1.feedback import router as feedback_router
 from api.v1.scheduled_tasks import router as scheduled_tasks_router
 from api.v1.feishu import router as feishu_router
+from api.v1.wechat import router as wechat_router
+from api.v1.skills import router as skills_router
+from api.v1.tools import router as tools_router
 
 api_v1_router = APIRouter(prefix='/api/v1')
 api_v1_router.include_router(health_router, tags=['health'])
@@ -24,7 +27,16 @@ api_v1_router.include_router(stats_router, tags=['stats'])
 api_v1_router.include_router(feedback_router, tags=['feedback'])
 api_v1_router.include_router(scheduled_tasks_router, tags=['scheduled-tasks'])
 api_v1_router.include_router(feishu_router, tags=['feishu'])
+api_v1_router.include_router(wechat_router, tags=['wechat'])
+api_v1_router.include_router(skills_router, tags=['skills'])
+api_v1_router.include_router(tools_router, tags=['tools'])
 
 if settings.AGENT_ENABLED:
   from api.v1.agent import router as agent_router
   api_v1_router.include_router(agent_router, tags=['agent'])
+
+# 对话窗口「讲解视频」（独立于表单页视频功能）：仅 VIDEO_AGENT_ENABLED 时挂载；
+# 关闭时连路由都不注册，行为与改动前完全一致。
+if settings.VIDEO_AGENT_ENABLED:
+  from api.v1.agent_video import router as agent_video_router
+  api_v1_router.include_router(agent_video_router, tags=['agent-video'])

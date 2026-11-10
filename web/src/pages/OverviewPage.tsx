@@ -10,6 +10,10 @@ import {
   Users,
   BookOpen,
   Flame,
+  FileText,
+  ShieldCheck,
+  Clock,
+  type LucideIcon,
 } from 'lucide-react';
 import { PlatformShell } from '@/components/platform-shell';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -26,12 +30,27 @@ import {
   type TrendItem,
 } from '@/api/stats';
 
-const modules = [
+type ModuleCard = {
+  href: string;
+  title: string;
+  desc: string;
+  icon: LucideIcon;
+  status: string;
+  metric: string;
+  tone: string;
+  /** 仅后加的三个入口声明；缺省表示所有登录用户可见（旧卡片保持无条件展示） */
+  perm?: string;
+};
+
+const modules: ModuleCard[] = [
   { href: '/assistant', title: '对话助手', desc: '企业知识库问答、智能客服与办公助理', icon: MessageSquareText, status: '运行中', metric: '知识库 RAG 驱动', tone: 'bg-chart-1/25 text-chart-1' },
   { href: '/knowledge', title: '知识库', desc: '文档上传、向量化管理，为对话提供知识溯源', icon: BookOpen, status: '运行中', metric: '支持 7 种格式', tone: 'bg-chart-2/25 text-chart-2' },
   { href: '/risk', title: '隐患识别', desc: 'AI 安全隐患检测、两阶段 VLM+CV 流水线', icon: ShieldAlert, status: '运行中', metric: '4 种机柜模板', tone: 'bg-chart-5/25 text-chart-5' },
   { href: '/fire-safety', title: '消防配置', desc: '基于建筑参数自动推荐消防设施配置方案', icon: Flame, status: '运行中', metric: '5 种快速填充', tone: 'bg-chart-4/25 text-chart-4' },
   { href: '/video', title: '视频生成', desc: 'PPT 转解说视频，TTS 语音合成，MP4 输出', icon: Clapperboard, status: '运行中', metric: '全自动流程', tone: 'bg-chart-3/25 text-chart-3' },
+  { href: '/analysis-reports', title: '分析报告', desc: '六类工单自动生成周报/月报，全国与园区级共享查看', icon: FileText, perm: 'ai:agent', status: '运行中', metric: '6 类工单 · 周/月', tone: 'bg-chart-6/25 text-chart-6' },
+  { href: '/compliance', title: '合规检查', desc: '按班次核对告警响应、关单与重复告警等处置口径', icon: ShieldCheck, perm: 'ai:agent', status: '运行中', metric: '4 项检查 · 按班次', tone: 'bg-chart-7/25 text-chart-7' },
+  { href: '/scheduled-tasks', title: '定时任务', desc: '自定义指令到点自动跑一轮 Agent，产物可下载', icon: Clock, perm: 'scheduled_task:manage', status: '运行中', metric: '一次性 / 间隔 / Cron', tone: 'bg-chart-8/25 text-chart-8' },
 ];
 
 function timeAgo(iso: string): string {
@@ -64,8 +83,10 @@ const dotColor = (type: string) => DOT_COLORS[type] || 'bg-muted-foreground';
 
 export default function OverviewPage() {
   const user = useAuthStore((s) => s.user);
+  const hasPermission = useAuthStore((s) => s.hasPermission);
   const userName = user?.name || user?.phone || '用户';
-  const [overview, setOverview] = useState<OverviewData>({ api_call_count: 0, api_call_change: null, compute_usage: 0, compute_usage_change: null, user_count: 0, message_count: 0, session_count: 0, session_change: null, video_count: 0, video_change: null, risk_check_count: 0, risk_check_change: null, fire_safety_count: 0, fire_safety_change: null, doc_count: 0 });
+  const visibleModules = modules.filter((m) => !m.perm || hasPermission(m.perm));
+  const [overview, setOverview] = useState<OverviewData>({ api_call_count: 0, api_call_change: null, tool_call_count: 0, compute_usage: 0, compute_usage_change: null, user_count: 0, message_count: 0, session_count: 0, session_change: null, video_count: 0, video_change: null, risk_check_count: 0, risk_check_change: null, fire_safety_count: 0, fire_safety_change: null, doc_count: 0 });
   const [activities, setActivities] = useState<ActivityItem[]>([]);
   const [trend, setTrend] = useState<TrendItem[]>([]);
   // 个人通知开关（SettingsPage「动态通知」，key rz_notify_enabled）：关闭后首页动态不展示个人活动
@@ -85,8 +106,8 @@ export default function OverviewPage() {
       {/* Stat cards */}
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-4">
         {[
-          { label: 'API 调用总量', value: overview.api_call_count, icon: Activity, sub: '本周请求', tone: 'text-chart-5', accent: 'var(--chart-5)' },
-          { label: '算力消耗', value: overview.compute_usage, icon: Zap, sub: 'Token 消耗', tone: 'text-chart-6', accent: 'var(--chart-6)' },
+          { label: 'API 调用总量', value: overview.api_call_count, icon: Activity, sub: '本周工具调用', tone: 'text-chart-5', accent: 'var(--chart-5)' },
+          { label: '算力消耗', value: overview.compute_usage, icon: Zap, sub: '本周 Token 消耗', tone: 'text-chart-6', accent: 'var(--chart-6)' },
           { label: '活跃用户', value: overview.user_count, icon: Users, sub: '注册用户', tone: 'text-chart-1', accent: 'var(--chart-1)' },
           { label: '对话会话', value: overview.session_count, icon: MessageSquareText, sub: '本周会话', tone: 'text-chart-2', accent: 'var(--chart-2)' },
           { label: '视频生成', value: overview.video_count, icon: Clapperboard, sub: '本周任务', tone: 'text-chart-3', accent: 'var(--chart-3)' },
@@ -156,7 +177,7 @@ export default function OverviewPage() {
         <div className="lg:col-span-2">
           <h2 className="mb-3 text-sm font-medium text-muted-foreground">AI 能力模块</h2>
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
-            {modules.map((m) => {
+            {visibleModules.map((m) => {
               const Icon = m.icon;
               return (
                 <Link key={m.href} to={m.href} className="group">

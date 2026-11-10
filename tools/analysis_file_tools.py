@@ -21,13 +21,19 @@ from langchain.tools import tool
 from langchain_core.runnables.config import RunnableConfig
 
 from config.settings import settings
-from core.sandbox.datasets import DatasetError, _SAFE_RE, load_dataset_dir
+from core.sandbox.datasets import DatasetError, _SAFE_RE, load_dataset_dir, thread_dir
 
 logger = logging.getLogger(__name__)
 
 # grep 单文件最大匹配行 / 单行截断
 _GREP_PER_FILE_MAX = 20
 _GREP_LINE_MAX = 200
+
+# 保留的「无数据集工作区」id：纯联网调研之类**没有 analysis_load 物化数据**的场景，
+# 同样要交付文字成品（Markdown 报告、来源清单）。落到 {thread_id}/workspace/、不要求
+# data.csv —— 产物下载端点按文件名扫会话目录（datasets.find_artifact_dir），不需要数据集
+# 存在，所以这条路能直接复用现有 <file> 卡片与下载链路。
+_WORKSPACE_ID = 'workspace'
 
 
 def _get_thread_id(config: RunnableConfig | None) -> str:
@@ -42,9 +48,20 @@ def _err(msg: str) -> str:
 
 
 def _dataset_dir(thread_id: str, dataset_id: str) -> Path | None:
-  """校验 dataset_id 并定位数据集目录；失败（含非法字符/不存在）返回 None。"""
+  """校验 dataset_id 并定位目录；失败（含非法字符/不存在）返回 None。
+
+  dataset_id == 'workspace' 是保留的工作区：按需创建、不要求 data.csv。
+  """
   if not dataset_id or _SAFE_RE.search(dataset_id):
     return None
+  if dataset_id == _WORKSPACE_ID:
+    ws = thread_dir(thread_id) / _WORKSPACE_ID
+    try:
+      ws.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+      logger.warning('创建工作区失败 thread=%s: %s', thread_id, e)
+      return None
+    return ws
   try:
     return load_dataset_dir(thread_id, dataset_id)
   except DatasetError:
@@ -107,14 +124,20 @@ async def analysis_write_file(
   content: str,
   config: RunnableConfig = None,
 ) -> str:
-  """把脚本/内容写入数据集目录（覆盖写），供 analysis_exec(file=...) 执行或作为产物交付。
+  """把脚本/内容写入数据集目录或工作区（覆盖写），供执行或作为成品交付。
 
-  适合把多行代码落盘为脚本（如 report.py），再用 analysis_exec(file='report.py') 执行；
-  落盘后的小改动用 analysis_str_replace 精准替换，省 token。单文件超大小上限会被拒绝。
+  两种用法：
+  1. **脚本**（配合数据集）：写到 analysis_load 得到的数据集目录（如 report.py），
+     再用 analysis_exec(file='report.py') 执行；小改用 analysis_str_replace 精准替换。
+  2. **成文交付**（无需数据集）：`dataset_id='workspace'` 写到会话工作区，用于交付
+     文字成品（Markdown 报告、来源清单等）。返回值会给出服务端生成的 `url`，交付时
+     原样输出 `<file url="该 url" name="展示名"/>`，**对话里只给摘要，不要贴全文**。
+
+  单文件超大小上限会被拒绝。
 
   Args:
-    dataset_id: analysis_load 返回的 dataset_id
-    path: 目标文件相对路径，如 report.py
+    dataset_id: analysis_load 返回的 dataset_id；**没有数据集时传 'workspace'**
+    path: 目标文件相对路径，如 report.py / 调研报告.md
     content: 完整文件内容
   """
   thread_id = _get_thread_id(config)
@@ -131,7 +154,22 @@ async def analysis_write_file(
     target.write_text(content, encoding='utf-8')
   except OSError as e:
     return _err(f'写入失败：{e}')
-  return json.dumps({'ok': True, 'size': size}, ensure_ascii=False)
+
+  info: dict = {'ok': True, 'size': size, 'path': path}
+  if dataset_id == _WORKSPACE_ID:
+    # 交付路径：给出**服务端生成**的权威 URL（不许模型自己编），模型原样输出 <file> 标签
+    from urllib.parse import quote
+    filename = Path(path).name
+    info['url'] = (
+      f'/api/v1/chat/agent/artifacts/{quote(thread_id, safe="")}/{_WORKSPACE_ID}/'
+      f'{quote(filename)}'
+    )
+    info['note'] = (
+      '成品已落盘。交付方式：输出一行 '
+      f'<file url="{info["url"]}" name="展示名"/>（url 逐字符复制），'
+      '对话回答只给结论摘要，不要把文件全文再贴一遍。'
+    )
+  return json.dumps(info, ensure_ascii=False)
 
 
 @tool

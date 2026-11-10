@@ -8,6 +8,10 @@
 > tool_search 返回完整 schema、检索无分类维度）。新增 category 四级层后，把「同时可见工具数」
 > 收敛到**每请求**预 promote 的规模（promoted 每请求重置，不跨轮累积）；多数查询走意图快路径
 > 直接命中，不再依赖 tool_search。
+>
+> **变更（后续）**：文中提到的 `service/query/dcim/`（6 条 DCIM 门面能力）是 Phase 1 的 **mock 实现**，
+> 真实接口未接，已**整体删除**。因此下文所有 dcim 相关的现状描述、规模数字与落地步骤均为**当时状态**，
+> 不是当前事实；接入新平台请以 `service/query/mgmt/` 为样板。
 
 ## 1. 背景与问题
 
@@ -181,8 +185,8 @@ id / 工具名 / caller 契约 / 平台注册机制全部不动。改动收敛�
 ## 4. 落地步骤（文档给出指引，本轮不写代码）
 
 1. `service/query/base/capability.py` — 加 `category: str = ''`。
-2. `service/query/mgmt/capabilities.py`、`service/query/dcim/capabilities.py` — 逐条填
-   `category`（按 §2 表格）；新增能力声明时 `category` 必填。
+2. `service/query/mgmt/capabilities.py` — 逐条填 `category`（按 §2 表格）；新增能力声明时
+   `category` 必填。（原文并列的 `service/query/dcim/capabilities.py` 已随 DCIM 门面 mock 删除。）
 3. `service/query/base/intent_bindings.py` — 空 `intent_labels` 回退 `category`。
 4. `service/query/base/retriever.py` — 桶化索引 + `category`/`domain` 过滤参数。
 5. `service/agent/streaming.py` — `stream_agent()` 开头重置 promoted（`agent.update_state(config,

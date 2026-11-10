@@ -3,6 +3,8 @@ import client from './client';
 export interface OverviewData {
   api_call_count: number;
   api_call_change: number | null;
+  /** 与 api_call_count 同源（Agent 工具调用次数），语义更明确的别名 */
+  tool_call_count: number;
   compute_usage: number;
   compute_usage_change: number | null;
   user_count: number;
@@ -27,6 +29,7 @@ export interface ActivityItem {
 const OVERVIEW_DEFAULTS: OverviewData = {
   api_call_count: 0,
   api_call_change: null,
+  tool_call_count: 0,
   compute_usage: 0,
   compute_usage_change: null,
   user_count: 0,

@@ -21,6 +21,9 @@ class VideoTaskParams(BaseModel):
   resolution: str = '1080p'
   voice: str = 'neutral'
   subtitle_style: str = 'default'
+  # 解说词语言（送 TTS）与字幕语言，取值 zh-CN / en-US；默认值让旧任务无需迁移
+  speech_language: str = 'zh-CN'
+  subtitle_language: str = 'zh-CN'
 
 
 class VideoTask(BaseModel):

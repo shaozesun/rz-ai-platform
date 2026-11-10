@@ -27,6 +27,7 @@ import {
   OrganizationChart,
 } from '@ant-design/graphs';
 import type { GraphData as G6GraphData, TreeData as G6TreeData } from '@antv/g6';
+import MapChart from './MapChart';
 
 /**
  * Agent 回复中 <chart> 标签的本地渲染出口。
@@ -53,6 +54,16 @@ const DEFAULT_PALETTE = [
   '#06B6D4', '#EC4899', '#84CC16', '#F97316', '#14B8A6',
 ];
 
+// 条形图单系列专属色：荧光蓝（降亮度），区分 G2 默认浅蓝与饼图色板
+const BAR_COLOR = '#06B6D4';
+
+// 图型别名：模型常把「属性/俗称」当图型写。环形图（donut/ring）在 @ant-design/plots 里
+// 不是独立图型，而是 Pie 设 innerRadius；统一归一到已支持的 type，避免整张图报「不支持」。
+const TYPE_ALIASES: Record<string, string> = {
+  donut: 'pie',
+  ring: 'pie',
+};
+
 // 主题白名单：plots 走 G2 v5 主题，graphs 走 G6 v5 主题（G6 无 academy，仅 light/dark）
 const PLOT_THEMES = ['classic', 'classicDark', 'light', 'dark', 'academy'];
 const GRAPH_THEMES = ['light', 'dark'];
@@ -69,6 +80,56 @@ function parseJson(raw: string): unknown {
 
 function asRows(value: unknown): Record<string, unknown>[] | null {
   return Array.isArray(value) ? (value as Record<string, unknown>[]) : null;
+}
+
+// ---------- 特殊图数据归一（模型的 data 字段名一律中文，渲染器不能写死英文列名） ----------
+
+function isNum(v: unknown): v is number {
+  return typeof v === 'number' && Number.isFinite(v);
+}
+
+/** 节点名称：优先 name/label，否则取第一个非空字符串字段（中文键也能取到） */
+function nodeName(o: Record<string, unknown>): string {
+  const direct = o.name ?? o.label;
+  if (typeof direct === 'string' && direct) return direct;
+  const key = Object.keys(o).find((k) => typeof o[k] === 'string' && o[k]);
+  return key ? String(o[key]) : '';
+}
+
+/** 节点数值：优先 value，否则取第一个数值字段 */
+function nodeValue(o: Record<string, unknown>): number {
+  if (isNum(o.value)) return o.value;
+  const key = Object.keys(o).find((k) => isNum(o[k]));
+  return key ? Number(o[key]) : 0;
+}
+
+/**
+ * treemap 数据归一成**单根树**。
+ *
+ * G2 的 treeDataTransform 对数组走 d3 `stratify()`，只能建单根树：顶层给
+ * `[{name,value,children}, ...]` 会抛 `multiple roots`，异常落在 render 的
+ * promise 里没人接，整张图静默空白。这里把顶层数组套一层根节点，并把节点键
+ * 统一成 `name`/`value`（G2 只认这两个，中文键取不到）。
+ */
+function toTreemapTree(raw: unknown): Record<string, unknown> | null {
+  // 只有叶子带 value：父节点的 value 被 ignoreParentValue 忽略，且根节点带 value 会被
+  // G2 的 data 归一逻辑误判成 `{value: 数据}` 信封（plots 的 dataTransform 也按这个判）
+  const build = (v: unknown): Record<string, unknown> | null => {
+    if (!v || typeof v !== 'object' || Array.isArray(v)) return null;
+    const o = v as Record<string, unknown>;
+    const out: Record<string, unknown> = { name: nodeName(o) };
+    const kids = Array.isArray(o.children)
+      ? o.children.map(build).filter((n): n is Record<string, unknown> => n !== null)
+      : [];
+    if (kids.length) out.children = kids;
+    else out.value = nodeValue(o);
+    return out;
+  };
+  if (Array.isArray(raw)) {
+    const kids = raw.map(build).filter((n): n is Record<string, unknown> => n !== null);
+    return kids.length ? { name: '合计', children: kids } : null;
+  }
+  return build(raw);
 }
 
 // ---------- 结构图数据转换（LLM 用 name/children、nodes/edges，graphs 用 id/label） ----------
@@ -170,7 +231,11 @@ function DataTable({
 // ---------- 主体 ----------
 
 function ChartRenderer({ spec }: { spec: ChartSpec }) {
-  const { type, attrs, data } = spec;
+  const { type: rawType = '', attrs, data } = spec;
+  // 图型别名归一：donut/ring 是环形图的俗称，本质是 pie（下面用 innerRadius 出环）——
+  // 不归一会直接落到「不支持的图表类型」兜底。其余属性原样透传，type 的用法保持不变。
+  const isDonut = rawType === 'donut' || rawType === 'ring';
+  const type = TYPE_ALIASES[rawType.toLowerCase()] ?? rawType;
   const parsed = useMemo(() => parseJson(data), [data]);
   const rows = useMemo(() => asRows(parsed), [parsed]);
 
@@ -185,10 +250,35 @@ function ChartRenderer({ spec }: { spec: ChartSpec }) {
     return { x, y };
   }, [rows]);
 
-  const xField = attrs.xField || inferred.x;
-  const yField = attrs.yField || inferred.y;
+  let xField = attrs.xField || inferred.x;
+  let yField = attrs.yField || inferred.y;
   const seriesField = attrs.groupField || attrs.colorField || '';
   const stacked = attrs.stacked === 'true';
+
+  // 字段方向归一：xField 必须是类别/时间列、yField 必须是数值列。模型按 ECharts 直觉常把
+  // 数值写进 xField，bar 尤其多（Bar 自带 coordinate.transpose，规范本就是 x=类别），
+  // 写反后类别会落到横轴、数值轴拿到文本被强转成 0。只在「x 是数值列、y 不是数值列」这种
+  // 明确反向时交换；x/y 都为数值（如年份 vs 数量）不误伤。
+  const firstRow = rows?.[0];
+  if (
+    firstRow
+    && typeof firstRow[xField] === 'number'
+    && firstRow[yField] !== undefined
+    && typeof firstRow[yField] !== 'number'
+  ) {
+    [xField, yField] = [yField, xField];
+  }
+
+  // 非数值列 / 数值列，供特殊图（sankey/word_cloud）推断字段：sankey 的源与目标取
+  // 前两个非数值列、权重取第一个数值列；词云取第一个非数值列 + 第一个数值列。
+  const textKeys = useMemo(
+    () => (rows?.[0] ? Object.keys(rows[0]).filter((k) => typeof rows[0][k] !== 'number') : []),
+    [rows],
+  );
+  const numKeys = useMemo(
+    () => (rows?.[0] ? Object.keys(rows[0]).filter((k) => typeof rows[0][k] === 'number') : []),
+    [rows],
+  );
 
   // 样式解析：LLM 属性（theme/height/width/palette/lineWidth/backgroundColor）+ 全屏覆盖高度
   const [isFullscreen, setIsFullscreen] = useState(false);
@@ -212,6 +302,9 @@ function ChartRenderer({ spec }: { spec: ChartSpec }) {
   // 懒加载：图表进入视口附近才真正 mount G2 图。历史会话里图表多时（单条最多 6 图），
   // 全部立即 mount 会阻塞主线程数秒；滚动到哪张图哪张才渲染，首屏秒开。
   const [inView, setInView] = useState(false);
+  // 容器宽度（px）。G2 的 autoFit **只监听 window resize**（见下方 effect 注释），容器宽度变化
+  // 不会触发重算，所以这里自己量，用宽度档位换 key 强制重挂载。
+  const [boxW, setBoxW] = useState(0);
   useEffect(() => {
     const el = containerRef.current;
     if (!el || typeof IntersectionObserver === 'undefined') {
@@ -232,6 +325,26 @@ function ChartRenderer({ spec }: { spec: ChartSpec }) {
     io.observe(el);
     return () => io.disconnect();
   }, []);
+  // 容器宽度监听：G2 的 autoFit 只绑 window.resize（node_modules/@antv/g2/lib/api/runtime.js:392），
+  // **@ant-design/plots 与 @antv/g2 里没有任何 ResizeObserver** —— 容器宽度变了（网格按图表数量
+  // 重排、右侧面板开合、进全屏）canvas 仍是挂载时的旧宽度；卡片又是 overflow-hidden，右侧就被
+  // 裁掉、饼图看着不居中（实测反馈）。这里自己量容器宽度，跨档位就换 key 让 G2 按新尺寸重初始化。
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el || typeof ResizeObserver === 'undefined') return;
+    let raf = 0;
+    const ro = new ResizeObserver((entries) => {
+      const w = entries[0]?.contentRect.width ?? 0;
+      cancelAnimationFrame(raf);
+      raf = requestAnimationFrame(() => setBoxW(Math.round(w)));
+    });
+    ro.observe(el);
+    return () => {
+      cancelAnimationFrame(raf);
+      ro.disconnect();
+    };
+  }, []);
+
   const isGraph = GRAPH_TYPES.has(type);
   const theme = (attrs.theme || '').toLowerCase();
   const llmTheme = (isGraph ? GRAPH_THEMES : PLOT_THEMES).includes(theme) ? theme : '';
@@ -259,7 +372,9 @@ function ChartRenderer({ spec }: { spec: ChartSpec }) {
     ...(width ? { width } : {}),
     theme: validTheme,
   };
-  const grouped = seriesField ? { seriesField } : {};
+  // 多系列（分组/堆叠）：seriesField 只映射 G2 的 encode.series（用于堆叠/并排分组），
+  // **不上色**；颜色由 encode.color 决定，必须同时给 colorField，否则各系列全是同一个颜色。
+  const grouped = seriesField ? { seriesField, colorField: seriesField } : {};
 
   let chart: ReactNode = null;
 
@@ -302,6 +417,7 @@ function ChartRenderer({ spec }: { spec: ChartSpec }) {
             xField={xField}
             yField={yField}
             {...grouped}
+            {...(seriesField ? {} : { style: { fill: BAR_COLOR } })}
             {...(stacked ? { stack: true } : {})}
           />
         );
@@ -312,7 +428,7 @@ function ChartRenderer({ spec }: { spec: ChartSpec }) {
             {...plotBase}
             angleField={yField}
             colorField={xField}
-            innerRadius={attrs.donut === 'true' ? 0.6 : 0}
+            innerRadius={attrs.donut === 'true' || isDonut ? 0.6 : 0}
           />
         );
         break;
@@ -341,39 +457,36 @@ function ChartRenderer({ spec }: { spec: ChartSpec }) {
         break;
       }
       case 'box':
+      case 'boxplot':
         chart = <Box {...plotBase} xField={xField} yField={yField} {...grouped} />;
         break;
       case 'violin':
         chart = <Violin {...plotBase} xField={xField} yField={yField} {...grouped} />;
         break;
-      case 'treemap':
-        chart = (
-          <Treemap
-            {...plotBase}
-            dataField={attrs.valueField || 'value'}
-            colorField={attrs.nameField || 'name'}
-          />
-        );
+      case 'treemap': {
+        // 颜色走 G2 默认（按顶层分支 d.path[1] 取色），不再按 name 逐叶上色
+        const tree = toTreemapTree(parsed);
+        chart = tree ? <Treemap {...plotBase} data={tree} valueField="value" /> : null;
         break;
-      case 'sankey':
-        chart = (
-          <Sankey
-            {...plotBase}
-            sourceField={attrs.sourceField || 'source'}
-            targetField={attrs.targetField || 'target'}
-            weightField={attrs.weightField || 'value'}
-          />
-        );
+      }
+      case 'sankey': {
+        // plots v2 无 sourceField/targetField/weightField 映射，直接给 G2 的 encode
+        const source = attrs.sourceField || textKeys[0] || '';
+        const target = attrs.targetField || textKeys[1] || '';
+        const weight = attrs.weightField || numKeys[0] || '';
+        chart = source && target && weight
+          ? <Sankey {...plotBase} encode={{ source, target, value: weight }} />
+          : null;
         break;
-      case 'word_cloud':
-        chart = (
-          <WordCloud
-            {...plotBase}
-            wordField={attrs.wordField || 'word'}
-            weightField={attrs.weightField || 'value'}
-          />
-        );
+      }
+      case 'word_cloud': {
+        const text = attrs.textField || textKeys[0] || '';
+        const weight = attrs.valueField || numKeys[0] || '';
+        chart = text && weight
+          ? <WordCloud {...plotBase} textField={text} valueField={weight} />
+          : null;
         break;
+      }
       case 'venn':
         chart = (
           <Venn
@@ -391,13 +504,18 @@ function ChartRenderer({ spec }: { spec: ChartSpec }) {
       case 'spreadsheet':
         chart = <DataTable rows={rows} columns={attrs.columns?.split(',')} />;
         break;
-      case 'district_map':
       case 'pin_map':
+        // 点描地图：中国底图 + 园区点位（echarts + 本地 GeoJSON，懒加载）
+        chart = rows.length
+          ? <MapChart rows={rows} height={height} isDark={isDark} />
+          : null;
+        break;
+      case 'district_map':
       case 'path_map':
         chart = (
           <div>
             <p className="mb-1.5 text-xs text-muted-foreground">
-              地图渲染暂不支持，以下为数据表格。
+              该地图类型暂不支持渲染，以下为数据表格。
             </p>
             <DataTable rows={rows} columns={attrs.columns?.split(',')} />
           </div>
@@ -486,7 +604,9 @@ function ChartRenderer({ spec }: { spec: ChartSpec }) {
         isFullscreen
           // 全屏：撑满视口、去掉卡片边框圆角，图表区域由下方显式高度撑开
           ? 'flex h-full w-full flex-col overflow-hidden rounded-none border-0 bg-background p-4'
-          : 'my-2 overflow-hidden rounded-lg border border-border bg-card/60 p-3'
+          // min-w-0：防卡片头部的长标题把网格列撑破（grid/flex 的 min-width:auto 坑）
+          // max-w-[720px]：单图不被拉满（组里只有一张图时很常见），纵向间距交给外层网格的 gap
+          : 'min-w-0 max-w-[720px] overflow-hidden rounded-lg border border-border bg-card/60 p-3'
       }
       style={cardBg ? { backgroundColor: cardBg } : undefined}
     >
@@ -514,10 +634,13 @@ function ChartRenderer({ spec }: { spec: ChartSpec }) {
         </div>
       </div>
       {inView ? (
-        // key 随 isFullscreen 变化：全屏切换时强制重挂载图表，让 G2 按全屏容器尺寸
-        // 重新初始化（autoFit 靠 ResizeObserver，requestFullscreen 的瞬时尺寸变化经常
-        // 触发不到，导致图表停留在小尺寸）；全屏时给显式高度撑满剩余视口。
-        <div key={isFullscreen ? 'chart-fs' : 'chart-norm'} style={isFullscreen ? { height } : undefined}>
+        // key 里带上"容器宽度档位"（16px 一档，避免抖动/拖动时每像素都重挂载）：宽度变化时
+        // 强制重挂载，让 G2 按当前容器尺寸重新初始化 —— 否则 canvas 停在旧尺寸，被 overflow-hidden
+        // 的卡片裁掉右侧（柱图最后一列被挡、饼图不居中）。全屏切换同理（瞬时尺寸变化监听不到）。
+        <div
+          key={`${isFullscreen ? 'chart-fs' : 'chart-norm'}-${Math.round(boxW / 16)}`}
+          style={isFullscreen ? { height } : undefined}
+        >
           {chart}
         </div>
       ) : (

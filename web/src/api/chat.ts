@@ -1,5 +1,5 @@
 import client, { getAccessToken, refreshAccessToken } from './client';
-import type { Session, Message, ExecutionPlan, InterviewAnswers, InterviewQuestion } from '../types';
+import type { Session, Message, Todo } from '../types';
 
 // 流式请求用裸 fetch（SSE 需 ReadableStream，axios 浏览器端不便流式），绕过了 axios
 // 的 401 拦截器。这里统一走 refreshAccessToken 复用刷新单飞队列：401 时刷新一次重试，
@@ -16,17 +16,23 @@ async function fetchWithAuth(url: string, init: RequestInit = {}): Promise<Respo
   return res;
 }
 
-export async function getSessions(): Promise<Session[]> {
-  const { data } = await client.get('/chat/sessions');
+/** 拉一页会话（后端按 pinned desc, updated_at desc 排；total 是真实总数，用于判断还有没有下一页） */
+export async function getSessions(
+  limit = 100,
+  offset = 0,
+): Promise<{ sessions: Session[]; total: number }> {
+  const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
+  const { data } = await client.get(`/chat/sessions?${params}`);
   const list = data.sessions ?? data.data ?? [];
-  return list.map((s: { session_id: string; session_name: string; created_at: string; updated_at: string; pinned?: boolean }) => ({
+  const sessions = list.map((s: { session_id: string; session_name: string; created_at: string; updated_at: string; pinned?: boolean; message_count?: number }) => ({
     session_id: s.session_id,
     title: s.session_name || '新对话',
     created_at: s.created_at,
     updated_at: s.updated_at,
-    message_count: 0,
+    message_count: s.message_count ?? 0,
     pinned: !!s.pinned,
   }));
+  return { sessions, total: data.total ?? sessions.length };
 }
 
 export async function createSession(title?: string): Promise<Session> {
@@ -55,21 +61,68 @@ export async function updateSession(
   await client.patch(`/chat/sessions/${sessionId}`, updates);
 }
 
-export async function getMessages(sessionId: string, signal?: AbortSignal): Promise<Message[]> {
+/** 会话上下文用量（打开历史会话时用；与 getMessages 同一次请求带出） */
+export interface ContextUsage {
+  input_tokens: number;
+  window: number | null;
+  compact_trigger: number | null;
+}
+
+export interface SessionMessages {
+  messages: Message[];
+  usage: ContextUsage | null;
+}
+
+/** 上下文用量：取最后一条带 context_tokens 的 assistant 消息（后端只在 done 时写） */
+function pickUsage(
+  list: { context_tokens?: number }[],
+  data: { context_window?: number; compact_trigger_tokens?: number },
+): ContextUsage | null {
+  for (let i = list.length - 1; i >= 0; i--) {
+    if (list[i]?.context_tokens) {
+      return {
+        input_tokens: list[i].context_tokens!,
+        window: data.context_window ?? null,
+        compact_trigger: data.compact_trigger_tokens ?? null,
+      };
+    }
+  }
+  return null;
+}
+
+export async function getMessages(
+  sessionId: string,
+  signal?: AbortSignal,
+): Promise<SessionMessages> {
   const { data } = await client.get(`/chat/sessions/${sessionId}/messages`, { signal });
   const list = data.messages ?? data.data ?? [];
-  return list.map((m: { message_id?: string; role: string; content: string; created_at?: string; uploaded_filenames?: string[] }, i: number) => ({
+  const messages = list.map((m: { message_id?: string; role: string; content: string; created_at?: string; uploaded_filenames?: string[]; context_tokens?: number; todos?: Todo[] }, i: number) => ({
     message_id: m.message_id || `${sessionId}-${i}`,
     session_id: sessionId,
     role: m.role,
     content: m.content,
     created_at: m.created_at || new Date().toISOString(),
     uploaded_filenames: m.uploaded_filenames,
+    context_tokens: m.context_tokens,
+    todos: m.todos,
   }));
+  return { messages, usage: pickUsage(list, data) };
 }
 
 export async function deleteMessage(sessionId: string, messageId: string): Promise<void> {
   await client.delete(`/chat/sessions/${sessionId}/messages/${messageId}`);
+}
+
+/** 开流前把用户消息先落库：流被取消/没跑到 agent 时，提问也留在历史里（后端幂等去重） */
+export async function appendUserMessage(
+  sessionId: string,
+  content: string,
+  uploadedFilenames: string[] | null,
+): Promise<void> {
+  await client.post(`/chat/sessions/${sessionId}/messages`, {
+    content,
+    uploaded_filenames: uploadedFilenames,
+  });
 }
 
 // SSE 流式对话
@@ -140,16 +193,23 @@ export function chatStream(
 export interface AgentStreamOptions {
   interactionMode?: string;
   taskMode?: string;
-  planConfirmed?: boolean;
-  plan?: ExecutionPlan | null;
-  onPlan?: (plan: ExecutionPlan) => void;
-  interviewAnswers?: InterviewAnswers | null;
-  interviewAction?: string | null;
-  onInterview?: (questions: InterviewQuestion[]) => void;
+  /** 联网搜索开关：只放开 web__search / web__fetch，不注入调研规范 */
+  webSearch?: boolean;
+  /** 计划模式的任务清单更新（write_todos 每次提交完整列表） */
+  onTodos?: (todos: Todo[]) => void;
+  /**
+   * 图表数据更新（服务端从 `analysis_exec` 注入，累积下发）。
+   * 正文里的 `<chart group="组名"/>` 靠它取数 —— 模型不再在正文写 JSON。
+   */
+  onChartData?: (chartData: Record<string, unknown>) => void;
   uploadedFilenames?: string[] | null;
+  /** 本轮结束时的上下文用量（done 事件携带），用于显示「上下文 X%」 */
+  onUsage?: (usage: ContextUsage) => void;
 }
 
 export interface UploadedFileInfo {
+  /** 后端被拒时只回 filename + error（文件未落盘），此时其它字段缺失 */
+  error?: string | null;
   filename: string;
   size: number;
   extension: string;
@@ -199,10 +259,7 @@ export function agentStream(
       message: text,
       interaction_mode: options?.interactionMode ?? 'trust',
       task_mode: options?.taskMode ?? 'normal',
-      plan_confirmed: options?.planConfirmed ?? false,
-      plan: options?.plan ?? null,
-      interview_answers: options?.interviewAnswers ?? null,
-      interview_action: options?.interviewAction ?? null,
+      web_search: options?.webSearch ?? false,
       uploaded_filenames: options?.uploadedFilenames ?? null,
     }),
     signal: controller.signal,
@@ -232,15 +289,16 @@ export function agentStream(
               onToolCall(data.name || '', data.args || {});
             } else if (event === 'tool_result') {
               onToolResult(data.name || '', data.result || '');
+              // 图表数据（累积下发）—— 不能靠 result 预览，它被截断到 2000 字符
+              if (data.chart_data) options?.onChartData?.(data.chart_data as Record<string, unknown>);
             } else if (event === 'status') {
               onStatus(data.tool || '', data.message || '');
-            } else if (event === 'interview') {
-              options?.onInterview?.(data.questions || []);
-            } else if (event === 'plan') {
-              options?.onPlan?.(data as ExecutionPlan);
+            } else if (event === 'todos') {
+              options?.onTodos?.((data.todos || []) as Todo[]);
             } else if (event === 'error') {
               onChunk(`\n\n> ⚠️ ${data.message || '未知错误'}\n\n`);
             } else if (event === 'done') {
+              if (data.usage) options?.onUsage?.(data.usage as ContextUsage);
               onDone();
               return;
             }

@@ -103,12 +103,16 @@ def _build_prompt(message: str, domains: list[str], labels: list[str], history: 
   from service.query.base.manifest import (
     build_category_manifest,
     build_label_hints,
+    platform_definition,
     platform_display_name,
   )
 
-  domain_hint = '、'.join(
-    f'{d}（{platform_display_name(d)}）' for d in domains
-  ) if domains else '（暂无已注册平台）'
+  # 每个平台带**定位**一句 —— 多个平台功能语义重叠时（如综合管理平台与 DCIM 都有"设备"），
+  # 只给平台名 LLM 分不清该问谁；给出"这个平台是干什么的"它才选得对。
+  domain_hint = '\n'.join(
+    f'     - {d}（{platform_display_name(d)}）：{platform_definition(d)}'
+    for d in domains
+  ) if domains else '     （暂无已注册平台）'
 
   if labels:
     hints = build_label_hints(labels)
@@ -123,7 +127,8 @@ def _build_prompt(message: str, domains: list[str], labels: list[str], history: 
   return (
     '你是运维 Agent 的意图识别器。分析用户问题，输出结构化意图。\n\n'
     '规则：\n'
-    f'1. domains 只能从以下平台中选：{domain_hint}\n'
+    f'1. domains 只能从以下平台中选（**按各平台的"定位"判断这个问题该问谁**，可多选）：\n'
+    f'{domain_hint}\n'
     f'2. intent_labels 只能从以下标签中选：{label_hint}\n'
     '3. 按语义归类，勿按字面猜：如「制冷专业人员」属组织人事（org），不是技能（skill）\n'
     '4. subtasks：把问题拆成可执行的子问题（自然语言，可多条）\n'

@@ -36,6 +36,11 @@ EndpointSpec，走 client.call 特判）：
   全字段可选，分页 page+pageSize 平铺，信封 {pageSize,pageCounts,count,pictureTypeVOS}，
   result_path 取 pictureTypeVOS，page_meta 保留 count/pageSize/pageCounts；pictureName
   巡检点位名称模糊、deviceTypeId 设备类型精确过滤（巡检项模板，全量约 54 个点位）。
+- query_inspection_user_list：GET /user/inspection/v1，query {deptId,name,page,pageSize,
+  phone}（**五个参数缺一即 400**，name/phone 空串也要带）。按部门查巡检员，
+  deptId 必填且**不兜底**（agent 未指明部门时须先问用户）；name/phone 模糊过滤。
+  信封 {size,pageSize,pageCounts,inspectionInfoVOS}（size=总条数），result_path 取
+  inspectionInfoVOS，page_meta 只留 size/pageSize（不含 pageCounts，理由见该 spec 注释）。
 - query_inspection_ticket（文档登记，待实测）：POST /inspection/ticket/get/list/v1，
   base URL 同上（根路径，走 MGMT_INSPECTION_BASE_URL）。body {deptId,name,page,pageSize,
   status,ticketNumber,type} 全可选，type 0=所有/1=我巡检的/2=我审核的；分页 page+pageSize
@@ -62,6 +67,11 @@ EndpointSpec，走 client.call 特判）：
   page_meta 保留 totalPage/totalCount；deptId 必填（缺 400）走 own_dept_id 兜底，
   其余全可选（maintenanceNum 按子单号 maintenancePlanNum 过滤、maintenanceMainNum 按
   主单号过滤返回同主单全部子单，year 留空查全部年份，status 0=未执行/3=已完成）。
+- query_equipment_maintenance_flow_detail：GET /maintain/flow/info/v1/{id}，id 在 path
+  占位符（flow_id 经 param_map 反查填充），无其它参数；id 取自
+  query_equipment_maintenance_flow 列表 rows[].id。data 即完整流程 VO（基础字段 +
+  deviceInfo 步骤明细 + 作业条件/保障措施/仪器/回退方案/流程），无分页，原样返回。
+  注：列表接口（path 带 deptId/page/pageSize）走 client 的组合能力，不在此声明。
 - query_device_info：POST /plan/list/device/info，body {deptId,page,size,typeId}，
   分页 page + size，result_path 取 records，page_meta 保留 total/current/pages/size；
   deptId 必填（agent 未指明部门时询问用户，不默认兜底）。通用设备台账，红外关联
@@ -356,6 +366,27 @@ ENDPOINTS: dict[str, EndpointSpec] = {
     page_meta=('count', 'pageSize', 'pageCounts'),
     default_params={'page': '1', 'pageSize': '20'},
   ),
+  # query_inspection_user_list（实测）：GET /user/inspection/v1（走默认 MGMT_BASE_URL），
+  # query {deptId, name, page, pageSize, phone}。**五个参数必须全部出现（空串也要）**——
+  # 实测缺 page/pageSize 或 缺 name/phone 一律 HTTP 400，故 name/phone 用 default_params
+  # 补空串、page/pageSize 兜底 1/20（模型不传空串时会被 tools_factory 过滤掉，必须在这里
+  # 补回）。deptId 必填（缺 400）且**不兜底**：接口按部门查，agent 未指明时须先问用户
+  # （见能力描述），同时它也是 Deptid header 的来源。
+  # 信封 {size, pageSize, pageCounts, inspectionInfoVOS}，注意 **size 是总条数**
+  # （59）、pageCounts 是页数（3）。page_meta **刻意不含 pageCounts**：① 它是页数，
+  # 模型容易当条数报错；② analysis_load 的 _extract_total 把 pageCounts 当总数 →
+  # 得出「共 3 条」→ 翻 1 页就停（全量物化只拿 20 行，静默少数据）。去掉后
+  # _extract_total 返回 None，靠「本页不足 pageSize」正常翻满 3 页，size 仍在返回值里。
+  'mgmt.query_inspection_user_list': EndpointSpec(
+    method='GET',
+    path='/user/inspection/v1',
+    param_location='query',
+    param_map={'dept_id': 'deptId', 'page_size': 'pageSize'},
+    page_style='page_pagesize',  # page + pageSize
+    default_params={'page': '1', 'pageSize': '20', 'name': '', 'phone': ''},
+    result_path='inspectionInfoVOS',
+    page_meta=('size', 'pageSize'),
+  ),
   # query_dept_by_name 实测：GET /dept/v1/dept/{deptName}，data 为部门对象数组，
   # 模糊匹配；成功码 code=1。path 占位符 {deptName} 与 Capability 参数 dept_name
   # （snake_case）不同名，由 client._build_request 经 param_map 反查填充并做
@@ -435,6 +466,21 @@ ENDPOINTS: dict[str, EndpointSpec] = {
     default_params={'page': '1', 'pageSize': '20'},
     result_path='rows',
     page_meta=('totalPage', 'totalCount'),
+  ),
+  # query_equipment_maintenance_flow_detail（实测）：GET /maintain/flow/info/v1/{id}，
+  # id 在 path 占位符（flow_id 经 param_map 反查填充），无其它参数。id 取自
+  # query_equipment_maintenance_flow 列表 rows[].id。data 即完整流程 VO：基础字段
+  # （name/groupName 专业组/devicePlanName 关联计划/typeName 周期/deptName）+
+  # deviceInfo（MOP 步骤 details[]）+ condition/guarantee/instrument/rollbackPlan/flow
+  # （作业条件/保障措施/仪器/回退方案/流程），无分页，原样返回。同名写入接口
+  # （PUT/POST /maintain/flow/info/v1）不在本能力范围。
+  'mgmt.query_equipment_maintenance_flow_detail': EndpointSpec(
+    method='GET',
+    path='/maintain/flow/info/v1/{id}',
+    param_location='query',
+    param_map={'flow_id': 'id'},
+    page_style='none',
+    result_path='',  # data 即流程 VO
   ),
   # query_device_info（接口文档）：POST /plan/list/device/info，body
   # {deptId,page,size,typeId}。分页 page + size（平铺，非嵌套，同
@@ -631,6 +677,9 @@ ENDPOINTS: dict[str, EndpointSpec] = {
     param_location='query',
     param_map={'dept_id': 'deptId', 'page_size': 'pageCount'},
     page_style='page_size_alt',  # page + pageCount(每页条数)
+    # deptId 是接口必填（缺了实测 400），而能力描述承诺「未明确默认本人所属部门」→
+    # 这里必须兜底，否则模型照描述不传 dept_id 就直接 400（2026-09 实测）。
+    defaults={'deptId': 'own_dept_id'},
     result_path='users',
     page_meta=('count', 'pageCounts', 'pageSize'),
     default_params={'page': '1', 'pageCount': '20'},

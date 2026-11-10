@@ -18,6 +18,7 @@ const AVAILABLE_PERMISSIONS = [
   { id: 'ai:fire_safety', name: '消防配置', desc: '根据建筑参数推荐消防配置方案' },
   { id: 'ai:knowledge', name: '知识库管理', desc: '知识库文档上传、管理、检索' },
   { id: 'ai:video', name: '视频生成', desc: 'PPT 转视频、数字人播报' },
+  { id: 'ai:agent', name: 'AI Agent 对话', desc: '对话式运维助手：知识检索、平台数据查询、数据分析出图' },
 ];
 
 const PERM_LABELS: Record<string, string> = {
@@ -26,6 +27,9 @@ const PERM_LABELS: Record<string, string> = {
   'ai:risk': '隐患识别',
   'ai:fire_safety': '消防配置',
   'ai:video': '视频生成',
+  'ai:agent': 'AI Agent 对话',
+  'scheduled_task:manage': '定时任务管理',
+  'system:admin': '系统管理',
 };
 
 function useApplyForm(type: 'role' | 'perm') {

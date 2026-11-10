@@ -5,8 +5,7 @@ Agent 不直接面对全部能力，而是先用一句查询语义检索出最�
 `query -> list[id]` 极简签名，检索复用 core.model_gateway.embedding，不引入
 LangGraph Store 第二套 embedding。
 
-从 service/query/dcim/retriever.py 上移到 base：逻辑本就平台无关，唯一改动是
-索引源从单平台 all_capabilities 改为 base.platform 的跨平台聚合。能力 id 全局
+逻辑本就平台无关：索引源是 base.platform 的跨平台聚合（all_capabilities）。能力 id 全局
 唯一（带平台前缀），单一索引天然隔离多平台，无需分平台建库。
 """
 

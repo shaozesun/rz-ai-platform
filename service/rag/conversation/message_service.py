@@ -56,6 +56,12 @@ class MessageService:
         }
         if message.uploaded_filenames:
             message_doc["uploaded_filenames"] = message.uploaded_filenames
+        if message.context_tokens:
+            message_doc["context_tokens"] = message.context_tokens
+        if message.todos:
+            message_doc["todos"] = message.todos
+        if message.chart_data:
+            message_doc["chart_data"] = message.chart_data
 
         result = await self.messages.insert_one(message_doc)
 
@@ -87,6 +93,9 @@ class MessageService:
                     content=cast(str, msg.get("content")),
                     created_at=cast(Optional[datetime], msg.get("created_at")),
                     uploaded_filenames=msg.get("uploaded_filenames"),
+                    context_tokens=msg.get("context_tokens"),
+                    todos=msg.get("todos"),
+                    chart_data=msg.get("chart_data"),
                 ))
             return messages
         except Exception as e:

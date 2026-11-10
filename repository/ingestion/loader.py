@@ -373,8 +373,12 @@ def _replace_images_in_markdown(md_text: str, md_dir: Path, content_list: list) 
                 "footnote": " ".join(item.get("image_footnote", []) or []),
             }
 
+    # 与 _process_markdown_images 同一套引用格式：此前误用了隔壁函数的局部变量 img_re（NameError）
+    img_re = re.compile(r'!\[(.*?)\]\((images/[^)]+)\)')
+
     def _replace_match(m: re.Match) -> str:
-        img_rel_path = m.group(1)
+        # group(1) 是替代文字、group(2) 才是图片相对路径（原来取 group(1)，image_meta 必然查不到）
+        img_rel_path = m.group(2)
         mermaid_code = _extract_mermaid_after_image(md_text, m.end())
         if mermaid_code:
             return f"\n\n```mermaid\n{mermaid_code}\n```\n"

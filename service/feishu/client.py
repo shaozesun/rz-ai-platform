@@ -18,13 +18,14 @@ import asyncio
 import logging
 import ssl
 import threading
-import uuid
+import time
 from typing import Optional
 
 import certifi
 
 from config.redis_conn import redis_manager
 from config.settings import settings
+from service.channels.leader import LeaderLock
 
 logger = logging.getLogger(__name__)
 
@@ -33,7 +34,15 @@ _thread: Optional[threading.Thread] = None
 _api_client = None
 _running = False
 _leader_task: Optional[asyncio.Task] = None
-_worker_id = uuid.uuid4().hex
+_leader_lock: Optional[LeaderLock] = None
+
+# WS 线程自建的 loop / 客户端：失去 leader 时要能主动断开（SDK 无公开 stop）
+_ws_loop: Optional[asyncio.AbstractEventLoop] = None
+_ws_client = None
+_ws_stop = threading.Event()
+
+_LAST_EVENT_KEY = 'lark:last_event_at'
+_last_event_at: float = 0.0
 
 
 def get_api_client():
@@ -48,24 +57,49 @@ def submit_async(coro):
   return asyncio.run_coroutine_threadsafe(coro, _main_loop)
 
 
-def _lock_key() -> str:
-  return redis_manager.key('lark:leader')
-
-
-def _try_acquire() -> bool:
-  return bool(
+def note_event() -> None:
+  """收到任意 WS 事件时打点（进程内 + Redis 集群级，7 天 TTL）。绝不抛。"""
+  global _last_event_at
+  _last_event_at = time.time()
+  try:
     redis_manager.client.set(
-      _lock_key(), _worker_id, nx=True, ex=settings.LARK_LEADER_TTL,
+      redis_manager.key(_LAST_EVENT_KEY), int(_last_event_at), ex=7 * 86400,
     )
-  )
+  except Exception:
+    pass
 
 
-def _is_leader() -> bool:
-  return redis_manager.client.get(_lock_key()) == _worker_id
+def health_snapshot() -> dict:
+  """飞书通道状态（`/health` 用）。
 
-
-def _renew_lease() -> None:
-  redis_manager.client.expire(_lock_key(), settings.LARK_LEADER_TTL)
+  `leader_present` 取 Redis 键是否存在：集群级口径，不随 `/health` 落到哪个 worker
+  而抖动；为 False 才是真故障（没有任何 worker 在收飞书事件）。
+  `ws_thread_alive` 是进程级存活（SDK 断线重连期间线程仍在，属正常）。
+  """
+  leader_present = False
+  leader_here = False
+  last = _last_event_at
+  try:
+    leader_present = bool(redis_manager.client.exists(redis_manager.key('lark:leader')))
+    raw = redis_manager.client.get(redis_manager.key(_LAST_EVENT_KEY))
+    if raw:
+      last = max(last, float(raw))
+  except Exception:
+    pass
+  if _leader_lock is not None:
+    try:
+      leader_here = _leader_lock.is_leader()
+    except Exception:
+      pass
+  return {
+    'leader_present': leader_present,
+    'leader_here': leader_here,
+    'ws_thread_alive': bool(_thread is not None and _thread.is_alive()),
+    'last_event_at': (
+      time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(last)) if last else None
+    ),
+    'last_event_age_s': int(time.time() - last) if last else None,
+  }
 
 
 def _ensure_ws(channel) -> None:
@@ -73,14 +107,54 @@ def _ensure_ws(channel) -> None:
   global _thread
   if _thread is not None and _thread.is_alive():
     return
+  _ws_stop.clear()
   _thread = threading.Thread(
     target=_run_ws, args=(channel.build_event_handler,), daemon=True, name='feishu-ws',
   )
   _thread.start()
 
 
+def _stop_ws() -> None:
+  """主动断开 WS 并结束线程（**失锁时必须做**，否则新旧两条连接并存）。
+
+  SDK 没有公开的 stop：`start()` 阻塞在 `_select()` 的 `while True: sleep(3600)`，
+  只能先置 `_auto_reconnect=False` 优雅断开，再停它自建的 loop。调用方用
+  `asyncio.to_thread` 包一层，别阻塞主 loop。
+  """
+  global _thread, _ws_client, _ws_loop
+  _ws_stop.set()
+  loop = _ws_loop
+  if loop is not None:
+    async def _shutdown():
+      try:
+        if _ws_client is not None:
+          _ws_client._auto_reconnect = False     # 防止断开后 SDK 自己重连
+          await _ws_client._disconnect()
+      except Exception:
+        pass
+      finally:
+        loop.stop()
+
+    try:
+      asyncio.run_coroutine_threadsafe(_shutdown(), loop)
+    except Exception as e:
+      logger.debug('[Feishu] 提交断连任务失败: %s', e)
+
+  thread = _thread
+  if thread is not None:
+    thread.join(timeout=8)
+    if thread.is_alive():
+      # 保留引用：_ensure_ws 会因线程仍活着而不再起第二条连接（宁可等重启，
+      # 也不要出现双连接）
+      logger.warning('[Feishu] WS 线程未在 8s 内退出（daemon，随进程结束）')
+      return
+  _thread = None
+  _ws_client = None
+  _ws_loop = None
+
+
 async def start() -> None:
-  global _main_loop, _api_client, _running, _leader_task
+  global _main_loop, _api_client, _running, _leader_task, _leader_lock
   if _running:
     return
   if not settings.LARK_APP_ID or not settings.LARK_APP_SECRET:
@@ -100,6 +174,7 @@ async def start() -> None:
   )
   _main_loop = asyncio.get_running_loop()
   _running = True
+  _leader_lock = LeaderLock('lark:leader', settings.LARK_LEADER_TTL)
 
   _leader_task = asyncio.create_task(_leader_loop())
   logger.info('[Feishu] 飞书机器人选主循环已启动')
@@ -111,12 +186,17 @@ async def _leader_loop() -> None:
   interval = settings.LARK_LEADER_TTL / 2
   while True:
     try:
-      is_leader = await asyncio.to_thread(_is_leader)
+      is_leader = await asyncio.to_thread(_leader_lock.is_leader)
       if is_leader:
-        await asyncio.to_thread(_renew_lease)
+        await asyncio.to_thread(_leader_lock.renew)
         _ensure_ws(channel)
       else:
-        acquired = await asyncio.to_thread(_try_acquire)
+        # 锁被抢走/过期（进程假死 >TTL）时必须断开：否则两条 WS 同时在线，
+        # 飞书把事件随机分派给其中一条，对话可能落到"已经不是 leader"的 worker
+        if _thread is not None and _thread.is_alive():
+          logger.warning('[Feishu] 失去 leader，主动断开 WS 避免双连接')
+          await asyncio.to_thread(_stop_ws)
+        acquired = await asyncio.to_thread(_leader_lock.try_acquire)
         if acquired:
           logger.info('[Feishu] 本 worker 成为飞书 leader，建立 WS 连接')
           _ensure_ws(channel)
@@ -128,8 +208,10 @@ async def _leader_loop() -> None:
 
 
 def _run_ws(event_handler_factory) -> None:
+  global _ws_client, _ws_loop
   loop = asyncio.new_event_loop()
   asyncio.set_event_loop(loop)
+  _ws_loop = loop
   try:
     import lark_oapi as lark
     import lark_oapi.ws.client as _ws_client_mod
@@ -143,10 +225,13 @@ def _run_ws(event_handler_factory) -> None:
     _ssl_context = ssl.create_default_context(cafile=certifi.where())
     _orig_ws_connect_kwargs = _ws_client_mod._ws_connect_kwargs
 
-    def _ws_connect_kwargs():
-      kwargs = _orig_ws_connect_kwargs()
-      kwargs['ssl'] = _ssl_context
-      return kwargs
+    # 签名在 SDK 版本间变过：1.7.3 是 `_ws_connect_kwargs()`，1.7.5 起是
+    # `_ws_connect_kwargs(connection_headers)`。写成固定无参会 TypeError，
+    # 症状是 WS **根本连不上**（日志只有一行 connect failed）。这里一律透传。
+    def _ws_connect_kwargs(*args, **kwargs):
+      merged = _orig_ws_connect_kwargs(*args, **kwargs)
+      merged['ssl'] = _ssl_context
+      return merged
 
     _ws_client_mod._ws_connect_kwargs = _ws_connect_kwargs
 
@@ -157,15 +242,23 @@ def _run_ws(event_handler_factory) -> None:
       event_handler=event_handler,
       log_level=lark.LogLevel.INFO,
     )
+    _ws_client = ws_client
     ws_client.start()
   except Exception:
-    logger.exception('[Feishu] WebSocket 异常退出')
+    # 主动断连时 loop.stop() 会让 run_until_complete 抛 RuntimeError，属预期
+    if not _ws_stop.is_set():
+      logger.exception('[Feishu] WebSocket 异常退出')
   finally:
-    loop.close()
+    _ws_client = None
+    _ws_loop = None
+    try:
+      loop.close()
+    except Exception:
+      pass
 
 
 async def shutdown() -> None:
-  global _running, _leader_task, _thread, _main_loop, _api_client
+  global _running, _leader_task, _main_loop, _api_client, _leader_lock
   _running = False
   if _leader_task is not None:
     _leader_task.cancel()
@@ -174,14 +267,15 @@ async def shutdown() -> None:
     except asyncio.CancelledError:
       pass
     _leader_task = None
-  try:
-    if await asyncio.to_thread(_is_leader):
-      await asyncio.to_thread(lambda: redis_manager.client.delete(_lock_key()))
-  except Exception:
-    pass
-  if _thread:
-    _thread.join(timeout=5)
-    _thread = None
+  # 先断开、再释放锁：新 leader 接上时本进程已不在收事件（优雅交接）
+  if _thread is not None or _ws_loop is not None:
+    await asyncio.to_thread(_stop_ws)
+  if _leader_lock is not None:
+    try:
+      await asyncio.to_thread(_leader_lock.release)
+    except Exception:
+      pass
+    _leader_lock = None
   _main_loop = None
   _api_client = None
   logger.info('[Feishu] 飞书机器人已停止')

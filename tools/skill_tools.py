@@ -14,6 +14,7 @@
 import asyncio
 import json
 import logging
+import shutil
 from typing import Literal
 from weakref import WeakValueDictionary
 
@@ -23,7 +24,6 @@ from langchain_core.runnables.config import RunnableConfig
 from core.agent.user_context import get_current_user_id
 from service.query.skills.storage import (
   append_history,
-  bump_skills_version,
   delete_skill,
   ensure_user_skill_editable,
   list_user_skills,
@@ -97,11 +97,9 @@ async def _scan_or_raise(name: str, rel_path: str, content: str, *, executable: 
 
 
 def _reload_skills() -> None:
-  """写盘后刷新全局技能注册 + 检索索引，并 bump 版本号（下条消息触发 agent 重建）。"""
-  from service.query.base.platform import register_platform
-  from service.query.skills.platform import register_skills_platform
-  register_platform(register_skills_platform())
-  bump_skills_version()
+  """写盘后刷新全局技能注册 + 检索索引（与技能中心 API 共用同一入口）。"""
+  from service.query.skills.platform import reload_skills
+  reload_skills()
 
 
 def _require_name(user_id: str, name: str) -> str:
@@ -115,6 +113,76 @@ def _thread_id(config: RunnableConfig | None) -> str | None:
   if not config:
     return None
   return (config.get('configurable') or {}).get('thread_id')
+
+
+@tool
+async def stage_skill_script(skill: str, script: str, config: RunnableConfig = None) -> str:
+  """把**技能自带的脚本**复制到会话工作区，之后用 analysis_exec 执行它。
+
+  技能的 SKILL.md 会写明「调哪个脚本、参数怎么传」。**不要读脚本内容**——脚本是固化的
+  确定性实现（固定实现 + 参数化调用），读它既浪费上下文、也容易自作主张改坏；照
+  SKILL.md 说的调即可。（这也是 DeerFlow 那条 "Do NOT read the python file,
+  just call it with the parameters" 的同款做法。）
+
+  沙箱禁 subprocess，所以脚本不能像命令行那样跑；本工具把脚本放进工作区后，
+  用 `analysis_exec(dataset_id='workspace', file='<本工具返回的脚本名>')` 执行。
+  脚本的工作目录就是工作区，数据/产物都用相对路径读写。
+
+  Args:
+    skill: 技能名（如 doc_translate）
+    script: 脚本相对技能 scripts/ 的路径（如 extract.py）
+  """
+  thread_id = _thread_id(config)
+  if not thread_id:
+    return json.dumps({'error': '无法确定当前会话'}, ensure_ascii=False)
+  try:
+    name = validate_skill_name(skill)
+  except ValueError as e:
+    return json.dumps({'error': f'技能名非法：{e}'}, ensure_ascii=False)
+
+  from service.query.skills.client import _check_owner, resolve_skill_dir
+
+  resolved = resolve_skill_dir(name)
+  if resolved is None:
+    return json.dumps({'error': f'技能 {name} 不存在'}, ensure_ascii=False)
+  skill_dir, owner = resolved
+  try:
+    _check_owner(owner, get_current_user_id())
+  except Exception:
+    return json.dumps({'error': f'技能 {name} 不存在或无权限'}, ensure_ascii=False)
+
+  scripts_dir = (skill_dir / 'scripts').resolve()
+  target = (scripts_dir / (script or '')).resolve()
+  if not scripts_dir.is_dir() or not target.is_file() or not target.is_relative_to(scripts_dir):
+    return json.dumps(
+      {'error': f'脚本不存在：scripts/{script}（技能 {name} 里有：{_list_scripts(scripts_dir)}）'},
+      ensure_ascii=False,
+    )
+
+  from core.sandbox.datasets import thread_dir
+
+  ws = thread_dir(thread_id) / 'workspace'
+  staged_name = f'{name}_{target.name}'
+  try:
+    ws.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(target, ws / staged_name)
+  except OSError as e:
+    return json.dumps({'error': f'复制脚本到工作区失败：{e}'}, ensure_ascii=False)
+
+  return json.dumps({
+    'dataset_id': 'workspace',
+    'file': staged_name,
+    'note': f'脚本已就绪，用 analysis_exec(dataset_id="workspace", file="{staged_name}") 执行',
+  }, ensure_ascii=False)
+
+
+def _list_scripts(scripts_dir) -> str:
+  """列出技能 scripts/ 下的文件，供报错时提示（取不到就返回"（空）"）。"""
+  try:
+    names = sorted(p.name for p in scripts_dir.iterdir() if p.is_file())
+  except OSError:
+    return '（空）'
+  return '、'.join(names) if names else '（空）'
 
 
 @tool
@@ -255,6 +323,9 @@ async def skill_manage(
         normalized = _require_name(user_id, normalized)
         prev_content = read_skill(user_id, normalized)
         delete_skill(user_id, normalized)
+        # 清掉启用状态，避免同名重建继承旧开关（best-effort）
+        from service.query.skills.states import remove_skill_state
+        await remove_skill_state(user_id, normalized)
         append_history(user_id, normalized, _history_record(
           action='delete', file_path='SKILL.md', prev_content=prev_content, new_content=None,
           thread_id=tid, scanner={'decision': 'allow', 'reason': 'Deletion requested.'},

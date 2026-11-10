@@ -19,8 +19,28 @@ from service.query.base.capability import Capability
 
 logger = logging.getLogger(__name__)
 
-# caller 契约：与 service/query/dcim/client.call 同签名
+# caller 契约：与 service/query/mgmt/client.py 的 call 同签名
 Caller = Callable[..., Awaitable[dict]]
+
+# 模式门控平台：能力**只在特定 task_mode 下可见**，其余模式连存在都看不到。
+# 三处消费这个集合（缺一不可）：
+#   1. manifest.build_category_manifest() —— 不进 <available-tools> 分类清单（构建期）
+#   2. intent_bindings.build_intent_bindings() —— 不进 planner 的闭合词汇表
+#   3. agent_service._rebuild —— 不进 build_deferred_setup 的检索目录（tool_search 搜不到），
+#      但名字要进 DeferredToolFilter 的隐藏集合（schema 默认隐藏 + 硬调被拦）
+# 目前只有 web：联网检索/抓取只在联网调研模式（task_mode='research'）或前端
+# 「联网搜索」开关（AgentRequest.web_search）下放开。
+MODE_GATED_PLATFORMS: frozenset[str] = frozenset({'web'})
+
+
+def platform_of(capability_id: str) -> str:
+  """从 capability id 取平台前缀（'mgmt.query_alarm' → 'mgmt'）。"""
+  return capability_id.split('.', 1)[0]
+
+
+def is_mode_gated(capability_id: str) -> bool:
+  """该能力是否属于模式门控平台。"""
+  return platform_of(capability_id) in MODE_GATED_PLATFORMS
 
 
 @dataclass(frozen=True)

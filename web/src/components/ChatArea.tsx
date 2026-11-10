@@ -1,20 +1,15 @@
 import { useState, useCallback, useEffect, useRef, useMemo, memo } from 'react';
 import { createPortal } from 'react-dom';
-import type { ReactNode } from 'react';
 import {
-  Bot, User, Sparkles, Trash2, Search, Wrench, ChevronDown, FileText, Copy, Check,
+  Bot, User, Sparkles, Trash2, Search, Globe, Wrench, SquareTerminal, NotebookPen, FolderOpen, BookOpenText, ChevronDown, FileText, Copy, Check,
   AlertCircle, RotateCcw, Loader2, MoreHorizontal, Pin, PinOff, Pencil,
 } from 'lucide-react';
 import { Input } from './ui/input';
-import ReactMarkdown from 'react-markdown';
-import remarkGfm from 'remark-gfm';
-import TableActions from './TableActions';
-import MermaidRenderer from './MermaidRenderer';
+import MarkdownContent from './MarkdownContent';
 import ChartRenderer from './ChartRenderer';
 import FileCard from './FileCard';
 import ArtifactPanel from './ArtifactPanel';
-import PlanCard from './PlanCard';
-import InterviewPanel from './InterviewPanel';
+import TodoTray from './TodoTray';
 
 function fixMermaidBlocks(text: string): string {
   if (!text) return text;
@@ -72,7 +67,8 @@ import { useChatStore, collectArtifacts } from '../stores/chatStore';
 import { useAuthStore } from '../stores/authStore';
 import ChatInput from './ChatInput';
 import { cn } from '@/lib/utils';
-import type { Message, ExecutionPlan, InterviewQuestion } from '../types';
+import { copyText } from '@/lib/clipboard';
+import type { Message } from '../types';
 
 // ── Agent 工具调用段解析 ──
 // chatStore 在 agent 流式时会插入 <tool-call name="x">args</tool-call> /
@@ -82,15 +78,98 @@ type MsgSegment =
   | { kind: 'text'; content: string }
   | { kind: 'tool'; name: string; args?: string; result?: string }
   | { kind: 'chart'; attrs: Record<string, string>; data: string }
-  | { kind: 'file'; url: string; name: string }
-  | { kind: 'plan'; plan: ExecutionPlan }
-  | { kind: 'interview'; questions: InterviewQuestion[] };
+  | { kind: 'file'; url: string; name: string };
+
+// 图表段落的最小列宽（px）。连续图表排成响应式网格：宽屏最多 2~3 列，每列不足这个宽度
+// 就退回单列——宁可单列大图，也不把图压小看不清。
+const CHART_MIN_COL_PX = 400;
+
+// 同一次回答里「同一类图」的硬上限，对齐系统提示词的约束 9。模型不听时这里兜底：
+// 同族第 3 张起不再渲染，末尾用小字提示省略了几张（数据仍留在 msg.content 里）。
+const MAX_CHARTS_PER_FAMILY = 2;
+// 「同类」按视觉同族算：column/bar 都是柱条、pie/donut 都是饼、line/area 都是线；
+// 其余图型各自成一族（不合并，避免把不同图型误当同类）。
+const CHART_FAMILY: Record<string, string> = {
+  column: 'bar',
+  bar: 'bar',
+  pie: 'pie',
+  donut: 'pie',
+  line: 'line',
+  area: 'line',
+};
+
+function chartFamily(type: string): string {
+  return CHART_FAMILY[type] || type || 'unknown';
+}
+
+/** 图表内容指纹：type + 按键排序的属性 + data 原文（纯字符串比较，不引 crypto）。
+ *  用于"同一张图只渲染一次"——模型常在过程叙述里出一遍、末尾总结里再出一遍。 */
+function chartFingerprint(seg: ChartSegment): string {
+  const attrs = Object.keys(seg.attrs)
+    .sort()
+    .map((k) => `${k}=${seg.attrs[k]}`)
+    .join('&');
+  return `${seg.attrs.type || ''}|${attrs}|${seg.data}`;
+}
+
+/** 图表限流 + 去重，返回保留段落与被丢张数：
+ *  ① 同一张图（指纹相同）**只留第一张**——幂等，让"重复出图"无害（`<file>` 卡早已按 url 去重，图缺的就是这层）；
+ *  ② 同族最多 MAX_CHARTS_PER_FAMILY 张。 */
+function capChartsByFamily(segments: MsgSegment[]): { list: MsgSegment[]; dropped: number } {
+  const seen = new Map<string, number>();
+  const seenFp = new Set<string>();
+  const list: MsgSegment[] = [];
+  let dropped = 0;
+  for (const seg of segments) {
+    if (seg.kind !== 'chart') {
+      list.push(seg);
+      continue;
+    }
+    const fp = chartFingerprint(seg);
+    if (seenFp.has(fp)) {
+      dropped += 1;
+      continue;
+    }
+    seenFp.add(fp);
+    const family = chartFamily(String(seg.attrs.type || ''));
+    const n = (seen.get(family) ?? 0) + 1;
+    seen.set(family, n);
+    if (n > MAX_CHARTS_PER_FAMILY) {
+      dropped += 1;
+      continue;
+    }
+    list.push(seg);
+  }
+  return { list, dropped };
+}
+
+type NonChartSegment = Exclude<MsgSegment, { kind: 'chart' }>;
+type ChartSegment = Extract<MsgSegment, { kind: 'chart' }>;
+
+/** 段落编排：把连续 chart 段合成一组（宽屏并排），其余段落各自独占一行。 */
+type MsgBlock =
+  | { kind: 'chart-group'; items: { seg: ChartSegment; key: number }[] }
+  | { kind: 'seg'; seg: NonChartSegment; key: number };
+
+function groupChartSegments(segments: MsgSegment[]): MsgBlock[] {
+  const blocks: MsgBlock[] = [];
+  segments.forEach((seg, i) => {
+    if (seg.kind !== 'chart') {
+      blocks.push({ kind: 'seg', seg, key: i });
+      return;
+    }
+    const last = blocks[blocks.length - 1];
+    if (last?.kind === 'chart-group') last.items.push({ seg, key: i });
+    else blocks.push({ kind: 'chart-group', items: [{ seg, key: i }] });
+  });
+  return blocks;
+}
 
 const TOOL_TAG_RE = /<tool-(call|result) name="([^"]*)">([\s\S]*?)<\/tool-\1>/g;
-const CHART_TAG_RE = /<chart\b([^>]*)>([\s\S]*?)<\/chart>/g;
+// `<chart …/>`（**当前形态**：只写属性，数据由服务端注入）与 `<chart …>JSON</chart>`（历史遗留）都认。
+// 捕获组仍是 2 个（属性 / 标签体），否则下面按组号取值的逻辑会错位。
+const CHART_TAG_RE = /<chart\b([^>]*?)(?:\/>|>([\s\S]*?)<\/chart>)/g;
 const FILE_TAG_RE = /<file\b([^>]*)\/>/g;
-const PLAN_TAG_RE = /<plan\b[^>]*>([\s\S]*?)<\/plan>/g;
-const INTERVIEW_TAG_RE = /<interview\b[^>]*>([\s\S]*?)<\/interview>/g;
 
 // 产物 URL（Markdown 链接 / 裸 URL）识别——LLM 偶尔跑偏不输出 <file> 标签而写成链接，
 // 这里兜底拆成 file 段，避免纯文字看不出是可下载文件。URL 归一化由 FileCard 内部完成。
@@ -138,18 +217,26 @@ function parseAttrs(raw: string): Record<string, string> {
   return attrs;
 }
 
-function parseMessageSegments(text: string): MsgSegment[] {
+/** 图表数据 → ChartRenderer 要的 JSON 字符串；取不到返回空串（渲染器走空态，不报错）。 */
+function jsonOfChart(value: unknown): string {
+  return value === undefined || value === null ? '' : JSON.stringify(value);
+}
+
+/** 已废弃的旧标记（计划卡片/澄清问卷时代的产物）：浏览器里尚未刷新完的旧流可能残留，
+ * 统一剥掉，避免把内部 JSON 以裸文本显示给用户。 */
+const LEGACY_BLOCK_RE = /<(plan|interview)\b[^>]*>[\s\S]*?<\/\1>/g;
+
+function parseMessageSegments(raw: string): MsgSegment[] {
+  const text = raw.replace(LEGACY_BLOCK_RE, '');
   if (
-    !text.includes('<tool-') && !text.includes('<chart') && !text.includes('<file') &&
-    !text.includes('<plan') && !text.includes('<interview')
+    !text.includes('<tool-') && !text.includes('<chart') && !text.includes('<file')
   ) {
     // 无结构化标签也可能带产物链接/裸 URL，仍走拆分
     return splitArtifactRefs(text);
   }
   const segments: MsgSegment[] = [];
   const re = new RegExp(
-    `(?:${TOOL_TAG_RE.source})|(?:${CHART_TAG_RE.source})|(?:${FILE_TAG_RE.source})|` +
-    `(?:${PLAN_TAG_RE.source})|(?:${INTERVIEW_TAG_RE.source})`,
+    `(?:${TOOL_TAG_RE.source})|(?:${CHART_TAG_RE.source})|(?:${FILE_TAG_RE.source})`,
     'g',
   );
   let lastIndex = 0;
@@ -159,8 +246,8 @@ function parseMessageSegments(text: string): MsgSegment[] {
       const t = text.slice(lastIndex, m.index);
       if (t.trim()) segments.push(...splitArtifactRefs(t));
     }
-    // 组：tool 1-3，chart 4-5，file 6，plan 7，interview 8（未参与匹配的组为 undefined）
-    const [, tagType, name, toolBody, chartAttrs, chartBody, fileAttrs, planBody, interviewBody] = m;
+    // 组：tool 1-3，chart 4-5，file 6（未参与匹配的组为 undefined）
+    const [, tagType, name, toolBody, chartAttrs, chartBody, fileAttrs] = m;
     if (tagType) {
       if (tagType === 'call') {
         segments.push({ kind: 'tool', name, args: toolBody });
@@ -174,22 +261,10 @@ function parseMessageSegments(text: string): MsgSegment[] {
         else segments.push({ kind: 'tool', name, result: toolBody });
       }
     } else if (chartAttrs !== undefined) {
-      segments.push({ kind: 'chart', attrs: parseAttrs(chartAttrs || ''), data: chartBody });
+      segments.push({ kind: 'chart', attrs: parseAttrs(chartAttrs || ''), data: chartBody || '' });
     } else if (fileAttrs !== undefined) {
       const attrs = parseAttrs(fileAttrs || '');
       segments.push({ kind: 'file', url: attrs.url || '', name: attrs.name || '' });
-    } else if (planBody !== undefined) {
-      try {
-        segments.push({ kind: 'plan', plan: JSON.parse(planBody) as ExecutionPlan });
-      } catch {
-        // 计划 JSON 解析失败则忽略该段
-      }
-    } else if (interviewBody !== undefined) {
-      try {
-        segments.push({ kind: 'interview', questions: JSON.parse(interviewBody) as InterviewQuestion[] });
-      } catch {
-        // 访谈 JSON 解析失败则忽略该段
-      }
     }
     lastIndex = re.lastIndex;
   }
@@ -200,17 +275,28 @@ function parseMessageSegments(text: string): MsgSegment[] {
   return segments;
 }
 
+function toolIcon(name: string) {
+  // 联网工具单独给图标（对齐 DeerFlow：web_search 用放大镜、web_fetch 用地球），
+  // 让人一眼看出这一步是"检索"还是"读网页"；其余工具暂时统一 Wrench
+  // （SquareTerminal/NotebookPen/FolderOpen/BookOpenText import 保留备用）
+  void [SquareTerminal, NotebookPen, FolderOpen, BookOpenText];
+  if (name === 'web__search') return Search;
+  if (name === 'web__fetch') return Globe;
+  return Wrench;
+}
+
 function ToolCard({ name, args, result }: { name: string; args?: string; result?: string }) {
   const [open, setOpen] = useState(false);
   const status = useChatStore((s) => s.toolStatus?.[name]);
   const done = result !== undefined;
+  const Icon = toolIcon(name);
   return (
-    <div className="my-2 overflow-hidden rounded-lg border border-border bg-card/85 text-xs">
+    <div className="my-2 overflow-hidden rounded-lg border border-border bg-[var(--panel)] text-xs">
       <button
         onClick={() => setOpen((v) => !v)}
         className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-muted/50 transition-colors"
       >
-        <Wrench className="size-3.5 shrink-0 text-primary" />
+        <Icon className="size-3.5 shrink-0 text-primary" />
         <span className="font-medium font-mono">{name}</span>
         <span className="text-muted-foreground">
           {done ? '调用完成' : (status || '调用中...')}
@@ -285,72 +371,78 @@ export const MessageBubble = memo(function MessageBubble({
   isStreaming,
   isLast,
   userName,
+  chartData,
 }: {
   msg: Message;
   isStreaming: boolean;
   isLast: boolean;
   userName: string;
+  /** 本会话的图表数据 `{组名: rows}`：正文只写 `<chart group="…"/>`，数据按组名从这里取 */
+  chartData?: Record<string, unknown>;
 }) {
   const segments = useMemo(() => {
     const raw = msg.content || '';
     const parsed = parseMessageSegments(raw);
-    return parsed.map((seg) => {
+    const mapped = parsed.map((seg) => {
       if (seg.kind !== 'text') return seg;
       const fixed = isStreaming && isLast
         ? fixMermaidBlocks(hideIncompleteFile(hideIncompleteChart(hideIncompleteMermaid(seg.content))))
         : fixMermaidBlocks(seg.content);
       return { ...seg, content: fixed };
     });
+    // 同一消息内重复的 <file>（模型偶发重复输出）按 url 去重，只保留第一张卡
+    const seen = new Set<string>();
+    return mapped.filter((seg) => {
+      if (seg.kind !== 'file') return true;
+      const key = (seg.url || '').replace(/\/+$/, '');
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
   }, [msg.content, isStreaming, isLast]);
+  // 同族限流（约束 9 的兜底）→ 再按连续图分组排网格
+  const { list: cappedSegments, dropped: droppedCharts } = useMemo(
+    () => capChartsByFamily(segments),
+    [segments],
+  );
+  const blocks = useMemo(() => groupChartSegments(cappedSegments), [cappedSegments]);
   const isAssistant = msg.role === 'assistant';
   // 空气泡：流式且最后一条且尚无任何内容时，显示思考指示器替代空泡
   const showThinking = isAssistant && isStreaming && isLast && !(msg.content || '').trim();
   const deleteMessage = useChatStore((s) => s.deleteMessage);
   const retryFailed = useChatStore((s) => s.retryFailed);
   const [copied, setCopied] = useState(false);
+  const [copyFailed, setCopyFailed] = useState(false);
 
   const handleCopy = async () => {
-    try {
-      await navigator.clipboard.writeText(msg.content || '');
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
-    } catch {
-      // ignore
+    // 只复制正文：msg.content 里混着 <tool-call>/<tool-result>/<chart>/<file>/<plan> 等内部标记，
+    // 整段拷会把工具参数与返回（一大坨 JSON）一起塞给用户。这里只取 parse 出来的文本段。
+    const parts: string[] = [];
+    for (const seg of segments) {
+      if (seg.kind === 'text') parts.push(seg.content.trim());
     }
+    const text = parts.filter(Boolean).join('\n\n');
+    if (!text) {
+      // 整条回答只有工具卡片/图表、没有正文 → 没东西可拷，别谎报"已复制"
+      setCopyFailed(true);
+      setTimeout(() => setCopyFailed(false), 1500);
+      return;
+    }
+    // 走共用工具：HTTP 入口下 navigator.clipboard 不存在，copyText 会降级到 execCommand；
+    // 失败要给反馈（原来是空 catch 静默吞掉，用户只看到"点了没用"）
+    const ok = await copyText(text);
+    setCopied(ok);
+    setCopyFailed(!ok);
+    setTimeout(() => {
+      setCopied(false);
+      setCopyFailed(false);
+    }, 1500);
   };
 
   const handleDelete = () => {
     if (window.confirm('删除这条回答？')) {
       void deleteMessage(msg.session_id, msg.message_id);
     }
-  };
-
-  const markdownComponents = {
-    table: ({ children }: { children?: ReactNode }) => {
-      return (
-        <TableActions>
-          <table className="assistant-table">{children}</table>
-        </TableActions>
-      );
-    },
-    code: ({ className, children, ...props }: { className?: string; children?: ReactNode }) => {
-      const codeText = String(children).replace(/\n$/, '');
-      if (className === 'language-mermaid') {
-        return <MermaidRenderer code={codeText} />;
-      }
-      if (!className) {
-        return (
-          <code className="rounded bg-muted px-1 py-0.5 text-xs font-mono" {...props}>
-            {children}
-          </code>
-        );
-      }
-      return (
-        <pre className="overflow-x-auto rounded-lg bg-muted p-3 my-3">
-          <code className="text-xs font-mono">{codeText}</code>
-        </pre>
-      );
-    },
   };
 
   return (
@@ -371,7 +463,7 @@ export const MessageBubble = memo(function MessageBubble({
           : <Bot className="size-4" />
         }
       </div>
-      <div className={cn('max-w-[80%]', msg.role === 'user' && 'flex flex-col items-end')}>
+      <div className={cn('min-w-0 max-w-[80%] break-words', msg.role === 'user' && 'flex flex-col items-end')}>
         <p className="mb-1 text-xs font-medium text-muted-foreground">
           {msg.role === 'user' ? userName : 'AI 助手'}
         </p>
@@ -392,29 +484,17 @@ export const MessageBubble = memo(function MessageBubble({
         <div
           className={cn(
             'rounded-2xl px-4 py-2.5 text-sm leading-relaxed',
+            // 气泡底色走 --bubble（浅米色），不用全局 --secondary：后者是冷色(hue 247)，摆在新
+            // 的暖白页面上显浅蓝；而且 --secondary 还被输入框胶囊/按钮/徽标/搜索框复用，改它会
+            // 连带改到输入区。深色/黑色主题里 --bubble 等于各自 --secondary，观感不变。
             msg.role === 'user'
-              ? 'rounded-tr-sm bg-secondary text-secondary-foreground'
-              : 'rounded-tl-sm bg-secondary text-secondary-foreground',
+              ? 'rounded-tr-sm bg-[var(--bubble)] text-secondary-foreground'
+              : 'rounded-tl-sm bg-[var(--bubble)] text-secondary-foreground',
           )}
         >
           {isAssistant ? (
             <div className="assistant-msg max-w-none">
-              {msg.streamError ? (
-                <div className="flex flex-col items-start gap-2 rounded-lg border border-destructive/40 bg-destructive/5 px-3 py-2">
-                  <p className="flex items-center gap-1.5 text-sm text-destructive">
-                    <AlertCircle className="size-4 shrink-0" />
-                    {msg.streamError}
-                  </p>
-                  <button
-                    type="button"
-                    onClick={() => void retryFailed()}
-                    className="inline-flex items-center gap-1.5 rounded-md border border-border px-2 py-1 text-xs text-foreground transition-colors hover:bg-muted"
-                  >
-                    <RotateCcw className="size-3" />
-                    重试
-                  </button>
-                </div>
-              ) : showThinking ? (
+              {showThinking ? (
                 <div className="flex items-center gap-1.5 py-1">
                   <span className="size-1.5 animate-bounce rounded-full bg-muted-foreground/60" />
                   <span className="size-1.5 animate-bounce rounded-full bg-muted-foreground/60 [animation-delay:150ms]" />
@@ -423,41 +503,70 @@ export const MessageBubble = memo(function MessageBubble({
                 </div>
               ) : (
                 <>
-                {segments.map((seg, i) => {
+                {blocks.map((block) => {
+                if (block.kind === 'chart-group') {
+                  // 连续图表排成响应式网格：auto-fit 按容器实宽定列数（宽屏最多 2~3 列，每列不足
+                  // CHART_MIN_COL_PX 就退回单列）。不用 sm:/2xl: 视口断点——气泡宽度随右侧面板
+                  // 开合变化，断点会判错。
+                  return (
+                    <div
+                      key={block.items[0].key}
+                      className="my-2 grid gap-3"
+                      style={{
+                        gridTemplateColumns:
+                          `repeat(auto-fit,minmax(min(${CHART_MIN_COL_PX}px,100%),1fr))`,
+                      }}
+                    >
+                      {block.items.map(({ seg, key }) => (
+                        <ChartRenderer
+                          key={key}
+                          spec={{
+                            type: seg.attrs.type || '',
+                            attrs: seg.attrs,
+                            // 数据**不从正文取**（模型不再写 JSON —— 正文写会被引号截断、图直接崩）：
+                            // 优先用历史遗留的标签体，否则按 `group` 从服务端注入的数据里查
+                            data: seg.data || jsonOfChart(chartData?.[seg.attrs.group || '']),
+                          }}
+                        />
+                      ))}
+                    </div>
+                  );
+                }
+                const { seg, key: i } = block;
                 if (seg.kind === 'tool') {
                   return <ToolCard key={i} name={seg.name} args={seg.args} result={seg.result} />;
-                }
-                if (seg.kind === 'chart') {
-                  return (
-                    <ChartRenderer
-                      key={i}
-                      spec={{ type: seg.attrs.type || '', attrs: seg.attrs, data: seg.data }}
-                    />
-                  );
                 }
                 if (seg.kind === 'file') {
                   return <FileCard key={i} url={seg.url} name={seg.name} />;
                 }
-                if (seg.kind === 'plan') {
-                  return <PlanCard key={i} plan={seg.plan} />;
-                }
-                if (seg.kind === 'interview') {
-                  return <InterviewPanel key={i} questions={seg.questions} />;
-                }
-                return (
-                  <ReactMarkdown
-                    key={i}
-                    remarkPlugins={[remarkGfm]}
-                    components={markdownComponents}
-                  >
-                    {seg.content}
-                  </ReactMarkdown>
-                );
+                return <MarkdownContent key={i} content={seg.content} />;
               })}
-                {isAssistant && isStreaming && isLast && (
+                {droppedCharts > 0 && (
+                  // 同族图超过上限被隐去（约束 9 的前端兜底）；明说一句，免得用户以为内容丢了
+                  <p className="mt-1.5 text-xs text-muted-foreground">
+                    （另有 {droppedCharts} 张同类/重复图已省略）
+                  </p>
+                )}
+                {isAssistant && isStreaming && isLast && !msg.streamError && (
                   <div className="mt-1.5 flex items-center gap-1.5 text-xs text-muted-foreground">
                     <span className="size-1.5 animate-pulse rounded-full bg-primary/60" />
                     <span>正在生成…</span>
+                  </div>
+                )}
+                {msg.streamError && (
+                  <div className="mt-2 flex flex-col items-start gap-2 rounded-lg border border-destructive/40 bg-destructive/5 px-3 py-2">
+                    <p className="flex items-center gap-1.5 text-sm text-destructive">
+                      <AlertCircle className="size-4 shrink-0" />
+                      {msg.streamError}
+                    </p>
+                    <button
+                      type="button"
+                      onClick={() => void retryFailed()}
+                      className="inline-flex items-center gap-1.5 rounded-md border border-border px-2 py-1 text-xs text-foreground transition-colors hover:bg-muted"
+                    >
+                      <RotateCcw className="size-3" />
+                      重试
+                    </button>
                   </div>
                 )}
                 </>
@@ -475,11 +584,14 @@ export const MessageBubble = memo(function MessageBubble({
             <button
               type="button"
               onClick={handleCopy}
-              title={copied ? '已复制' : '复制'}
+              title={copyFailed ? '复制失败' : copied ? '已复制' : '复制'}
               className="rounded p-1 text-muted-foreground/70 transition-colors hover:bg-muted/60 hover:text-foreground"
             >
               {copied ? <Check className="size-3.5" /> : <Copy className="size-3.5" />}
             </button>
+            {copyFailed && (
+              <span className="text-xs text-destructive">复制失败</span>
+            )}
             <button
               type="button"
               onClick={handleDelete}
@@ -499,7 +611,10 @@ export default function ChatArea() {
   const {
     messages, isStreaming, isLoadingMessages, sessions, currentSessionId,
     selectSession, deleteSession, pinSession, renameSession, sessionPanelOpen, closeSessionPanel,
+    sessionTodos, sessionsTotal, loadingMoreSessions, loadMoreSessions,
+    sessionChartData,
   } = useChatStore();
+  const todos = (currentSessionId && sessionTodos[currentSessionId]) || [];
   const user = useAuthStore((s) => s.user);
   const pushArtifact = useChatStore((s) => s.pushArtifact);
   const pendingJump = useChatStore((s) => s.pendingJump);
@@ -580,9 +695,14 @@ export default function ChatArea() {
     clearPendingJump();
   }, [pendingJump, currentSessionId, isLoadingMessages, messages, clearPendingJump]);
 
-  // Hide empty "新对话" sessions (created before first message was sent)
+  // 只藏「标题仍是占位名 且 一条消息都没有」的真·空壳（还没说话的占位会话）。
+  // 判据必须用 message_count，**不能用标题**：标题可能长期停在「新对话」（改名要一次
+  // 额外写入），按标题过滤会把有内容的会话一起藏掉、用户在侧栏再也找不到（2026-09 事故）。
   const displaySessions = sessions.filter(
-    (s) => s.title !== '新对话' || s.session_id === currentSessionId,
+    (s) =>
+      s.title !== '新对话' ||
+      s.message_count > 0 ||
+      s.session_id === currentSessionId,
   );
   const filteredSessions = sessionSearch
     ? displaySessions.filter((s) => s.title.toLowerCase().includes(sessionSearch.toLowerCase()))
@@ -620,7 +740,17 @@ export default function ChatArea() {
             />
           </div>
         </div>
-        <div className="flex-1 overflow-y-auto p-2">
+        <div
+          className="flex-1 overflow-y-auto p-2"
+          onScroll={(e) => {
+            // 滚到接近底部就翻下一页（对齐 DeerFlow 的无限滚动）；搜索时不分页
+            if (sessionSearch) return;
+            const el = e.currentTarget;
+            if (el.scrollHeight - el.scrollTop - el.clientHeight < 120) {
+              void loadMoreSessions();
+            }
+          }}
+        >
           {filteredSessions.length === 0 && (
             <p className="px-2 py-4 text-center text-xs text-muted-foreground">
               {sessionSearch ? '无匹配会话' : '暂无会话'}
@@ -721,6 +851,12 @@ export default function ChatArea() {
               </div>
             </div>
           ))}
+          {/* 还有更早的会话没翻出来（后端 total > 已加载数）→ 给一行加载态 */}
+          {!sessionSearch && sessions.length < sessionsTotal && (
+            <p className="px-2 py-3 text-center text-xs text-muted-foreground">
+              {loadingMoreSessions ? '加载中…' : '下滑加载更早的会话'}
+            </p>
+          )}
         </div>
       </div>
 
@@ -754,10 +890,14 @@ export default function ChatArea() {
                   isStreaming={isStreaming}
                   isLast={idx === messages.length - 1}
                   userName={user?.name || user?.phone || '我'}
+                  chartData={currentSessionId ? sessionChartData[currentSessionId] : undefined}
                 />
               ))
             )}
           </div>
+
+          {/* 计划模式任务清单：贴在输入框正上方（DeerFlow 同款位置），不占消息流 */}
+          <TodoTray todos={todos} />
 
           {/* Input */}
           <ChatInput suggestions={SUGGESTIONS} />

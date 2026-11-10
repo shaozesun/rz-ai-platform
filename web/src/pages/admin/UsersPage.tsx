@@ -10,13 +10,19 @@ import type { AdminUser } from '../../types';
 
 const PROTECTED_PHONE = '18888888888';
 
-const ALL_ROLES = ['user', 'admin'];
+// 与后端 models/user.py 的 ALL_PERMISSIONS 对齐（这里是**手写副本**，后端加权限时要同步，
+// 否则页面里"没有这个权限"、没法单独授权 —— ai:agent 就这么缺过一次）
+const ALL_ROLES = ['user', 'admin', 'power_user', 'dc_operator'];
 const ALL_PERMISSIONS: { key: string; label: string }[] = [
   { key: 'ai:chat', label: 'AI 对话' },
   { key: 'ai:knowledge', label: '知识库管理' },
   { key: 'ai:risk', label: '隐患识别' },
   { key: 'ai:fire_safety', label: '消防配置' },
   { key: 'ai:video', label: '视频生成' },
+  { key: 'ai:agent', label: 'AI Agent 对话' },
+  { key: 'scheduled_task:manage', label: '定时任务管理' },
+  // 注意：**故意不列 system:admin** —— 后端 update_user_permissions 会把非 admin 角色的
+  // system:admin 静默剥掉（admin.py 的护栏），列出来只会让管理员"勾了却没生效"
 ];
 
 const PAGE_SIZE = 20;

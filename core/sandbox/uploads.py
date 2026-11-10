@@ -5,11 +5,17 @@
 analysis_load，还没有 dataset_id）。仅当前会话内持久化，不跨会话/按用户共享。
 """
 
+import logging
 import re
 import time
 from pathlib import Path
 
 from config.settings import settings
+
+logger = logging.getLogger(__name__)
+
+# PPT 用更大的上限（带图汇报稿常见 20~80MB）：这块由 settings.AGENT_UPLOAD_MAX_FILE_MB_PPT 控制
+_PPT_EXTS = {'.ppt', '.pptx'}
 
 # 与 datasets.py 一致的安全字符集（用于 thread_id 目录名净化）
 _SAFE_RE = re.compile(r'[^A-Za-z0-9_.-]+')
@@ -72,9 +78,17 @@ def save_upload(thread_id: str, filename: str, content: bytes) -> dict:
   Raises:
     UploadError: 文件名非法、超过单文件大小上限、或会话上传文件数已达上限
   """
-  max_mb = settings.AGENT_UPLOAD_MAX_FILE_MB
-  if max_mb and len(content) > max_mb * 1024 * 1024:
-    raise UploadError(f'文件超过 {max_mb}MB 上限')
+  suffix = Path(_normalize_filename(filename)).suffix.lower()
+  max_mb = (settings.AGENT_UPLOAD_MAX_FILE_MB_PPT if suffix in _PPT_EXTS
+            else settings.AGENT_UPLOAD_MAX_FILE_MB)
+  size_mb = len(content) / 1024 / 1024
+  if max_mb and size_mb > max_mb:
+    logger.warning('上传被拒（超大小上限）: thread=%s file=%s size=%.1fMB limit=%dMB',
+                   thread_id, filename, size_mb, max_mb)
+    raise UploadError(
+      f'文件 {size_mb:.1f}MB 超过 {max_mb:g}MB 上限（{suffix} 类型）；'
+      f'可压缩图片或拆分后重试'
+    )
 
   upload_dir = _session_dir(thread_id)
   upload_dir.mkdir(parents=True, exist_ok=True)
@@ -82,6 +96,8 @@ def save_upload(thread_id: str, filename: str, content: bytes) -> dict:
   existing_names = {p.name for p in upload_dir.iterdir() if p.is_file()}
   max_files = settings.AGENT_UPLOAD_MAX_FILES_PER_SESSION
   if max_files and len(existing_names) >= max_files:
+    logger.warning('上传被拒（会话文件数上限）: thread=%s files=%d limit=%d',
+                   thread_id, len(existing_names), max_files)
     raise UploadError(f'本会话上传文件数已达 {max_files} 个上限，请先清理旧对话')
 
   safe_name = _normalize_filename(filename)

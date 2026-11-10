@@ -7,12 +7,16 @@ import { Card, CardContent } from '@/components/ui/card';
 import { getRoles, createRole, updateRole } from '../../api/admin';
 import type { Role } from '../../types';
 
+// 与后端 models/user.py 的 ALL_PERMISSIONS 对齐（手写副本，后端加权限时要同步）
+// 不列 system:admin：后端不允许非 admin 角色持有它（会静默剥掉）
 const ALL_PERMISSIONS = [
   'ai:chat',
   'ai:knowledge',
   'ai:risk',
   'ai:fire_safety',
   'ai:video',
+  'ai:agent',
+  'scheduled_task:manage',
 ];
 
 export default function RolesPage() {

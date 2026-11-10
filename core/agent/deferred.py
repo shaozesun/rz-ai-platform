@@ -6,7 +6,7 @@
   tool_search 发现工具 → 返回发现卡片并记入 state['promoted'] → 之后才能带强
   schema 调用。
 - rz 的改进：tool_search 的检索不用 DeerFlow 原生的正则匹配，改用
-  service/query/dcim/retriever.py 的 embedding 语义检索（命中同义/意图更准）。
+  service/query/base/retriever.py 的 embedding 语义检索（命中同义/意图更准）。
 
 参考源码：~/PycharmProjects/deer-flow/backend/packages/harness/deerflow/
   agents/middlewares/deferred_tool_filter_middleware.py + tools/builtins/tool_search.py
@@ -185,6 +185,11 @@ def build_tool_search(catalog: DeferredCatalog, top_k: int = 8) -> BaseTool:
 
     cap_ids = await search_capabilities(query, k=top_k)
     current_user = get_current_user_id()
+    # 本人已停用的自建技能不 promote、不进发现卡片（开关是运行时偏好，不动共享图）
+    disabled: set[str] = set()
+    if current_user:
+      from service.query.skills.states import get_disabled_skill_names
+      disabled = await get_disabled_skill_names(current_user)
     # capability_id → 工具名 → catalog 里的真工具
     matched = []
     for cid in cap_ids:
@@ -192,6 +197,8 @@ def build_tool_search(catalog: DeferredCatalog, top_k: int = 8) -> BaseTool:
       # 用户自建技能只对本人生效：非本人技能在检索结果里过滤掉（不 promote、不进
       # ToolMessage），实现运行期按用户隔离
       if cap is not None and cap.owner and cap.owner != current_user:
+        continue
+      if cap is not None and cap.owner and cap.id.split('.')[1] in disabled:
         continue
       t = catalog.by_name(capability_to_tool_name(cid))
       if t is not None:
@@ -218,8 +225,17 @@ def build_tool_search(catalog: DeferredCatalog, top_k: int = 8) -> BaseTool:
   return tool_search
 
 
-def build_deferred_setup(deferred_tools: list[BaseTool], top_k: int = 8):
+def build_deferred_setup(
+  deferred_tools: list[BaseTool], top_k: int = 8, extra_hidden: tuple[str, ...] = (),
+):
   """从 deferred 工具集组装：catalog + tool_search + filter middleware。
+
+  Args:
+    deferred_tools: 进检索目录的工具（tool_search 能搜到、能 promote 出来）
+    top_k: tool_search 每次最多返回几个
+    extra_hidden: **不进检索目录、但默认也要隐藏 schema** 的工具名。用于模式门控的
+      工具（如联网调研模式的 web 工具）：tool_search 搜不到（模型无法自己 promote），
+      只有编排层在该模式下预 promote 才可见；硬调也会被 filter 拦成错误消息。
 
   Returns:
     (all_tools, middleware, deferred_names, catalog_hash)
@@ -230,7 +246,7 @@ def build_deferred_setup(deferred_tools: list[BaseTool], top_k: int = 8):
   """
   catalog = DeferredCatalog(tuple(deferred_tools))
   search_tool = build_tool_search(catalog, top_k=top_k)
-  mw = DeferredToolFilterMiddleware(catalog.names, catalog.hash)
+  mw = DeferredToolFilterMiddleware(frozenset(catalog.names) | set(extra_hidden), catalog.hash)
   all_tools = list(deferred_tools) + [search_tool]
   return all_tools, mw, catalog.names, catalog.hash
 

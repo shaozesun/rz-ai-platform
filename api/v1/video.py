@@ -23,9 +23,17 @@ from models.video import (
 )
 from service.video.pipeline import run_video_pipeline
 
-def _write_file_sync(path: str, data: bytes) -> None:
-  with open(path, 'wb') as f:
-    f.write(data)
+_UPLOAD_CHUNK_SIZE = 1024 * 1024
+
+
+async def _save_upload(file: UploadFile, path: str) -> None:
+  """分块落盘，避免把整个 PPT 一次性读进内存（几十页含图 PPT 可达上百 MB）。"""
+  with open(path, 'wb') as out:
+    while True:
+      chunk = await file.read(_UPLOAD_CHUNK_SIZE)
+      if not chunk:
+        break
+      await asyncio.to_thread(out.write, chunk)
 
 
 # 限制同时运行的视频生成任务数
@@ -46,6 +54,8 @@ async def create_video_task(
   resolution: str = Form('1080p'),
   voice: str = Form('neutral'),
   subtitle_style: str = Form('default'),
+  speech_language: str = Form('zh-CN'),
+  subtitle_language: str = Form('zh-CN'),
 ):
   """Upload a PPT file and create a video generation task."""
   # Validate file extension
@@ -60,8 +70,7 @@ async def create_video_task(
   file_id = uuid.uuid4().hex
   saved_name = f'{file_id}{ext}'
   file_path = os.path.join(settings.UPLOAD_DIR, saved_name)
-  content = await file.read()
-  await asyncio.to_thread(_write_file_sync, file_path, content)
+  await _save_upload(file, file_path)
 
   user = request.state.current_user
   task = VideoTask(
@@ -74,6 +83,8 @@ async def create_video_task(
       resolution=resolution,
       voice=voice,
       subtitle_style=subtitle_style,
+      speech_language=speech_language,
+      subtitle_language=subtitle_language,
     ),
   )
 

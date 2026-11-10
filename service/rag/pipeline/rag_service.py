@@ -996,6 +996,9 @@ JSON 输出："""
         if not api_key:
             logger.warning("LLM_API_KEY 未设置，将使用空字符串")
         final_api_key = SecretStr(api_key) if api_key else None
+        # 挂用量回调：本链路自己 new ChatOpenAI、不经过 model_gateway.chat()，
+        # 原先完全不写 llm_usage（仪表盘「算力消耗」漏掉整条 RAG 对话）
+        from core.agent.usage import UsageLoggingHandler
         return ChatOpenAI(
             base_url=settings.LLM_BASE_URL,
             model=settings.LLM_MODEL,
@@ -1005,6 +1008,7 @@ JSON 输出："""
             extra_body={
                 "chat_template_kwargs": {"enable_thinking": False},
             },
+            callbacks=[UsageLoggingHandler('rag')],
         )
 
     @staticmethod

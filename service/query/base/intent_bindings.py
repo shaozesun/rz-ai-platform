@@ -8,7 +8,7 @@
 两套漂移；新增能力只需填 `category`，绑定表与分类清单自动跟着变。
 """
 
-from service.query.base.platform import all_capabilities
+from service.query.base.platform import all_capabilities, is_mode_gated
 
 
 def build_intent_bindings() -> dict[str, list[str]]:
@@ -22,6 +22,8 @@ def build_intent_bindings() -> dict[str, list[str]]:
   for cap in all_capabilities():
     if cap.owner:
       continue  # 用户自建技能不进路由词汇表（按需 tool_search 命中，不预 promote）
+    if is_mode_gated(cap.id):
+      continue  # 模式门控平台（如 web）不进词汇表，否则 planner 能把它路由进来
     labels = cap.intent_labels if cap.intent_labels else ((cap.category,) if cap.category else ())
     for label in labels:
       result.setdefault(label, []).append(cap.id)

@@ -4,12 +4,15 @@ import {
   LayoutDashboard,
   Lightbulb,
   MessageSquareText,
+  FileText,
   Clapperboard,
   ShieldAlert,
   Flame,
   BookOpen,
   Clock,
+  ShieldCheck,
   Users,
+  User,
   Shield,
   KeyRound,
   Settings,
@@ -19,6 +22,8 @@ import {
   PanelLeftOpen,
   X,
   LogOut,
+  Bot,
+  Wrench,
   type LucideIcon,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
@@ -64,10 +69,21 @@ const navGroups: NavGroup[] = [
     ],
   },
   {
+    label: '智能体',
+    items: [
+      { href: '/agent-skills', label: '技能中心', icon: Bot, perm: 'ai:agent' },
+      { href: '/agent-tools', label: '工具中心', icon: Wrench, perm: 'ai:agent' },
+    ],
+  },
+  {
     label: 'AI 能力',
     items: [
       { href: '/assistant', label: '对话助手', icon: MessageSquareText, perm: 'ai:chat' },
-      { href: '/scheduled-tasks', label: '定时任务', icon: Clock, perm: 'ai:agent' },
+      // 定时任务/分析报告：后端 API 门控是 scheduled_task:manage，前端按同一口径（此前用 ai:agent，会出现"能进页面但接口 403"）
+      { href: '/analysis-reports', label: '分析报告', icon: FileText, perm: 'ai:agent' },
+      { href: '/compliance', label: '合规检查', icon: ShieldCheck, perm: 'ai:agent' },
+      { href: '/scheduled-tasks', label: '定时任务', icon: Clock, perm: 'scheduled_task:manage' },
+      // 名字保持「视频生成」（表单页：批量提交/看历史）；输入栏那个同名开关是"本轮对话里做视频"
       { href: '/video', label: '视频生成', icon: Clapperboard, perm: 'ai:video' },
       { href: '/knowledge', label: '知识库', icon: BookOpen, perm: 'ai:knowledge' },
       { href: '/risk', label: '隐患识别', icon: ShieldAlert, perm: 'ai:risk' },
@@ -93,6 +109,7 @@ export function PlatformShell({
   headerActions,
   headerActionsLeft,
   edgeToEdge,
+  bleed,
 }: {
   children: React.ReactNode;
   title?: string;
@@ -101,6 +118,9 @@ export function PlatformShell({
   headerActions?: React.ReactNode;
   headerActionsLeft?: React.ReactNode;
   edgeToEdge?: boolean;
+  /** 内容**四边都不留白**（比 edgeToEdge 更彻底：连 lg 断点的 px-8/py-2 也去掉、不限最大宽度）。
+   *  用于"整屏查看器"式的页面（如报告 PDF 预览）——edgeToEdge 在 lg 上仍留 32px。 */
+  bleed?: boolean;
 }) {
   const location = useLocation();
   const navigate = useNavigate();
@@ -198,12 +218,6 @@ export function PlatformShell({
 
   const hasPermission = useAuthStore((s) => s.hasPermission);
 
-  const userInitials = user?.name
-    ? user.name.slice(0, 2).toUpperCase()
-    : user?.phone
-      ? user.phone.slice(-2)
-      : 'U';
-
   const filteredGroups = navGroups
     .map(group => ({
       ...group,
@@ -282,7 +296,7 @@ export function PlatformShell({
               {user?.avatar ? (
                 <img src={user.avatar} alt="" className="size-full object-cover" />
               ) : (
-                userInitials
+                <User className="size-5" />
               )}
             </div>
             <div className={cn('flex-1 leading-tight', collapsed && 'lg:hidden')}>
@@ -401,7 +415,7 @@ export function PlatformShell({
               {user?.avatar ? (
                 <img src={user.avatar} alt="" className="size-full object-cover" />
               ) : (
-                userInitials
+                <User className="size-5" />
               )}
             </div>
           </div>
@@ -410,13 +424,13 @@ export function PlatformShell({
         <main
           className={cn(
             'flex flex-1 flex-col overflow-y-auto [touch-action:pan-y]',
-            edgeToEdge ? 'px-0 lg:px-8 py-0 lg:py-2' : 'px-4 py-6 lg:px-8 lg:py-8',
+            bleed ? 'p-0' : edgeToEdge ? 'px-0 lg:px-8 py-0 lg:py-2' : 'px-4 py-6 lg:px-8 lg:py-8',
           )}
         >
           <div
             className={cn(
               'flex w-full min-h-0 flex-1 flex-col',
-              !edgeToEdge && 'mx-auto max-w-7xl',
+              !edgeToEdge && !bleed && 'mx-auto max-w-7xl',
             )}
           >
             {Boolean(title || actions) && (

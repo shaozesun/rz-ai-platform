@@ -18,6 +18,9 @@ const PERM_LABELS: Record<string, string> = {
   'ai:risk': '隐患识别',
   'ai:fire_safety': '消防配置',
   'ai:video': '视频生成',
+  'ai:agent': 'AI Agent 对话',
+  'scheduled_task:manage': '定时任务管理',
+  'system:admin': '系统管理',
 };
 
 const ROLE_LABELS: Record<string, string> = {

@@ -10,6 +10,8 @@ export interface User {
   roles: string[];
   permissions: string[];
   agent_enabled?: boolean;
+  // 联网能力（WEB_ENABLED）是否对该用户可用，决定是否渲染「联网搜索」开关
+  web_search_enabled?: boolean;
   created_at: string;
   mgmt_bound?: boolean;
   mgmt_username_masked?: string;
@@ -44,33 +46,32 @@ export interface Message {
   content: string;
   created_at: string;
   uploaded_filenames?: string[];
+  /** assistant 消息：本轮上下文 token 数（后端 done 时写入，用于「上下文 X%」） */
+  context_tokens?: number;
+  /** assistant 消息：计划模式的任务清单（write_todos 最后一次提交，刷新后还原托盘） */
+  todos?: Todo[];
+  /** assistant 消息：本轮图表**数据**（{组名: rows}），前端按 `<chart group="组名"/>` 取用 */
+  chart_data?: ChartDataMap;
   /** 流式生成失败时的友好错误提示（仅前端本地标记，不落库/不进历史） */
   streamError?: string;
 }
 
-export interface PlanStep {
-  title: string;
-  description: string;
-}
+/**
+ * 图表数据：`{组名: rows}`。
+ *
+ * 模型**只在正文里写** `<chart type="…" group="组名" …/>`，**不写数据** ——
+ * 数据由服务端从 `analysis_exec` 的返回值注入并随消息下发
+ * （正文里写 JSON 会被引号截断、图直接崩）。
+ */
+export type ChartDataMap = Record<string, unknown>;
 
-export interface ExecutionPlan {
-  goal: string;
-  steps: PlanStep[];
-}
+/** 计划模式任务项（对齐后端 tools/todo_tools.py 与 DeerFlow 的 Todo） */
+export type TodoStatus = 'pending' | 'in_progress' | 'completed';
 
-export interface InterviewOption {
-  value: string;
-  label: string;
-  recommended?: boolean;
+export interface Todo {
+  content: string;
+  status: TodoStatus;
 }
-
-export interface InterviewQuestion {
-  id: string;
-  question: string;
-  options: InterviewOption[];
-}
-
-export type InterviewAnswers = Record<string, string>;
 
 export interface HazardItem {
   category: string;
@@ -270,6 +271,8 @@ export interface VideoTaskParams {
   resolution: string;
   voice: string;
   subtitle_style: string;
+  speech_language: string;
+  subtitle_language: string;
 }
 
 export interface VideoTask {

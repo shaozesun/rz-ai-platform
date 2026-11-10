@@ -52,6 +52,9 @@ class ScheduledTaskBase(BaseModel):
   thread_strategy: str = 'new'              # 'new' 每次新会话 / 'reuse' 固定会话累积历史
   thread_id: Optional[str] = None           # reuse 时复用指定会话（对话建任务时取当前会话 thread_id）
   enabled: bool = True
+  # 由「分析报告」页从模板创建时写的来源标记（普通自定义任务为空）——
+  # 用来把报告类任务从同一张表里挑出来，避免为此另建集合。
+  template_id: Optional[str] = None
 
   @field_validator('once_at')
   @classmethod
@@ -103,6 +106,14 @@ class ScheduledTaskRun(BaseModel):
   status: RunStatus = RunStatus.PENDING
   triggered_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
   final_reply: str = ''        # Agent 本轮最终文本回复（含 <file> 标签）
+  # 报告期号（仅预设报告有）：由平台在触发时按窗口算好落库 —— 前端据此按「期」分组/筛选，
+  # 不必解析产物文件名（2026-10-13 加，配合报告页改版）
+  preset_key: str = ''
+  period_key: str = ''         # 如 2026-W41 / 2026-09
+  period_label: str = ''       # 如「2026 第 41 周」/「2026 年 9 月」
+  # 不合规检查：各检查项命中数 {check_key: rows}。生成时落库，列表页卡片直接用，
+  # 免得为了拿数字在列表接口里逐个打开 xlsx（2026-10-27 加）
+  check_counts: dict[str, int] = {}
   artifact_urls: list[str] = []  # 产物下载 URL（/api/v1/chat/agent/artifacts/...）
   error: str = ''
   duration_ms: int = 0
@@ -124,6 +135,8 @@ class ScheduledTaskNotification(BaseModel):
   status: str = ''             # success / failed
   title: str = ''
   body: str = ''
+  batch_key: str = ''          # 合并批次键（同批失败聚合成一条；空＝单份一条）
+  count: int = 0               # 该条聚合了几份运行
   created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
   @field_validator('created_at')

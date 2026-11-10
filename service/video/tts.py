@@ -1,8 +1,9 @@
-"""TTS voice synthesis with multiple backends: Edge TTS, OpenAI TTS, Qwen TTS."""
+"""TTS voice synthesis with multiple backends: OpenAI TTS, Qwen TTS."""
 
 import os
 import uuid
 import asyncio
+import random
 import traceback
 
 import httpx
@@ -15,48 +16,31 @@ TTS_OUTPUT_DIR = os.path.join(settings.UPLOAD_DIR, 'tts')
 os.makedirs(TTS_OUTPUT_DIR, exist_ok=True)
 
 
-async def synthesize_speech(script: str, voice: str = 'neutral') -> tuple[str, float]:
+async def synthesize_speech(script: str, voice: str = 'neutral',
+                            speech_language: str = 'zh-CN') -> tuple[str, float]:
   """将单段文本合成为语音，返回 (url_or_path, duration_seconds)。
 
-  Qwen/OpenAI TTS 失败时自动降级到 Edge TTS，保证视频生成不中断。
+  后端由 TTS_PROVIDER 决定；失败即抛出，不再静默降级到其他后端。
   """
   provider = settings.TTS_PROVIDER
 
   if provider == 'qwen':
     try:
-      return await _synthesize_qwen(script, voice)
-    except Exception:
-      logger.warning('Qwen TTS 失败，降级到 Edge TTS:\n%s', traceback.format_exc())
+      return await _synthesize_qwen(script, voice, speech_language)
+    except Exception as e:
+      logger.error('Qwen TTS 失败:\n%s', traceback.format_exc())
+      raise RuntimeError(f'Qwen TTS 合成失败: {e}') from e
 
   if provider == 'openai':
+    output_path = os.path.join(TTS_OUTPUT_DIR, f'{uuid.uuid4().hex}.mp3')
     try:
-      output_path = os.path.join(TTS_OUTPUT_DIR, f'{uuid.uuid4().hex}.mp3')
       path = await _synthesize_openai(script, voice, output_path)
-      return path, _estimate_duration(script)
-    except Exception:
-      logger.warning('OpenAI TTS 失败，降级到 Edge TTS:\n%s', traceback.format_exc())
+    except Exception as e:
+      logger.error('OpenAI TTS 失败:\n%s', traceback.format_exc())
+      raise RuntimeError(f'OpenAI TTS 合成失败: {e}') from e
+    return path, _estimate_duration(script)
 
-  output_path = os.path.join(TTS_OUTPUT_DIR, f'{uuid.uuid4().hex}.mp3')
-  path = await _synthesize_edge(script, voice, output_path)
-  return path, _estimate_duration(script)
-
-
-async def _synthesize_edge(text: str, voice: str, output_path: str) -> str:
-  """Edge TTS (默认)."""
-  import edge_tts
-
-  voice_map = {
-    'neutral': 'zh-CN-XiaoxiaoNeural',
-    'male': 'zh-CN-YunxiNeural',
-    'female': 'zh-CN-XiaoyiNeural',
-  }
-  tts_voice = voice_map.get(voice, 'zh-CN-XiaoxiaoNeural')
-
-  communicate = edge_tts.Communicate(text, tts_voice)
-  await communicate.save(output_path)
-
-  logger.info(f'Edge TTS saved: {output_path} ({len(text)} chars, voice={tts_voice})')
-  return output_path
+  raise RuntimeError(f'未知的 TTS_PROVIDER: {provider!r}')
 
 
 async def _synthesize_openai(text: str, voice: str, output_path: str) -> str:
@@ -88,14 +72,19 @@ def _estimate_duration(text: str) -> float:
   return max(1.0, len(text) / 4.0)
 
 
-QWEN_TTS_MAX_CHARS = 300
+# 上游壳的 MAX_TEXT_LENGTH 同名限制，两处必须一致（改一处无效）
+QWEN_TTS_MAX_CHARS = 1200
 QWEN_TTS_MAX_RETRIES = 3
+# 退避基数：单段合成本身要几十秒、槽位周转约 25s，1/2/4s 的退避等于没退，
+# 三枪会在上游腾出位子之前全部打完
+QWEN_TTS_RETRY_BASE_DELAY = 5.0
 
 
-async def _synthesize_qwen(text: str, voice: str) -> str:
+async def _synthesize_qwen(text: str, voice: str,
+                           speech_language: str = 'zh-CN') -> str:
   """Qwen TTS API (remote at port 8000). Returns a remote audio URL.
 
-  Text is truncated to 300 chars (Qwen TTS limit), breaking at the last
+  Text is truncated to ``QWEN_TTS_MAX_CHARS`` chars, breaking at the last
   sentence boundary when possible.  Automatically retries on HTTP 429.
   """
   if not text or not text.strip():
@@ -105,7 +94,8 @@ async def _synthesize_qwen(text: str, voice: str) -> str:
   if len(text) > QWEN_TTS_MAX_CHARS:
     original_len = len(text)
     truncated = text[:QWEN_TTS_MAX_CHARS]
-    for sep in ('。', '！', '？', '；', '\n'):
+    # 中英断句符都要有：只认中文标点时，英文超限会硬切在单词中间
+    for sep in ('。', '！', '？', '；', '.', '!', '?', ';', '\n'):
       idx = truncated.rfind(sep)
       if idx > QWEN_TTS_MAX_CHARS // 2:
         text = truncated[:idx + 1]
@@ -121,17 +111,30 @@ async def _synthesize_qwen(text: str, voice: str) -> str:
 
   last_error = None
   for attempt in range(QWEN_TTS_MAX_RETRIES):
-    async with httpx.AsyncClient(timeout=120) as client:
-      resp = await client.post(
-        f'{settings.TTS_API_URL}/tts',
-        headers=headers,
-        data={'text': text, 'format': 'wav'},
-      )
-    if resp.status_code == 429:
-      wait = 2 ** attempt  # 1, 2, 4 seconds backoff
+    try:
+      async with httpx.AsyncClient(timeout=settings.TTS_REQUEST_TIMEOUT) as client:
+        resp = await client.post(
+          f'{settings.TTS_API_URL}/tts',
+          headers=headers,
+          data={'text': text, 'format': 'wav',
+                'speech_language': speech_language},
+        )
+    except httpx.TransportError as e:
+      # 传输层异常（ReadTimeout / ConnectError ...）在 await 处就抛出，原先没有 try
+      # 会直接冲出整个重试循环：一次网络抖动 = 一段音频报废 = 整本视频报废。
+      # 与 429 同属「可重试」，走同一套退避
+      last_error = f'{type(e).__name__}: {e}'
+      wait = QWEN_TTS_RETRY_BASE_DELAY * 2 ** attempt + random.uniform(0, 1)
+      logger.warning(f'Qwen TTS 传输错误 (attempt {attempt+1}/{QWEN_TTS_MAX_RETRIES}), '
+                     f'waiting {wait:.1f}s: {last_error}')
+      await asyncio.sleep(wait)
+      continue
+    # 上游限流是 429，但 tts_proxy 把它包成 502 返回，只认 == 429 会让重试完全失效
+    if resp.status_code == 429 or 'Upstream TTS HTTP 429' in resp.text:
+      wait = QWEN_TTS_RETRY_BASE_DELAY * 2 ** attempt + random.uniform(0, 1)  # 抖动防同步
       last_error = resp.text
       logger.warning(f'Qwen TTS 429 (attempt {attempt+1}/{QWEN_TTS_MAX_RETRIES}), '
-                     f'waiting {wait}s')
+                     f'waiting {wait:.1f}s')
       await asyncio.sleep(wait)
       continue
     if resp.status_code >= 400:

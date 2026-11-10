@@ -1,10 +1,18 @@
 .env
 .env.*
 !.env.example
+# kafka-ui 专用配置（含口令；名字不含 .env，需显式忽略）
+deploy/config/kafka-ui.env
+# TDengine 容器启动配置（含口令；同上）
+deploy/config/tdengine.env
+# Grafana 数据源口令（含只读账号口令；同上）
+deploy/config/grafana.env
 *.pem
 *.key
 *.crt
 *.sql
+# DCIM Kafka 接入建表脚本（*.sql 默认被忽略，这里显式纳入版本控制）
+!deploy/sql/dcim_schema.sql
 *.dump
 .venv/
 venv/
@@ -20,3 +28,5 @@ uploads/*
 data/
 *.db
 deploy/vpn/
+# 页面截图/交互浏览的登录态（浏览器 storageState，含 Cookie；本地开发目录）
+deploy/browser_state/

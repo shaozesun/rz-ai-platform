@@ -53,10 +53,11 @@ AGENT_ANALYSIS_ENABLED=true    →  开发/测试环境开启，注册 analysis_
 |--------|--------|------|
 | `AGENT_ANALYSIS_ENABLED` | `false` | 总开关 |
 | `AGENT_ANALYSIS_DATA_DIR` | `data/analysis/` | 数据集落盘根目录 |
-| `AGENT_ANALYSIS_TIMEOUT` | `30` | 单次代码执行超时（秒） |
-| `AGENT_ANALYSIS_MAX_ROWS` | `10000` | 单数据集最大行数（全量拉取上限） |
-| `AGENT_ANALYSIS_PAGE_SIZE` | `100` | 拉取平台数据的分页大小 |
-| `AGENT_ANALYSIS_MAX_MEMORY_MB` | `512` | 沙箱子进程内存上限（RLIMIT_AS） |
+| `AGENT_ANALYSIS_TIMEOUT` | `60` | 单次代码执行超时（秒） |
+| `AGENT_ANALYSIS_MAX_ROWS` | `50000` | 单数据集最大行数（全量拉取上限；**超限即拒绝** → 返回 `error` + `total_rows` + `max_rows`，不物化截断样本，提示用户缩小范围） |
+| `AGENT_ANALYSIS_PAGE_SIZE` | `500` | 拉取平台数据的分页大小 |
+| `AGENT_ANALYSIS_MAX_MEMORY_MB` | `4096` | 沙箱子进程内存上限（RLIMIT_AS） |
+| `AGENT_ANALYSIS_MAX_CONCURRENCY` | `2` | 跨进程同时运行的 `analysis_exec` 上限（Redis 信号量，Redis 不可用 fail-open） |
 | `AGENT_ANALYSIS_MAX_OUTPUT_CHARS` | `4000` | 单次执行返回结果上限 |
 | `AGENT_ANALYSIS_MAX_DATASETS_PER_SESSION` | `20` | 每会话数据集数上限，超限删最旧 |
 
@@ -120,8 +121,10 @@ analysis_load(capability_id, params)           tools/analysis_tools.py
   │  ① 校验能力（get_capability/get_caller）
   │  ② 分页拉【全量】数据（绕过 tools_factory 的 page_size 封顶，
   │     受 AGENT_ANALYSIS_MAX_ROWS 保护；_extract_records/_extract_total 通用抽取）
+  │     └ 首页 total 超过上限 → 立即返回 error（不物化、不翻后续页）
   │  ③ save_dataset() 落盘为 {DATA_DIR}/{thread_id}/{dataset_id}/(data.csv + meta.json)
-  │  ④ 只回摘要 {dataset_id, rows, columns, preview, truncated}
+  │     接口无 total 时触顶后同样拒绝（截断样本不能当全量算）
+  │  ④ 只回摘要 {dataset_id, rows, columns, preview, total_rows}
   │     ── 原始数据永不进 LLM 上下文 ──
   ▼
 analysis_exec(dataset_id, python_code)         tools/analysis_tools.py

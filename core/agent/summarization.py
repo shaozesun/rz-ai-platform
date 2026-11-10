@@ -9,6 +9,10 @@ from langchain_core.messages import AIMessage, ToolMessage
 
 logger = logging.getLogger(__name__)
 
+# 历史摘要消息的固定前缀：压缩时作为 HumanMessage 重放，按内容识别。
+# 唯一定义在这里（中间件 import），避免两处字面量漂移。
+SUMMARY_PREFIX = '[历史对话摘要]'
+
 # 默认摘要 prompt（参照 DeerFlow 默认 prompt：提取关键事实、操作、待解决问题）
 DEFAULT_SUMMARY_PROMPT = (
   '请将以下对话历史压缩为一段简洁的中文摘要，不超过 300 字。'
@@ -64,10 +68,18 @@ def parse_keep(keep_str: str) -> dict:
 
 
 def estimate_tokens(messages: list) -> int:
-  """粗略估算消息列表的 token 数（字符数 / 2）。
+  """粗略估算消息列表的 token 数（字符数 / 2）—— 仅在模型上报 token 不可用时兜底。
 
   覆盖 content 与 AIMessage.tool_calls 参数 —— 工具调用参数常为大段 JSON，
   漏计会让摘要触发严重滞后（实测上下文涨满 262k 窗口才触发）。
+
+  为什么不用 langchain 的 count_tokens_approximately（DeerFlow 走的是这个）：它的
+  `chars_per_token` 默认 4.0（按英文），中文约 1 字 1 token，对本项目这种「中英混排
+  JSON」会低估约 2 倍；而它的 usage 自校准缩放被硬夹在 [1.0, 1.25]（langchain_core
+  /messages/utils.py 的 `min(1.25, max(1.0, scale_factor))`）救不回来。实测本项目的
+  字符//2 反而更准：摘要调用按估算预算 4000 截断时，端点上报的 tokens_in 是
+  4349/4564/4717/4896（含约 250 token 提示词），误差 ≤20%。
+  真正的口径由 `reported_total_tokens()` 保证，本函数只是兜底。
   """
   total = 0
   for m in messages:
@@ -86,6 +98,66 @@ def estimate_tokens(messages: list) -> int:
   return total // 2
 
 
+def reported_total_tokens(messages: list) -> int | None:
+  """最近一条 AIMessage 上报的真实 token 数（usage_metadata.total_tokens），无则 None。
+
+  对齐 DeerFlow `_should_summarize_based_on_reported_tokens`，简化掉多 provider 的
+  别名匹配（rz 单网关）。total_tokens = 该次请求的 prompt + 输出，正好约等于下一次
+  请求的 prompt 大小，是最贴近真实的「上下文占用」口径。
+
+  依赖 model_gateway.as_langchain_model(stream_usage=True)：不开该参数时流式响应
+  不带 usage，AIMessage.usage_metadata 恒为 None，本函数返回 None（自动回退估算器）。
+  """
+  for m in reversed(messages):
+    if isinstance(m, dict):
+      if (m.get('type') or m.get('role')) != 'ai':
+        continue
+      usage = m.get('usage_metadata')
+    else:
+      if getattr(m, 'type', None) != 'ai':
+        continue
+      usage = getattr(m, 'usage_metadata', None)
+    if not isinstance(usage, dict):
+      continue
+    total = usage.get('total_tokens')
+    if isinstance(total, int) and not isinstance(total, bool) and total > 0:
+      return total
+  return None
+
+
+def model_window_tokens() -> int:
+  """模型上下文窗口（真实 token 数），fraction 类条件据此换算。
+
+  懒加载 settings，避免本模块（纯函数）在导入期依赖配置。
+  """
+  from config.settings import settings
+  return int(getattr(settings, 'AGENT_MODEL_MAX_INPUT_TOKENS', 262144) or 262144)
+
+
+def trigger_token_budget() -> int | None:
+  """当前配置下压缩触发的 token 阈值（前端「上下文 X%」分母用）。
+
+  多条件 OR 时取最小的那个 —— 最先命中的必然是它。只有 messages 条件时返回 None。
+  """
+  from config.settings import settings
+  budgets: list[int] = []
+  for trigger in parse_trigger(getattr(settings, 'AGENT_SUMMARIZE_TRIGGER', '') or ''):
+    if trigger['type'] == 'tokens':
+      budgets.append(int(trigger['value']))
+    elif trigger['type'] == 'fraction':
+      budgets.append(int(model_window_tokens() * trigger['value']))
+  return min(budgets) if budgets else None
+
+
+def _has_summary_message(messages: list) -> bool:
+  """messages 里是否已有压缩时重放的 `[历史对话摘要]` 消息。"""
+  for m in messages:
+    content = m.get('content') if isinstance(m, dict) else getattr(m, 'content', None)
+    if isinstance(content, str) and content.startswith(SUMMARY_PREFIX):
+      return True
+  return False
+
+
 def should_summarize(
   messages: list,
   summary: str,
@@ -102,25 +174,44 @@ def should_summarize(
     return False
 
   total_tokens = estimate_tokens(messages)
-  if summary:
+  # 压缩后会重放一条 `[历史对话摘要]` 消息，summary 的文本已经包含在 messages 里；
+  # 再补加一次就是重复计数（摘要按「旧摘要 + --- + 新摘要」线性拼接，压缩次数越多
+  # 重复量越大，会让估算口径提前触发）。只有 messages 里缺这条消息时才补。
+  if summary and not _has_summary_message(messages):
     total_tokens += estimate_tokens([{'content': summary}])
   message_count = len(messages)
+  # 模型上报的真实 token（有则优先，命中即触发；对齐 DeerFlow 用 >=）
+  reported = reported_total_tokens(messages)
 
   for trigger in triggers:
     t = trigger['type']
     v = trigger['value']
-    if t == 'tokens' and total_tokens > v:
-      logger.info('摘要触发: tokens=%d > %d', total_tokens, v)
+    if t == 'messages':
+      if message_count > v:
+        logger.info('摘要触发: messages=%d > %d', message_count, v)
+        return True
+      continue
+    # fraction = 模型窗口的比例（对齐 langchain：max_input_tokens × fraction）
+    threshold = int(v) if t == 'tokens' else int(model_window_tokens() * v)
+    if reported is not None and reported >= threshold:
+      logger.info('摘要触发: 模型上报 tokens=%d >= %d (%s=%s)', reported, threshold, t, v)
       return True
-    if t == 'messages' and message_count > v:
-      logger.info('摘要触发: messages=%d > %d', message_count, v)
-      return True
-    # fraction 需要模型 max_tokens，这里用 128k 作为常见默认值
-    if t == 'fraction' and total_tokens > int(128000 * v):
-      logger.info('摘要触发: tokens=%d > %d (fraction=%s)', total_tokens, int(128000 * v), v)
+    if total_tokens > threshold:
+      logger.info('摘要触发: 估算 tokens=%d > %d (%s=%s)', total_tokens, threshold, t, v)
       return True
 
   return False
+
+
+def _keep_count_by_tokens(messages: list, target_tokens: int) -> int:
+  """从后往前累加 token，返回「保留尾部约 target_tokens」对应的保留条数。"""
+  count, tokens = 0, 0
+  for m in reversed(messages):
+    tokens += estimate_tokens([m])
+    count += 1
+    if tokens >= target_tokens:
+      break
+  return count
 
 
 def _determine_cutoff_index(messages: list, keep: dict) -> int:
@@ -134,15 +225,13 @@ def _determine_cutoff_index(messages: list, keep: dict) -> int:
   if k_type == 'messages':
     target = len(messages) - int(k_value)
   elif k_type == 'tokens':
-    count, tokens = 0, 0
-    for m in reversed(messages):
-      tokens += estimate_tokens([m])
-      count += 1
-      if tokens >= k_value:
-        break
-    target = len(messages) - count
-  else:  # fraction：保留最近 (1-value) 部分，即压缩前 fraction 部分
-    target = int(len(messages) * (1 - k_value))
+    target = len(messages) - _keep_count_by_tokens(messages, int(k_value))
+  else:
+    # fraction：保留「模型窗口 × value」的 token 量（对齐 langchain 的 fraction
+    # keep 语义）。此前误按消息条数比例切，与 token 无关。
+    target = len(messages) - _keep_count_by_tokens(
+      messages, int(model_window_tokens() * k_value),
+    )
   if target <= 0:
     return 0
   return _find_safe_cutoff_point(messages, target)

@@ -23,9 +23,19 @@ def _inject_agent_enabled(user_info: dict) -> dict:
   """agent 是否对当前用户可用：全局开关开启且该用户有 ai:agent 权限。
 
   前端按此字段分流（走 Agent 还是 RAG），普通用户无 ai:agent 时保持 RAG。
+  顺带带出 web_search_enabled：联网能力未启用时前端不渲染「联网搜索」开关，
+  避免出现点了没反应的死按钮。
   """
   has_perm = 'ai:agent' in (user_info.get('permissions') or [])
   user_info['agent_enabled'] = settings.AGENT_ENABLED and has_perm
+  user_info['web_search_enabled'] = (
+    settings.AGENT_ENABLED and settings.WEB_ENABLED and has_perm
+  )
+  # 对话窗口「讲解视频」入口：需要 ai:video 权限（生成动作由工具内再校验一次）
+  user_info['video_agent_enabled'] = (
+    settings.AGENT_ENABLED and settings.VIDEO_AGENT_ENABLED
+    and 'ai:video' in (user_info.get('permissions') or [])
+  )
   return user_info
 
 

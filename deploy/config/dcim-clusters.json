@@ -1,0 +1,15 @@
+[
+  {"cluster": "廊坊A",    "broker": "dcim-broker-rztohj",      "bootstrap": "10.4.0.60:9092"},
+  {"cluster": "廊坊B1M1", "broker": "dcim-broker-lfrzb",      "bootstrap": "10.12.251.18:9092"},
+  {"cluster": "廊坊B1M2", "broker": "dcim-broker-lfbstohj",   "bootstrap": "10.12.250.18:9092"},
+  {"cluster": "廊坊BM3",  "broker": "dcim-broker-rzbmstohj",  "bootstrap": "10.12.249.19:9092"},
+  {"cluster": "平湖A",    "broker": "dcim-broker-phtolf",     "bootstrap": "172.20.222.46:9092"},
+  {"cluster": "平湖B",    "broker": "dcim-broker-phbtohj",    "bootstrap": "172.20.233.31:9092"},
+  {"cluster": "平湖BM3M4", "broker": "dcim-broker-phm3m4tohj", "bootstrap": "172.20.233.32:9092"},
+  {"cluster": "佛山",     "broker": "dcim-broker-fskrtohj",   "bootstrap": "10.10.250.103:40006"},
+  {"cluster": "惠州A2M1", "broker": "dcim-broker-hzm1tohj",   "bootstrap": "10.10.250.103:40003"},
+  {"cluster": "惠州A2M2", "broker": "dcim-broker-hzm2tohj",   "bootstrap": "10.10.250.103:40004"},
+  {"cluster": "惠州A3M1", "broker": "dcim-broker-hzatmotohj", "bootstrap": "10.10.250.103:40001"},
+  {"cluster": "惠州A3M2", "broker": "dcim-broker-hzatmstohj", "bootstrap": "10.10.250.103:40002"},
+  {"cluster": "重庆",     "broker": "dcim-broker-cqmastertohj","bootstrap": "10.10.250.103:40005"}
+]

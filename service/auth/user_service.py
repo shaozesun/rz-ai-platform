@@ -171,6 +171,8 @@ class UserService:
       'dept_name': user.get('dept_name', ''),
       'lark_bound': bool(user.get('lark_open_id', '')),
       'lark_name': user.get('lark_name', ''),
+      'wechat_bound': bool(user.get('wechat_user_id', '')),
+      'wechat_name': user.get('wechat_name', ''),
     }
 
   async def update_user(self, user_id: str, updates: dict):

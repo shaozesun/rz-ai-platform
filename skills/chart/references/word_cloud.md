@@ -1,6 +1,6 @@
 ---
 name: 生成词云图
-description: 文本词频可视化，适合告警关键词、日志热点统计。data 每行含 `text` 与 `value`。调用本工具返回完整数据字段规范（必填/可选），按规范组装
+description: 文本词频可视化，适合告警关键词、日志热点统计。data 每行给「词 + 数值」两列（字段名中英文均可）。调用本工具返回完整数据字段规范（必填/可选），按规范组装
   `<chart>` 标签输出。
 ---
 # word_cloud — 词云图
@@ -10,7 +10,8 @@ description: 文本词频可视化，适合告警关键词、日志热点统计�
 
 ## 输入字段
 ### 必填
-- `data`: array<object>，每条记录包含 `text`（string）与 `value`（number）。
+- `data`: array<object>，每条记录按顺序给「词（string）+ 数值（number）」两列，如
+  `{"故障类型":"断电","次数":42}`。数值列决定字号，列按位置与类型识别（字段名中英文均可）。
 
 ### 可选
 - `style.backgroundColor`: string，设置背景色。

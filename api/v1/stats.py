@@ -1,6 +1,7 @@
 """
 Dashboard 统计与活动 Feed API
 """
+import json
 from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Query, Request
@@ -33,6 +34,34 @@ def _pct_change(this: int, last: int) -> float | None:
   if last <= 0:
     return None
   return round(((this - last) / last) * 100, 1)
+
+
+async def _tool_call_count(start: datetime, end: datetime) -> int:
+  """区间内 Agent 工具调用总次数。
+
+  数据源是 `agent_runs.tool_calls`（JSON 字符串，形如
+  `[{"name","args","time","result"}]`，逐次记录、历史就一直在存）。因为存的是字符串，
+  没法直接 `$sum`，只能在 Python 侧展开 —— 量很小（一周十几到几十条 run）不成问题。
+
+  **不要**改用 `agent_runs.tokens_in/out` 当消耗：streaming.py 是**覆盖**不是累加，
+  那个字段存的是「本轮最后一次调用的上下文大小」，不是累计 token。
+  """
+  total = 0
+  cursor = mongodb_manager.db.agent_runs.find(
+    {'created_at': {'$gte': start, '$lte': end}},
+    {'tool_calls': 1},
+  )
+  async for doc in cursor:
+    raw = doc.get('tool_calls')
+    if not raw:
+      continue
+    try:
+      calls = json.loads(raw) if isinstance(raw, str) else raw
+    except ValueError:
+      continue
+    if isinstance(calls, list):
+      total += len(calls)
+  return total
 
 
 @router.get('/stats/overview')
@@ -78,8 +107,14 @@ async def get_overview(request: Request):
   risk_t, risk_l = await _count('risk_checks', 'checked_at')
   fire_t, fire_l = await _count('llm_usage', extra={'caller': 'fire_safety'})
 
-  api_call_t = msg_t + video_t + risk_t + fire_t
-  api_call_l = msg_l + video_l + risk_l + fire_l
+  # 「API 调用总量」= Agent 的工具/平台 API 调用次数。
+  # 口径变更（2026-09-28）：原先是 msg + video + risk + fire 相加 —— 把「消息条数
+  # （一轮对话存 user+assistant 两条，等于翻倍）」「视频任务数」「检测次数」「消防调用
+  # 次数」四种不同量纲的东西混在一起，既不是调用数也不可比。现在只数真正的调用：
+  # Agent 每调一次工具（查平台、跑沙箱、检索知识库…）记 1 次。
+  # 视频/隐患/消防各自已有独立卡片字段（video_count 等），不再并入本项。
+  api_call_t = await _tool_call_count(this_start, this_end)
+  api_call_l = await _tool_call_count(last_start, last_end)
 
   compute_t = await _token_sum(this_start, this_end)
   compute_l = await _token_sum(last_start, last_end)
@@ -89,6 +124,7 @@ async def get_overview(request: Request):
     'data': {
       'api_call_count': api_call_t,
       'api_call_change': _pct_change(api_call_t, api_call_l),
+      'tool_call_count': api_call_t,
       'message_count': msg_t,
       'compute_usage': compute_t,
       'compute_usage_change': _pct_change(compute_t, compute_l),
@@ -157,14 +193,18 @@ async def get_trend(request: Request):
     labels = ['周一', '周二', '周三', '周四', '周五', '周六', '周日']
     day_labels = [labels[datetime.strptime(d, '%Y-%m-%d').weekday()] for d in days]
 
-    async def count_by_day(collection: str, date_field: str = 'created_at') -> dict[str, int]:
+    async def count_by_day(collection: str, date_field: str = 'created_at',
+                           extra: dict | None = None) -> dict[str, int]:
+        match = {
+            date_field: {
+                '$gte': datetime.strptime(days[0], '%Y-%m-%d'),
+                '$lte': now,
+            },
+        }
+        if extra:
+            match.update(extra)
         pipeline = [
-            {'$match': {
-                date_field: {
-                    '$gte': datetime.strptime(days[0], '%Y-%m-%d'),
-                    '$lte': now,
-                },
-            }},
+            {'$match': match},
             {'$group': {
                 '_id': {'$dateToString': {'format': '%Y-%m-%d', 'date': f'${date_field}'}},
                 'count': {'$sum': 1},
@@ -175,8 +215,10 @@ async def get_trend(request: Request):
             result[doc['_id']] = doc['count']
         return result
 
-    # 各功能每日调用计数
-    chat_counts = await count_by_day('messages')
+    # 各功能每日调用计数。
+    # 对话只数 role='user'：一轮对话在 messages 里存 user + assistant 两条，
+    # 全量计数会把轮次翻倍（2026-09-28 修）。
+    chat_counts = await count_by_day('messages', extra={'role': 'user'})
     video_counts = await count_by_day('video_tasks')
     risk_counts = await count_by_day('risk_checks', 'checked_at')
 

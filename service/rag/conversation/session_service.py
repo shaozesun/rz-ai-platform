@@ -97,18 +97,72 @@ class SessionService:
 
         return None
 
+    async def touch_session(self, session_id: str) -> None:
+        """刷新会话的"最近活动"时间（落库消息时调用）。
+
+        侧栏按 `updated_at` 倒序（对齐 DeerFlow：`order_by(pinned.desc(), updated_at.desc())`），
+        靠这个"活过一次就往前排"。以前只按 `created_at` 排 → 在旧会话里聊完它也不上来，
+        用户会以为"刚聊的那条不见了"。失败只记日志，不影响落库。
+        """
+        now = datetime.now()
+        try:
+            await self.sessions.update_one(
+                {"session_id": session_id},
+                {"$set": {"updated_at": now, "last_activity_at": now}},
+            )
+        except Exception as e:
+            logger.error("[SessionService] 刷新会话活动时间失败: %s", e)
+
+    async def count_user_sessions(self, user_id: str) -> int:
+        """该用户的会话总数（供分页判断"还有没有下一页"）。
+
+        以前接口返回 `total=len(sessions)`，而 `sessions` 本身就被 limit 截断 →
+        total 恒等于 limit，前端无从知道还有没有更多（2026-09：209 个会话只拿到 100 个
+        且不知道被截断）。保存侧不设上限，这里只是如实报总数。
+        """
+        try:
+            return await self.sessions.count_documents({"user_id": user_id})
+        except Exception as e:
+            logger.error("[SessionService] 统计会话总数失败: %s", e)
+            return 0
+
     async def get_user_sessions(
         self, user_id: str, skip: int = 0, limit: int = 100
     ) -> list[Session]:
-        # 置顶优先，其次按创建时间倒序（旧会话无 pinned 字段，-1 排序时空值排最后）
+        # 置顶优先，其次按**最近活动**倒序（不是创建时间）——对齐 DeerFlow 的
+        # order_by(pinned.desc(), updated_at.desc())。旧会话无 pinned 字段，-1 排序时排最后。
         cursor = self.sessions.find(
             {"user_id": user_id}
-        ).sort([("pinned", -1), ("created_at", -1)]).skip(skip).limit(limit)
+        ).sort([("pinned", -1), ("updated_at", -1)]).skip(skip).limit(limit)
 
         sessions = []
         async for doc in cursor:
             sessions.append(self._doc_to_session(doc))
+        await self._fill_message_counts(sessions)
         return sessions
+
+    async def _fill_message_counts(self, sessions: list[Session]) -> None:
+        """批量填 message_count（一次聚合，不按会话逐条 count）。
+
+        前端侧栏要靠它区分「真·空壳」与「有内容的会话」——**不能用标题判断**：
+        标题可能长期停在占位名「新对话」（改名要走一次额外写入，失败就永远不改），
+        按标题隐藏会把有内容的会话一起藏掉（2026-09 实测事故）。
+        """
+        ids = [s.session_id for s in sessions if s.session_id]
+        if not ids:
+            return
+        try:
+            cursor = mongodb_manager.db.messages.aggregate([
+                {"$match": {"session_id": {"$in": ids}}},
+                {"$group": {"_id": "$session_id", "n": {"$sum": 1}}},
+            ])
+            counts = {doc["_id"]: int(doc["n"]) async for doc in cursor}
+        except Exception as e:
+            # 计数只为展示，失败按 0 处理（不阻断列表返回）
+            logger.error("[SessionService] 统计会话消息数失败: %s", e)
+            return
+        for s in sessions:
+            s.message_count = counts.get(s.session_id, 0)
 
     async def update_session(
         self, session_id: str, session: SessionUpdate, user_id: str | None = None

@@ -200,18 +200,23 @@ async def update_role(role_id: str, body: UpdateRoleRequest, request: Request):
   return {'ok': True, 'data': await user_service.get_role(role_id)}
 
 
+# 与 models/user.py 的 ALL_PERMISSIONS 对齐（加权限时两处都要动）
 PERM_LABELS = {
   'ai:chat': 'AI 对话',
   'ai:knowledge': '知识库管理',
   'ai:risk': '隐患识别',
   'ai:fire_safety': '消防配置',
   'ai:video': '视频生成',
+  'ai:agent': 'AI Agent 对话',
+  'scheduled_task:manage': '定时任务管理',
+  'system:admin': '系统管理',
 }
 
 ROLE_LABELS = {
   'admin': '管理员',
   'power_user': '全功能用户',
   'user': '普通用户',
+  'dc_operator': '数据中心运维',
 }
 
 

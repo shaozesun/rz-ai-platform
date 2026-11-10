@@ -1,6 +1,7 @@
 import { useState, useCallback, useRef } from 'react';
 import { Copy, Download, Check, Table2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { copyText } from '@/lib/clipboard';
 
 function tableToCSV(table: HTMLTableElement): string {
   const rows = table.querySelectorAll('tr');
@@ -31,18 +32,24 @@ function tableToTSV(table: HTMLTableElement): string {
 export default function TableActions({ children }: { children: React.ReactNode }) {
   const wrapperRef = useRef<HTMLDivElement>(null);
   const [copied, setCopied] = useState(false);
+  const [copyFailed, setCopyFailed] = useState(false);
 
   const getTable = useCallback((): HTMLTableElement | null => {
     return wrapperRef.current?.querySelector('table') || null;
   }, []);
 
-  const handleCopy = useCallback(() => {
+  const handleCopy = useCallback(async () => {
     const table = getTable();
     if (!table) return;
-    navigator.clipboard.writeText(tableToTSV(table)).then(() => {
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    });
+    // 走共用工具：HTTP 入口下 navigator.clipboard 不存在，copyText 降级到 execCommand；
+    // 失败给反馈（原来是裸 .then，非安全上下文下连 catch 都没有）
+    const ok = await copyText(tableToTSV(table));
+    setCopied(ok);
+    setCopyFailed(!ok);
+    setTimeout(() => {
+      setCopied(false);
+      setCopyFailed(false);
+    }, 2000);
   }, [getTable]);
 
   const handleDownloadCSV = useCallback(() => {
@@ -73,7 +80,7 @@ export default function TableActions({ children }: { children: React.ReactNode }
             className="h-7 px-2 text-xs"
           >
             {copied ? <Check className="size-3" /> : <Copy className="size-3" />}
-            {copied ? '已复制' : '复制'}
+            {copyFailed ? '复制失败' : copied ? '已复制' : '复制'}
           </Button>
           <Button
             size="sm"

@@ -14,6 +14,8 @@ interface AuthState {
   isAuthenticated: boolean;
   initialized: boolean;
   agentEnabled: boolean;
+  // 联网能力未启用时不渲染「联网搜索」开关（后端 web_search_enabled 下发）
+  webSearchEnabled: boolean;
 
   setAuth: (access: string, refresh: string, user: User, permissions: string[]) => void;
   updateUser: (user: User) => void;
@@ -31,6 +33,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   isAuthenticated: false,
   initialized: false,
   agentEnabled: false,
+  webSearchEnabled: false,
 
   setAuth: (access, refresh, user, permissions) => {
     storage.setItem('access_token', access);
@@ -45,6 +48,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       isAuthenticated: true,
       initialized: true,
       agentEnabled: user.agent_enabled === true,
+      webSearchEnabled: user.web_search_enabled === true,
     });
     // 登录成功即清空聊天数据，避免换账号残留上个账号的会话/消息（同步调用，先于 loadSessions）
     useChatStore.getState().resetForUser();
@@ -86,6 +90,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
               user: fresh,
               permissions: fresh.permissions || [],
               agentEnabled: fresh.agent_enabled === true,
+              webSearchEnabled: fresh.web_search_enabled === true,
             });
           }
         } catch {

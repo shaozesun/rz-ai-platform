@@ -1,19 +1,21 @@
 ---
 name: 生成饼图
-description: 整体与部分的占比构成，可做环图（donut），适合市场份额、预算构成。data 每行含 `category` 与 `value`。调用本工具返回完整数据字段规范（必填/可选），按规范组装
+description: 整体与部分的占比构成，默认实心饼图（优先用饼图而不是环形图）。data 每行含 `category` 与 `value`。调用本工具返回完整数据字段规范（必填/可选），按规范组装
   `<chart>` 标签输出。
 ---
-# pie — 饼/环图
+# pie — 饼图
 
 ## 功能概述
-展示整体与部分的占比，可通过内径形成环图，适用于市场份额、预算构成、用户群划分等。
+展示整体与部分的占比，适用于市场份额、预算构成、用户群划分等。**默认输出实心饼图**；
+只有用户点名要「环图/环形图」时才通过内径做成环形图。
 
 ## 输入字段
 ### 必填
 - `data`: array<object>，每条记录包含 `category`（string）与 `value`（number）。
 
 ### 可选
-- `innerRadius`: number，范围 [0, 1]，默认 `0`，设为 `0.6` 等值可生成环图。
+- `innerRadius`: number，范围 [0, 1]，默认 `0`（实心饼图）。**仅当用户明确要环形图时才设为 `0.6`**；
+  在本平台也可用标签属性 `donut="true"` 达到同样效果。
 - `style.backgroundColor`: string，设置背景色。
 - `style.palette`: string[]，定义配色列表。
 - `style.texture`: string，默认 `default`，可选 `default`/`rough`。

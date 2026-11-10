@@ -9,7 +9,7 @@
 2. **生产 Milvus 暴露无鉴权** — `deploy/docker-compose.yaml` 暴露 19530，`deploy/config/.env.production:87` `MILVUS_TOKEN` 为空。影响：向量库可被任意读写。状态：未处理
 3. **WireGuard 私钥打进 Docker 镜像** — `deploy/Dockerfile:19` `COPY . /app`，`.dockerignore` 未排除 `deploy/vpn`（含真实 PrivateKey）。影响：镜像泄露即可接入内网。状态：未处理
 4. **生产多弱口令/明文密钥** — `deploy/.env`、`deploy/config/.env.production`：Grafana `admin`、`MONGO_PASSWORD`、`MGMT_PASSWORD=666666`、MinIO `minioadmin/minioadmin` 等全明文落盘。状态：未处理
-5. **pen 人员 token 缓存越权** — `service/query/mgmt/http.py:365` `get_person_token` 缓存 key 只含 `kingdee_uid` 不含 `auth_user_id`，B 用户会命中 A 换发的 token，绕过 A 的授权鉴权。状态：未处理
+5. **pen 人员 token 缓存越权** — `service/query/mgmt/http.py:365` `get_person_token` 缓存 key 只含 `kingdee_uid` 不含 `auth_user_id`，B 用户会命中 A 换发的 token，绕过 A 的授权鉴权。**状态：已修复**（`client.py` `_query_pending_ticket` 去掉按姓名查他人/换他人 token，仅用本人 token；`http.py` `get_person_token`/`_clear_person_token` 缓存 key 加 `auth_user_id` 后缀；`capabilities.py` `query_pending_ticket` 去掉 `name` 参数）
 6. **当前 `.env` 为 `SMS_DEV_MODE=true`** — `_validate_captcha` 跳过全部验证码（登录/注册/重置）。`.env:11`。状态：未处理
 
 ## ⚠️ 中危（稳定性/并发/安全）

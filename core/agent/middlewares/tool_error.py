@@ -19,7 +19,9 @@ def wrap_tool_with_error_handling(tool):
       logger.warning('工具调用失败 tool=%s error=%s', tool.name, str(e))
       return json.dumps({
         'error': f'工具 "{tool.name}" 执行失败: {str(e)}',
-        'suggestion': '请尝试其他方式查询，或联系管理员检查后端服务状态',
+        # 提醒模型"如实转述"：实测它会把这个 error 演绎成"平台级故障/渲染服务不可用"讲给用户
+        'suggestion': ('请把上面的错误如实告诉用户（不要演绎成平台故障或服务不可用），'
+                       '并尝试其他方式查询，或建议联系管理员'),
       }, ensure_ascii=False)
 
   # 创建同 schema 的新工具
@@ -52,7 +54,9 @@ def wrap_async_tool_with_error_handling(tool):
       logger.warning('工具调用失败 tool=%s error=%s', tool.name, str(e))
       return json.dumps({
         'error': f'工具 "{tool.name}" 执行失败: {str(e)}',
-        'suggestion': '请根据错误调整参数或改用其他方式/能力查询；若平台接口本身报错，可换相近能力获取数据。',
+        # 同上：错误信息是喂给模型的"源头素材"，这里点名"如实转述"，别让它编系统性原因
+        'suggestion': ('请根据错误调整参数或改用其他方式/能力查询；'
+                       '对用户**如实转述上面的错误**，不要演绎成平台故障或服务不可用。'),
       }, ensure_ascii=False)
 
   # 创建同 schema 的新工具

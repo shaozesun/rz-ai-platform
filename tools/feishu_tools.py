@@ -15,6 +15,7 @@ import logging
 from langchain.tools import tool
 
 from core.agent.feishu_context import get_current_feishu
+from core.agent.untrusted_content import sanitizing
 from core.agent.user_context import get_current_user_id
 from service.auth.user_service import user_service
 
@@ -33,6 +34,7 @@ async def _resolve_bound_open_id() -> str | None:
 
 
 @tool
+@sanitizing
 async def fetch_group_messages(
   chat_name: str = '',
   chat_id: str = '',
@@ -48,15 +50,16 @@ async def fetch_group_messages(
   结果按时间升序，格式「[时间] 发送者: 文本」。非群聊场景需要用户已绑定飞书。
 
   时间范围：用户要「查今天的」「查昨天的」「查某段时间」时，先用 get_current_time 拿当前
-  时间算出具体日期，再传 start_time（开始日期，如 2026-09-08）和 end_time（结束日期，
-  留空表示到最新），并把 limit 设大（如 500）以拉全，工具会自动翻页。
+  时间算出具体**日期**，再传 start_time / end_time，并把 limit 设大（如 500）以拉全，
+  工具会自动翻页。**只传日期字符串，不要自己算时间戳**（内部会换算）。
 
   Args:
     chat_name: 群名称（仅 Web / 私聊场景需要；群聊内读当前群时留空）。
     chat_id: 群 chat_id（搜到多个候选、用户选定后精确读取用，优先于 chat_name）。
     limit: 拉取条数，默认 50，最多 500（超过单页 50 时自动翻页）。
-    start_time: 起始时间（日期如 2026-09-08 或 ISO 8601），查某天/某段完整消息时传，空串不过滤。
-    end_time: 结束时间（格式同 start_time），空串表示到最新。
+    start_time: 起始时间，传**日期**即可（`2026-09-08` 或 `2026-09-08 14:00`），空串不过滤。
+    end_time: 结束时间（格式同 start_time），空串表示到最新。**只给到"天"时自动含当天 23:59:59**，
+      所以查"某一天"就把 start/end 都填那天日期即可。
 
   多候选交互约定：按 chat_name 搜到多个群时，本工具返回候选列表（need_select=true，
   含每个群的 chat_id 与名称）。此时不要把 chat_id 展示给用户，只把群名编号列表转述给
@@ -108,18 +111,19 @@ async def fetch_group_messages(
 
 
 @tool
+@sanitizing
 async def fetch_p2p_messages(limit: int = 50, start_time: str = '', end_time: str = '') -> str:
   """读取当前用户与机器人的飞书私聊记录。
 
   当用户在平台 Web 或飞书里说「看下我和机器人的私聊」「查下之前私聊说了什么」时调用。
   结果按时间升序，格式「[时间] 发送者: 文本」。需要用户已绑定飞书，且之前私聊过机器人。
-  用户要「查某天/某段时间」时，用 get_current_time 算日期传 start_time/end_time 并把
-  limit 设大（如 500）拉全，工具自动翻页。
+  用户要「查某天/某段时间」时，用 get_current_time 算**日期**传 start_time/end_time 并把
+  limit 设大（如 500）拉全，工具自动翻页。**只传日期字符串，不要自己算时间戳**（内部会换算）。
 
   Args:
     limit: 拉取条数，默认 50，最多 500（超过单页 50 时自动翻页）。
-    start_time: 起始时间（日期如 2026-09-08 或 ISO 8601），空串不过滤。
-    end_time: 结束时间（格式同 start_time），空串表示到最新。
+    start_time: 起始时间，传**日期**即可（`2026-09-08` 或 `2026-09-08 14:00`），空串不过滤。
+    end_time: 结束时间（格式同 start_time），空串表示到最新。只给到"天"时自动含当天 23:59:59。
   """
   open_id = await _resolve_bound_open_id()
   if not open_id:
@@ -143,6 +147,7 @@ async def fetch_p2p_messages(limit: int = 50, start_time: str = '', end_time: st
 
 
 @tool
+@sanitizing
 async def list_joined_chats() -> str:
   """列出机器人加入的所有飞书群聊名称。
 
@@ -170,3 +175,32 @@ async def list_joined_chats() -> str:
     marker = '（当前群）' if c['chat_id'] == current_id else ''
     lines.append(f'{c["name"]}{marker} [chat_id={c["chat_id"]}]')
   return '\n'.join(lines)
+
+
+@tool
+@sanitizing
+async def list_group_members(chat_id: str = '') -> str:
+  """列出飞书群成员（含真实姓名）。
+
+  用户问「群里都有谁」「群成员有哪些」「这个群有哪些人」时调用。飞书群聊上下文里
+  chat_id 留空读当前群；Web / 私聊场景需先 list_joined_chats 列群，用户选定后用其
+  chat_id 调用。结果每行一个成员姓名。需要机器人有「获取群信息」权限（im:chat:readonly）。
+  """
+  ctx = get_current_feishu()
+  if chat_id:
+    target = chat_id
+  elif ctx and ctx.get('chat_type') == 'group':
+    target = ctx['chat_id']
+  else:
+    return json.dumps(
+      {'error': '请先用 list_joined_chats 列出群，用户选定后传对应 chat_id 查询'},
+      ensure_ascii=False,
+    )
+  from service.feishu import history
+  members = await history.list_group_members(target)
+  if not members:
+    return json.dumps(
+      {'message': '未拉到群成员（机器人可能缺少「获取群信息」权限 im:chat:readonly）'},
+      ensure_ascii=False,
+    )
+  return '\n'.join(m['name'] for m in members)

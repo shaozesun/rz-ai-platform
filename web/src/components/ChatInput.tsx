@@ -1,9 +1,12 @@
 import { useRef, useState } from 'react';
 import {
-  Send, StopCircle, Paperclip, Layers, Workflow, FileText, X, Loader2, AlertCircle, type LucideIcon,
+  Send, StopCircle, Paperclip, Layers, Workflow, Globe, FileText, X, Loader2,
+  AlertCircle, type LucideIcon,
 } from 'lucide-react';
 import { Menu } from '@base-ui/react/menu';
 import { useChatStore, type TaskMode, type InteractionMode } from '../stores/chatStore';
+import { useAuthStore } from '../stores/authStore';
+import { cn } from '@/lib/utils';
 
 interface ChatInputProps {
   suggestions?: string[];
@@ -18,13 +21,17 @@ interface ModeOption {
 const TASK_MODES: ModeOption[] = [
   { value: 'normal', label: '常规模式', description: '适用于大部分任务' },
   { value: 'full_analysis', label: '全量分析模式', description: '多维度分析全量数据' },
-  { value: 'complex', label: '复杂任务', description: '执行多轮次长耗时 agent 任务' },
+  { value: 'research', label: '联网调研', description: '联网检索公开信息，多轮深挖并标注来源' },
 ];
 
 const INTERACTION_MODES: ModeOption[] = [
-  { value: 'plan', label: '计划模式', description: '先规划再执行、逐步确认' },
-  { value: 'trust', label: '信任模式', description: '自主执行、减少确认' },
+  { value: 'plan', label: '计划模式', description: '执行时维护任务清单，进度实时可见' },
+  { value: 'trust', label: '信任模式', description: '直接执行、只给最终结果' },
 ];
+
+// 上下文提示的阈值（绝对 token 数，非窗口占比）。取 32k：与压缩触发阈值同口径，
+// 也正是「首次响应明显变慢（≈14s）」的量级。
+const CONTEXT_HINT_TOKENS = 32_000;
 
 function ModeSelect({
   icon: Icon,
@@ -94,7 +101,10 @@ function UploadCard({
       ) : (
         <FileText className="size-3.5 shrink-0 text-primary" />
       )}
-      <span className="max-w-32 truncate">{displayName}</span>
+      <span className="max-w-40 truncate">{displayName}</span>
+      {status === 'error' && error && (
+        <span className="max-w-52 truncate text-destructive">· {error}</span>
+      )}
       <button
         onClick={onRemove}
         aria-label="移除附件"
@@ -109,11 +119,25 @@ function UploadCard({
 export default function ChatInput({ suggestions }: ChatInputProps) {
   const [text, setText] = useState('');
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const webSearchEnabled = useAuthStore((s) => s.webSearchEnabled);
   const {
     sendMessage, stopStreaming, isStreaming,
     taskMode, interactionMode, setTaskMode, setInteractionMode,
+    webSearch, setWebSearch, contextUsage,
     pendingUploads, addPendingUploadFiles, removePendingUpload,
   } = useChatStore();
+
+
+  // 只在「历史确实很长」时显示。判据用**绝对 token 数**，不用窗口占用率：拖慢响应的是
+  // token 绝对量（冷启动 prefill 实测 ≈2300 tokens/s：26k≈11s、32k≈14s、160k≈68s），
+  // 与「占窗口百分之几」无关。此前按窗口 60% 判，262k 窗口要 157k tokens（≈68s）才亮，
+  // 等它出现早就没法用了 —— 2026-09-28 实测：32k 时用户已明显感到首字慢，却只占窗口
+  // 12%，提示永远看不到。
+  const usagePct = contextUsage?.window
+    ? Math.round((contextUsage.input_tokens / contextUsage.window) * 100)
+    : null;
+  const contextTokens = contextUsage?.input_tokens ?? 0;
+  const usageWarn = contextTokens >= CONTEXT_HINT_TOKENS;
 
   const handleSend = (inputText?: string) => {
     const trimmed = (inputText || text).trim();
@@ -157,6 +181,19 @@ export default function ChatInput({ suggestions }: ChatInputProps) {
               onRemove={() => removePendingUpload(u.key)}
             />
           ))}
+        </div>
+      )}
+
+      {/* 上下文用量：历史很长（≥32k tokens）时出现，作为「为什么这次变慢」的解释 */}
+      {usageWarn && (
+        <div
+          className="mb-1 px-1 text-[10px] text-amber-600 dark:text-amber-500"
+          title={`本轮上下文 ${contextTokens.toLocaleString()} tokens`
+            + `（占模型窗口 ${usagePct}%，窗口 ${contextUsage?.window?.toLocaleString()}）`
+            + '；超过 32k 会自动压缩历史，老消息仍可回读'}
+        >
+          上下文 {contextTokens.toLocaleString()} tokens
+          · 当前历史较长，建议开启新对话降低首字延迟
         </div>
       )}
 
@@ -204,6 +241,26 @@ export default function ChatInput({ suggestions }: ChatInputProps) {
           onChange={(v) => setInteractionMode(v as InteractionMode)}
           ariaLabel="交互模式选择"
         />
+        {/* 联网能力未启用（WEB_ENABLED=false）时不渲染，避免死按钮 */}
+        {webSearchEnabled && (
+          <button
+            onClick={() => setWebSearch(!webSearch)}
+            aria-pressed={webSearch}
+            aria-label="联网搜索"
+            title="联网搜索：检索公开网页并标注来源"
+            className={cn(
+              'flex shrink-0 items-center gap-1.5 rounded-lg px-2 py-1.5 text-sm transition-all outline-none hover:shadow-md',
+              webSearch
+                ? 'bg-primary/10 text-primary hover:bg-primary/15'
+                : 'text-muted-foreground hover:bg-muted hover:text-foreground',
+            )}
+          >
+            <Globe className="size-4" />
+            <span>联网搜索</span>
+          </button>
+        )}
+        {/* 视频生成**没有开关**：视频工具常驻注册，用户直接说「把这份 PPT 做成视频」即可。
+            （原先那个开关只影响"注不注流程引导"，开不开都能生成，已按用户要求删掉。） */}
         {isStreaming ? (
           <button
             onClick={stopStreaming}
