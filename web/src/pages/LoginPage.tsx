@@ -128,7 +128,8 @@ export default function LoginPage() {
   const location = useLocation();
   const { isAuthenticated, setAuth } = useAuthStore();
 
-  const from = (location.state as { from?: { pathname: string } })?.from?.pathname || '/';
+  const fromLoc = (location.state as { from?: { pathname: string; search?: string } })?.from;
+  const from = fromLoc ? `${fromLoc.pathname}${fromLoc.search || ''}` : '/';
 
   useEffect(() => {
     if (isAuthenticated) {

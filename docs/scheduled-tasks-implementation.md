@@ -75,6 +75,26 @@
   4. 定时任务 trace 出现在 Langfuse
   5. 失败任务 → run.status=failed + error 落库
 
+## 增强：对话语言建 + 预设式表单（2026-08-27）
+
+### 对话语言建（`schedule_task` 工具）
+
+补 DeerFlow 也有的第三种创建方式：**对话里用自然语言建任务**。
+
+- `tools/schedule_task_tool.py`：`@tool async schedule_task`，action = create/list/delete/pause/resume。
+- LLM 靠工具 docstring 的映射规则把自然语言解析成调度参数：「每天8点」→ cron `0 8 * * *`；「每2小时」→ interval 7200；「3分钟后」→ 先调 `get_current_time` 再算 once_at。
+- 权限：guardrail 只认 `ai:agent`，工具内**显式校验** `scheduled_task:manage`（`get_current_permissions()`）；`created_by = get_current_user_id()` 按用户隔离；同名任务拒绝（避免 delete/pause 按名匹配歧义）。
+- `thread_strategy='reuse'` 时从 `config['configurable']['thread_id']` 取当前会话存进 `task.thread_id`，跑报告带对话上下文（runner `_thread_id_for` 优先用 `task.thread_id`）。
+- 注册：`service/agent/agent_service.py` `_rebuild` 在 `SCHEDULED_TASKS_ENABLED` 时 `wrap_async_tool_with_error_handling(schedule_task)` 注入 raw_tools。
+- repository 新增 `list_tasks_by_creator` / `get_task_by_name_and_creator`。
+
+### 页面预设式定时方案
+
+参考 DeerFlow CreateScheduledTaskDialog（Hourly/Daily/Weekly/Monthly/Custom 预设），把页面「手填 cron」改成人类可读预设（`web/src/pages/ScheduledTasksPage.tsx`）：
+
+- 一次性 / 间隔（数值+分钟/小时/天）/ 每天（时间选择）/ 每周（周几+时间）/ 每月（几号+时间）/ 自定义 Cron。
+- 转换函数：`scheduleToTaskInput`（预设→后端字段）、`taskToSchedule`（编辑回填）、`scheduleSummary`（列表显示"每天 08:00"而非原始 cron）。
+
 ## 后续（多节点高可用时）
 
 - 锁上加 lease/heartbeat（TTL 续租 + 孤儿检测），节点崩溃后任务可被接管——v1 未做（用户确认保持简单）。

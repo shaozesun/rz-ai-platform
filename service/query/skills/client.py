@@ -101,6 +101,12 @@ def build_caller():
     skill_dir, owner = resolved
     _check_owner(owner, on_behalf_of)
 
+    # 自建技能被本人停用后拒绝调用（已 promote 的会话也能拦住）
+    if owner and on_behalf_of:
+      from service.query.skills.states import is_skill_enabled
+      if not await is_skill_enabled(on_behalf_of, name):
+        raise SkillsError(f'技能 {name} 已停用（可在「智能体 → 技能中心」重新启用）')
+
     if len(parts) == 1:
       # 主能力：返回 SKILL.md 全文 + references 索引
       skill_file = skill_dir / 'SKILL.md'
