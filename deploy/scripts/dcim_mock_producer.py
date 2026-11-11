@@ -5,7 +5,7 @@
     python deploy/scripts/dcim_mock_producer.py                # 默认 localhost:9092
     python deploy/scripts/dcim_mock_producer.py --bootstrap dcim-broker-dev:9092
 
-覆盖场景（与 docs/dcim-kafka-ingest-design.md 的验证项对应）：
+覆盖场景（与 docs/dcim/dcim-kafka-ingest-design.md 的验证项对应）：
    1. 首次全量：空间(园区/楼宇/房间) + 设备 + 点位
    2. 增量修改：设备改名（考察 upsert + 历史表 +1 条）
    3. 重复消息：重发同一设备（考察幂等：不产生重复行）

@@ -17,6 +17,5 @@ router = APIRouter(prefix='/tools', tags=['tools'])
 @router.get('')
 @require_permission('ai:agent')
 async def list_tools(request: Request):
-  """按平台 / 内置分组返回工具清单；他人自建技能不出现。"""
-  user_id = getattr(request.state, 'user_id', '') or ''
-  return {'ok': True, 'data': {'groups': build_groups(user_id)}}
+  """按平台 / 内置分组返回工具清单（技能只在技能中心展示，这里不列）。"""
+  return {'ok': True, 'data': {'groups': build_groups()}}

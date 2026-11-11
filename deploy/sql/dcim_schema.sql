@@ -1,5 +1,5 @@
 -- DCIM Kafka 接入 · 元数据表结构（阶段一：空间/设备/点位）
--- 设计依据：docs/dcim-kafka-ingest-design.md 第五节（当前态）与第六节（变更历史）
+-- 设计依据：docs/dcim/dcim-kafka-ingest-design.md 第五节（当前态）与第六节（变更历史）
 --
 -- 用法（先建库，再连到 dcim 库执行本文件）：
 --   createdb dcim                       # 或： psql -c 'CREATE DATABASE dcim;'
@@ -106,7 +106,7 @@ CREATE TABLE IF NOT EXISTS dcim_dlq (
 CREATE INDEX IF NOT EXISTS idx_dcim_dlq_cluster ON dcim_dlq (cluster);
 
 -- ============ 时序库（TDengine）建模注册表 + 测点分级 ============
--- 配套设计：docs/dcim-timeseries-storage-design.md
+-- 配套设计：docs/dcim/dcim-timeseries-storage-design.md
 -- 宽表模型：**一个设备类型一张超级表**（列 = 该类型的各测点），一台设备一张子表。
 
 -- 设备类型 → 超级表名（写入端与查询端共用的唯一来源）

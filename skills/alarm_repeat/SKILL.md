@@ -2,6 +2,7 @@
 name: alarm_repeat
 title: 重复告警
 description: 重复告警：同一天同一测点同一告警内容出现 3 次以上。用户问「重复告警 / 哪些测点反复报警 / 同一告警一天好几次」时按本技能直接查。
+when_to_use: 用户问「重复告警 / 哪些测点反复报警 / 同一告警一天好几次」时使用；例：「昨天 A1 有哪些测点重复报警？」
 category: alarm
 domain: alarm
 ---

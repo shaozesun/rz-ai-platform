@@ -498,8 +498,15 @@ _SNAPSHOT_JS = r"""
   // 保证整套 ref 唯一，click 时逐个 frame 都能查到这个号。
   const results = [];
   let ref = start;
+  const norm = (s) => (s || "").replace(/\s+/g, "").trim();
+  // 元素名只折叠空白、不删空格：innerText 里的换行会让「部门：\n技术保障部」难读。
+  const flat = (s) => (s || "").replace(/\s+/g, " ").trim();
+  // 树/脑图/菜单节点：jsMind 的 jmnode 既无 cursor:pointer 也无 role/onclick，
+  // 只靠下面那条指针扫描会整棵树都看不见（2026-11-11 事故：只能盲点展开器 +）。
   const baseSel =
-    "a, button, input, textarea, select, [role=button], [role=link], [role=tab], [role=checkbox], [onclick]";
+    "a, button, input, textarea, select, [role=button], [role=link], [role=tab], [role=checkbox], [onclick], " +
+    "jmnode, [role=treeitem], [role=menuitem], .el-tree-node__content, " +
+    ".ant-tree-node-content-wrapper, .ant-tree-title, .layui-tree-txt";
   const bases = new Set(document.querySelectorAll(baseSel));
   const candidates = new Set(bases);
 
@@ -530,6 +537,10 @@ _SNAPSHOT_JS = r"""
     if (a === b) return 0;
     return (a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_PRECEDING) ? 1 : -1;
   });
+  const treeSel =
+    "jmnode, [role=treeitem], [role=menuitem], .el-tree-node__content, " +
+    ".ant-tree-node-content-wrapper, .ant-tree-title, .layui-tree-txt";
+  const numbered = [];
   for (const el of ordered) {
     if (results.length >= 200) break;
     if (!bases.has(el) && el.closest("[data-rz-ref]")) continue;
@@ -538,8 +549,16 @@ _SNAPSHOT_JS = r"""
     const visible = rect.width > 0 && rect.height > 0 &&
       style.visibility !== "hidden" && style.display !== "none";
     if (!visible) continue;
+    // 树/菜单里父子节点常是同一段文字（.ant-tree-node-content-wrapper 套 .ant-tree-title），
+    // 同一行给两个 ref 只会让模型重复点。只对树类元素去重，不碰 a/button 这类基础元素。
+    const rawText = norm(el.innerText || "");
+    if (rawText && el.matches(treeSel) &&
+        numbered.some((p) => p.el !== el && p.el.contains(el) && p.text === rawText)) {
+      continue;
+    }
     ref += 1;
     el.setAttribute("data-rz-ref", String(ref));
+    numbered.push({el, text: rawText});
     // 表单控件的可识别名：优先 aria/name → 已填值 → 占位符；再拼上最近的表单标签
     // （内网系统的 el-select 全是「请选择」，没有标签就分不清是公司还是专业）。
     const isField = ["INPUT", "TEXTAREA", "SELECT"].includes(el.tagName);
@@ -548,8 +567,25 @@ _SNAPSHOT_JS = r"""
       const value = el.type === "password" ? "" : (el.value || "").trim();
       base = base || value || (el.getAttribute("placeholder") || "").trim();
     }
-    if (!base) base = (el.innerText || "").trim();
+    if (!base) base = flat(el.innerText || "");
     let name = base;
+    // jsMind 展开器只会渲染成裸 + / -，模型看不出它在展开哪个分支 → 改成可读名称。
+    if (el.tagName.toLowerCase() === "jmexpander") {
+      const verb = (el.innerText || "").trim() === "+" ? "展开" : "收起";
+      let owner = "";
+      const nid = el.getAttribute("nodeid");
+      if (nid) {
+        const ownerNode = document.querySelector(`jmnode[nodeid="${CSS.escape(nid)}"]`);
+        if (ownerNode) owner = (ownerNode.innerText || "").trim();
+      }
+      if (!owner) {
+        const prev = el.previousElementSibling;
+        if (prev && prev.tagName.toLowerCase() === "jmnode") {
+          owner = (prev.innerText || "").trim();
+        }
+      }
+      name = owner ? `${verb}：${owner}` : verb;
+    }
     if (isField) {
       let item = el.closest(".el-form-item");
       if (!item) {
@@ -562,6 +598,11 @@ _SNAPSHOT_JS = r"""
       const label = lab ? (lab.innerText || "").trim().replace(/[:：]\s*$/, "") : "";
       if (label && base && base !== label && !base.startsWith(label)) name = label + "：" + base;
       else if (label && !base) name = label;
+    }
+    // 综合管理平台的「公司 / 部门」是两个整段下拉（.company-and-dept-label），
+    // 没有 role、名字里又带换行，模型认不出它是选择器 → 名字后补一句确定性提示。
+    if (el.classList && el.classList.contains("company-and-dept-label")) {
+      name = flat(name) + "（下拉可切换）";
     }
     if (name.length > 120) name = name.slice(0, 120) + "…";
     // 危险元素标记：命中黑名单（中文包含；拉丁不分大小写）或文件上传控件。
@@ -586,6 +627,115 @@ _SNAPSHOT_JS = r"""
   }
   return {elements: results, end_ref: ref};
 }
+"""
+
+# 按文字定位可点元素：树/脑图节点给不出稳定 ref（或 200 个上限外），
+# 用可见文字找更可靠。跨 frame 由 Python 侧传 start 做全局编号。
+_FIND_BY_TEXT_JS = r"""
+(payload) => {
+  const norm = (s) => (s || "").replace(/\s+/g, "").trim();
+  // 快照只给「公司/部门」下拉追加了「（下拉可切换）」提示，元素真实文本里没有。
+  // 模型会照抄快照名字来 click，匹配前必须先剥掉这个标记（全角括号）。
+  const hint = "（下拉可切换）";
+  const want = norm(payload.text).split(hint).join("");
+  const start = payload.start || 0;
+  for (const stale of document.querySelectorAll("[data-rz-hit]")) {
+    stale.removeAttribute("data-rz-hit");
+  }
+  if (!want || !document.body) return {count: 0, exact: false, items: [], end: start};
+
+  const visible = (el) => {
+    const rect = el.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return false;
+    let style;
+    try { style = window.getComputedStyle(el); } catch (e) { return false; }
+    return style.visibility !== "hidden" && style.display !== "none";
+  };
+  const labelOf = (el) => norm(
+    el.getAttribute("aria-label") || el.getAttribute("title") || el.innerText || ""
+  );
+
+  // 先精确匹配；一个都没有才退到「包含」，并限制长度防止命中 body 这类巨型容器。
+  const exact = [];
+  const loose = [];
+  const all = document.body.querySelectorAll("*");
+  let scanned = 0;
+  for (const el of all) {
+    if (++scanned > 20000) break;
+    const tag = el.tagName.toLowerCase();
+    if (tag === "script" || tag === "style" || tag === "svg" || tag === "path") continue;
+    if (!visible(el)) continue;
+    const label = labelOf(el);
+    if (!label) continue;
+    if (label === want) exact.push(el);
+    else if (label.includes(want) && label.length <= want.length + 40) loose.push(el);
+  }
+  let hits = exact.length ? exact : loose;
+  // 只留最深的命中：父容器与子节点文字相同（<div><span>2026</span></div>）时保留子节点。
+  hits = hits.filter((el) => !hits.some((other) => other !== el && el.contains(other)));
+  hits.sort((a, b) =>
+    (a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_PRECEDING) ? 1 : -1
+  );
+
+  // 同名节点常有多个（两个「2026」），给最近的 3 个树/脑图节点名帮模型区分。
+  const nodeSel =
+    "jmnode, [role=treeitem], .el-tree-node__content, " +
+    ".ant-tree-node-content-wrapper, .ant-tree-title, .layui-tree-txt";
+  const nodes = Array.from(document.querySelectorAll(nodeSel)).filter(visible);
+  const nearOf = (el) => {
+    const r = el.getBoundingClientRect();
+    const cx = r.left + r.width / 2;
+    const cy = r.top + r.height / 2;
+    return nodes
+      .filter((n) => n !== el && !n.contains(el) && !el.contains(n))
+      .map((n) => {
+        const nr = n.getBoundingClientRect();
+        const dx = nr.left + nr.width / 2 - cx;
+        const dy = nr.top + nr.height / 2 - cy;
+        return {n, d: dx * dx + dy * dy};
+      })
+      .sort((a, b) => a.d - b.d)
+      .slice(0, 3)
+      .map((x) => (x.n.innerText || "").trim().slice(0, 40))
+      .filter(Boolean);
+  };
+
+  // 同名元素常跨区域（面包屑与表格里各有一个「2026」）。给一句所在区域提示，
+  // 模型才能选对 nth：点面包屑是往上层跳，点表格行才是进入下一层。
+  const zoneOf = (el) => {
+    const hit = el.closest(
+      "tr, nav, [role=navigation], .el-breadcrumb, [class*=breadcrumb], " +
+      ".el-menu, [role=menu], .el-tree, .ant-tree, ul[role=tree]"
+    );
+    if (!hit) return "";
+    if (hit.matches("tr")) return "表格行";
+    if (hit.matches("nav, [role=navigation]")) return "导航";
+    if (hit.matches(".el-breadcrumb, [class*=breadcrumb]")) return "面包屑";
+    if (hit.matches(".el-menu, [role=menu]")) return "菜单";
+    return "树";
+  };
+
+  const items = hits.map((el, i) => {
+    const index = start + i;
+    el.setAttribute("data-rz-hit", String(index));
+    return {
+      index,
+      tag: el.tagName.toLowerCase(),
+      name: (el.innerText || "").trim().slice(0, 80),
+      where: zoneOf(el),
+      near: nearOf(el),
+    };
+  });
+  return {count: items.length, exact: exact.length > 0, items, end: start + items.length};
+}
+"""
+
+# 点中的是不是浮层里的选项：只有这类点击之后需要把鼠标移开收起浮层。
+_IN_OVERLAY_JS = r"""
+(el) => !!el.closest(
+  ".el-dropdown-menu, .el-select-dropdown, .el-popover, .el-picker-panel, " +
+  "[role=menu], .ant-dropdown, .ant-select-dropdown, .ant-popover"
+)
 """
 
 # click 前的兜底重算：SPA 重渲染会丢掉 data-rz-blocked，按当前文本再判一次。
@@ -983,6 +1133,80 @@ async def _record_session(session: LiveSession, body: dict) -> dict:
     shutil.rmtree(tmp, ignore_errors=True)
 
 
+async def _resolve_click_target(page: Page, body: dict):
+  """按 ref 或 text 定位待点元素。
+
+  返回 `(locator, None)` 或 `(None, 载荷)`；载荷可能是错误，也可能是
+  `ok/clicked=False/ambiguous` 的候选清单（同名多个时**不猜**，交模型用 nth 选）。
+  """
+  ref_raw = str(body.get('ref') or '').strip()
+  text = str(body.get('text') or '').strip()
+  if bool(ref_raw) == bool(text):
+    return None, {'ok': False, 'stage': 'click',
+                  'error': 'click 需要 ref 或 text 之一（二选一）'}
+
+  if ref_raw:
+    if not ref_raw.isdigit():
+      return None, {'ok': False, 'stage': 'click', 'error': 'ref 必须是正整数'}
+    ref = int(ref_raw)
+    # ref 跨 frame 连续编号，逐个 frame 找（page.locator 不穿透 iframe）
+    for frame in page.frames:
+      loc = frame.locator(f'[data-rz-ref="{ref}"]')
+      if await loc.count() > 0:
+        return loc.first, None
+    return None, {'ok': False, 'stage': 'click',
+                  'error': f'元素 [{ref}] 已失效，请先调用 browser__snapshot 重新编号'}
+
+  hits: list[dict] = []
+  frames: dict[int, object] = {}
+  start = 0
+  for frame in page.frames:
+    try:
+      data = await frame.evaluate(_FIND_BY_TEXT_JS, {'text': text, 'start': start})
+    except Exception:
+      continue  # frame 正在导航/已 detach：跳过
+    if not isinstance(data, dict):
+      continue
+    for item in data.get('items') or []:
+      idx = int(item.get('index') or 0)
+      hits.append(item)
+      frames[idx] = frame
+    start = int(data.get('end') or start)
+
+  if not hits:
+    return None, {'ok': False, 'stage': 'click',
+                  'error': f'页面上没有文字包含「{text}」的可点元素，'
+                           '请先 browser__get_text 确认节点真实名称'}
+
+  nth_raw = str(body.get('nth') or '').strip()
+  nth = int(nth_raw) if nth_raw.isdigit() else 0
+  if len(hits) > 1 and not nth:
+    return None, {
+      'ok': True, 'clicked': False, 'ambiguous': True, 'total': len(hits),
+      'candidates': [
+        {'index': h.get('index'), 'tag': h.get('tag'), 'name': h.get('name'),
+         'where': h.get('where') or '', 'near': h.get('near') or []}
+        for h in hits[:12]
+      ],
+    }
+  if nth:
+    if not 1 <= nth <= len(hits):
+      return None, {'ok': False, 'stage': 'click',
+                    'error': f'nth 超出范围：共 {len(hits)} 个同名元素（1~{len(hits)}）'}
+    chosen = hits[nth - 1]
+  else:
+    chosen = hits[0]
+
+  idx = int(chosen.get('index') or 0)
+  frame = frames.get(idx)
+  if frame is None:
+    return None, {'ok': False, 'stage': 'click', 'error': '元素已失效，请重新定位'}
+  loc = frame.locator(f'[data-rz-hit="{idx}"]')
+  if await loc.count() == 0:
+    return None, {'ok': False, 'stage': 'click', 'error': '元素已失效，请重新定位'}
+  return loc.first, None
+
+
 async def _do_session_action(action: str, session: LiveSession, body: dict) -> dict:
   page = session.page
   if action == 'record':
@@ -992,20 +1216,19 @@ async def _do_session_action(action: str, session: LiveSession, body: dict) -> d
     return {'ok': True, **(await _snapshot(page))}
 
   if action == 'click':
-    raw = str(body.get('ref') or '')
-    if not raw.isdigit():
-      return {'ok': False, 'stage': 'click', 'error': 'ref 必须是正整数'}
-    ref = int(raw)
-    # ref 跨 frame 连续编号，逐个 frame 找（page.locator 不穿透 iframe）
-    target = None
-    for frame in page.frames:
-      loc = frame.locator(f'[data-rz-ref="{ref}"]')
-      if await loc.count() > 0:
-        target = loc.first
-        break
-    if target is None:
-      return {'ok': False, 'stage': 'click',
-              'error': f'元素 [{ref}] 已失效，请先调用 browser__snapshot 重新编号'}
+    button = str(body.get('button') or 'left').strip().lower()
+    count = str(body.get('count') or '1').strip()
+    if button not in ('left', 'right'):
+      return {'ok': False, 'stage': 'click', 'error': 'button 只能是 left 或 right'}
+    if count not in ('1', '2'):
+      return {'ok': False, 'stage': 'click', 'error': 'count 只能是 1 或 2'}
+    if button == 'right' and count == '2':
+      return {'ok': False, 'stage': 'click', 'error': '不支持右键双击'}
+
+    target, problem = await _resolve_click_target(page, body)
+    if problem is not None:
+      return problem
+
     # 只读浏览护栏：先读快照打的标记；SPA 重渲染丢了属性时按当前文本重算一次。
     blocked = ''
     with suppress(Exception):
@@ -1023,16 +1246,56 @@ async def _do_session_action(action: str, session: LiveSession, body: dict) -> d
                        '如需执行请由人工完成；浏览请继续用菜单或详情链接'}
     with suppress(Exception):
       await target.scroll_into_view_if_needed(timeout=_CLICK_TIMEOUT_MS)
+    # 点击目标是浮层里的选项（公司/部门下拉）时，Element UI 不会自己收起浮层。
+    in_overlay = False
+    with suppress(Exception):
+      in_overlay = bool(await target.evaluate(_IN_OVERLAY_JS))
+    # 目标不在浮层里：先移开指针，收起上一次遗留的 hover 浮层（否则它盖住目标、
+    # 点击一直等到 8s 超时）。目标已在浮层里则不能提前移开，否则选项会消失。
+    if not in_overlay:
+      with suppress(Exception):
+        await page.mouse.move(1, 1)
+    pages_before = list(session.context.pages)
     try:
-      await target.click(timeout=_CLICK_TIMEOUT_MS)
+      if count == '2':
+        await target.dblclick(timeout=_CLICK_TIMEOUT_MS)
+      elif button == 'right':
+        await target.click(button='right', timeout=_CLICK_TIMEOUT_MS)
+      else:
+        await target.click(timeout=_CLICK_TIMEOUT_MS)
     except Exception as e:
       return {'ok': False, 'stage': 'click',
-              'error': f'元素 [{ref}] 点击失败（页面可能已变化），请重新 snapshot：{e}'}
+              'error': f'点击失败（页面可能已变化），请重新 snapshot：{e}'}
+    # Element UI 的 hover 下拉（公司/部门选择器）点完选项后仍停在鼠标下方，
+    # 浮层没收到 mouseleave 就一直盖着页面，下一次点击会被拦截（实测 8s 超时）。
+    # 只在「刚点了浮层里的选项」时把指针移回左上角让它收起——点下拉本身（标签）
+    # 时不能移开，否则浮层立刻关闭、模型看不到里面的选项。
+    if in_overlay:
+      with suppress(Exception):
+        await page.mouse.move(1, 1)
+    # 点击常以 target=_blank 打开新标签页；不接管会话就会一直停在旧 page，
+    # 模型再也看不到目标页（内网目录树「双击进入」的常见形态）。
+    def _new_pages() -> list:
+      return [p for p in session.context.pages if p not in pages_before and not p.is_closed()]
+
+    new_pages = _new_pages()
+    if not new_pages:
+      # window.open 可能比 click 返回稍晚一点；给一个很短的事件等待，不要漏掉新标签页。
+      with suppress(Exception):
+        await session.context.wait_for_event('page', timeout=1500)
+      new_pages = _new_pages()
+    if new_pages:
+      session.page = new_pages[-1]
+      page = session.page
+      with suppress(Exception):
+        await page.wait_for_load_state('domcontentloaded', timeout=_POST_CLICK_LOAD_TIMEOUT_MS)
+      await _settle(page, _POST_CLICK_LOAD_TIMEOUT_MS, min_wait_ms=600)
+      return {'ok': True, 'clicked': True, 'popup': True, **(await _snapshot(page))}
     # SPA 跳转不触发 load 事件，等网络静默一会儿再快照，绝不阻塞
     with suppress(Exception):
       await page.wait_for_load_state('domcontentloaded', timeout=_POST_CLICK_LOAD_TIMEOUT_MS)
     await _settle(page, _POST_CLICK_LOAD_TIMEOUT_MS, min_wait_ms=600)
-    return {'ok': True, **(await _snapshot(page))}
+    return {'ok': True, 'clicked': True, **(await _snapshot(page))}
 
   if action == 'get_text':
     limit = MAX_TEXT_CHARS

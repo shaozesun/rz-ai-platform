@@ -15,7 +15,7 @@
   TDengine 3.3 **能做** self-join，见下方更正）。宽表把「同一设备同一时刻的各测点」放在**同一行**，
   对齐是**结构性的**，天然成立；行数还少一个量级（现网 36 台设备 × 3 测点：799 万行 → 约 285 万行，
   **测点越多的设备类型倍数越大**），写入也更省（对方本来就按设备组包推送）。
-  设计依据见 docs/dcim-timeseries-storage-design.md §4。
+  设计依据见 docs/dcim/dcim-timeseries-storage-design.md §4。
 
 ⚠️ **更正（2026-10-07 实测）**：本文档与设计文档此前写的「TDengine 不支持多表 JOIN」**不成立** ——
 在 3.3.0.0 上实测 `dcim_realtime` 自连接（`a.ts=b.ts AND a.device_guid=b.device_guid`）可正常返回。

@@ -31,6 +31,8 @@ class Capability:
     required_perm: 调用所需权限，留空表示继承门面工具的权限。
     owner: 归属用户 id，空串 = 公开能力（所有用户可见可调）；非空 = 用户自建能力，
       仅 owner 本人可见可调（tool_search 过滤 / caller 校验 / 清单路由跳过）。
+    when_to_use: 面向用户的「什么时候用」文案（来源是技能 frontmatter），供技能中心详情展示；
+      非技能平台留空。
   """
 
   id: str
@@ -54,3 +56,4 @@ class Capability:
   intent_labels: tuple[str, ...] = ()
   required_perm: str = ''
   owner: str = ''
+  when_to_use: str = ''

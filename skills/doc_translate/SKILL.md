@@ -2,6 +2,7 @@
 name: doc_translate
 title: 文档保格式翻译
 description: 翻译上传的 Word/PPT 文档，保留图片/表格/目录原格式。用户上传文档后说「翻译成英文/中文」「出个英文版」时用；**不许重建文档**（重建会丢图片、流程图、目录、表格），要拿原文件原地改文字。
+when_to_use: 用户上传 Word/PPT 后要「翻译成英文/中文 / 出个英文版」，且要求保留图片、表格、目录时使用；例：「把这份方案翻译成英文，图片表格别动。」
 category: skill
 domain: document
 ---

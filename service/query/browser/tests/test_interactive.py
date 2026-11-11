@@ -285,6 +285,13 @@ def test_call_guards() -> None:
         for cap, params in (
           ('browser.unknown', {}),
           ('browser.click', {'ref': 'abc'}),
+          ('browser.click', {}),
+          ('browser.click', {'ref': '1', 'text': 'x'}),
+          ('browser.click', {'text': 'x', 'nth': '0'}),
+          ('browser.click', {'text': 'x', 'nth': 'abc'}),
+          ('browser.click', {'text': 'x', 'button': 'middle'}),
+          ('browser.click', {'text': 'x', 'count': '3'}),
+          ('browser.click', {'text': 'x', 'button': 'right', 'count': '2'}),
           ('browser.get_text', {'max_chars': 'x'}),
           ('browser.record', {'seconds': 'abc'}),
           ('browser.record', {'keyframe_interval': 'x'}),
@@ -365,25 +372,89 @@ def test_record_params() -> None:
   print('  [ok] 录制参数钳制（秒数/间隔/video）')
 
 
+def test_click_params() -> None:
+  """click 的 ref/text/nth/button/count 在发请求前校验并透传；歧义与弹窗的整形。"""
+
+  async def run() -> None:
+    captured: list[dict] = []
+    reply: dict = {}
+
+    async def fake_post(payload: dict) -> dict:
+      captured.append(dict(payload))
+      base = {
+        'ok': True,
+        'url': 'http://x/',
+        'title': 't',
+        'elements': [{'ref': 1, 'tag': 'a', 'name': '详情'}],
+      }
+      base.update(reply)
+      return base
+
+    old_post = interactive._post_session
+    old = {'BROWSER_EXPLORE_ENABLED': _patch('BROWSER_EXPLORE_ENABLED', True)}
+    interactive._post_session = fake_post
+    user_context.set_current_thread_id('rz-agent-click')
+    try:
+      out = await call('browser.click', {'text': '1.4精益化能源管理'})
+      assert captured[-1]['text'] == '1.4精益化能源管理', captured[-1]
+      assert 'ref' not in captured[-1], captured[-1]
+      assert captured[-1]['button'] == 'left' and captured[-1]['count'] == '1'
+      assert out['clicked'] is True and 'ref' not in out, out
+
+      await call('browser.click', {'ref': '5', 'count': '2'})
+      assert captured[-1]['ref'] == '5' and captured[-1]['count'] == '2'
+      assert 'text' not in captured[-1], captured[-1]
+
+      await call('browser.click', {'text': '2026', 'nth': '2', 'button': 'right'})
+      assert captured[-1]['nth'] == '2' and captured[-1]['button'] == 'right'
+
+      # 同名多个：不点击，返回候选（nth 从 1 起，方便直接回填）
+      reply = {
+        'ok': True, 'clicked': False, 'ambiguous': True, 'total': 2,
+        'candidates': [
+          {'index': 7, 'tag': 'jmnode', 'name': '2026', 'near': ['1.规划管理']},
+          {'index': 9, 'tag': 'jmnode', 'name': '2026', 'near': ['1.4精益化能源管理']},
+        ],
+      }
+      out = await call('browser.click', {'text': '2026'})
+      assert out['ambiguous'] is True and out['clicked'] is False, out
+      assert [c['nth'] for c in out['candidates']] == [1, 2], out
+      assert out['candidates'][1]['near'] == ['1.4精益化能源管理'], out
+      assert 'nth' in out['note'] and '未点击' in out['note'], out
+
+      # 新标签页接管
+      reply = {'clicked': True, 'popup': True}
+      out = await call('browser.click', {'text': '10月'})
+      assert out['popup'] is True and '新标签页' in out['note'], out
+    finally:
+      user_context.set_current_thread_id('')
+      interactive._post_session = old_post
+      for name, value in old.items():
+        _patch(name, value)
+
+  asyncio.run(run())
+  print('  [ok] click 参数（ref/text/nth/button/count）与歧义/弹窗整形')
+
+
 def test_manifest_positioning() -> None:
   from service.query.base.manifest import platform_definition
 
   old = _patch('BROWSER_EXPLORE_ENABLED', False)
   try:
-    assert '交互模式' not in platform_definition('browser')
+    assert '逐步操作' not in platform_definition('browser')
     assert '截图' in platform_definition('browser')
   finally:
     _patch('BROWSER_EXPLORE_ENABLED', old)
 
   old = _patch('BROWSER_EXPLORE_ENABLED', True)
   try:
-    assert '交互模式' in platform_definition('browser')
+    assert '逐步操作' in platform_definition('browser')
 
     # 配方未校准（BROWSER_ENABLED=false）时不得宣传「预置配方」——那批工具没注册
     o_recipe = _patch('BROWSER_ENABLED', False)
     try:
       defn = platform_definition('browser')
-      assert '预置配方' not in defn and '交互模式' in defn, defn
+      assert '预置配方' not in defn and '逐步操作' in defn, defn
     finally:
       _patch('BROWSER_ENABLED', o_recipe)
 
@@ -409,6 +480,7 @@ def main() -> None:
   test_blocked_stage_hint()
   test_shape()
   test_record_params()
+  test_click_params()
   test_call_guards()
   test_manifest_positioning()
   print('全部通过')

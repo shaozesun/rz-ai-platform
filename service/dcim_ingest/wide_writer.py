@@ -333,7 +333,7 @@ class WideWriter:
     pool = self._ensure_pool()
     jobs = [
       (dt, point_group, chunk, pool.submit(self._exec_chunk, dt, point_group, chunk))
-      for dt, (_by_device, _groups, chunks) in prepared.items()
+      for dt, (_by_device, _groups, chunks, _states) in prepared.items()
       for point_group, chunk in chunks
     ]
 
@@ -355,15 +355,25 @@ class WideWriter:
     if first_error is not None:
       raise first_error
 
-    for device_type, (_by_device, groups, chunks) in prepared.items():
+    # 全批写成功后才推进零阶保持状态。原先在准备阶段就写回 `_last`，一旦整批失败重试，
+    # 重放会拿「已推进到本批最新 ts 的状态」去回填历史行 —— 把未来值带进过去。
+    # 窗口拉长后一批里同一设备可能有多行，这个问题的影响面会随之变大。
+    for _by_device, _groups, _chunks, states in prepared.values():
+      self._last.update(states)
+
+    for device_type, (_by_device, groups, chunks, _states) in prepared.items():
       if self._extra_sinks and done[device_type]:
         self._archive(device_type, _by_device, groups, done[device_type])
     return sum(len(d) for d in done.values())
 
   def _prepare_type(
     self, device_type: str, batch: list[DeviceSample],
-  ) -> tuple[dict, dict, list[tuple[str, list]]]:
-    """准备阶段（**调用线程**）：查映射、零阶保持、拼 SQL、分片。返回 `(by_device, groups, chunks)`。"""
+  ) -> tuple[dict, dict, list[tuple[str, list]], dict[str, dict]]:
+    """准备阶段（**调用线程**）：查映射、零阶保持、拼 SQL、分片。
+
+    返回 `(by_device, groups, chunks, new_states)` —— 状态由调用方在全批成功后统一写回
+    `self._last`（失败不推进，重试与首次调用逐字一致）。
+    """
     code_to_group = self._ensure_columns(
       device_type, {c for s in batch for c in s.values},
     )
@@ -375,6 +385,7 @@ class WideWriter:
     # ★ 同 ts 合并 / 跨 ts 零阶保持（见 `merge_values` 的两条规则）。
     #   **按 ts 升序**处理，这样"每点最近一次真实采样"能顺着链带下去（批内一条设备可能有多个时刻）。
     #   状态只记真实采样 → 处理完留回缓存供**下一批**继续，不会被带出来的值撑大。
+    new_states: dict[str, dict] = {}
     for guid, samples in by_device.items():
       state = self._last.get(guid) or {}
       out: list[DeviceSample] = []
@@ -383,7 +394,7 @@ class WideWriter:
                                    max_gap_ms=self._carry_max_ms)
         out.append(replace(s, values=vals))
       by_device[guid] = out
-      self._last[guid] = state
+      new_states[guid] = state
 
     # 测点按组拆表：**每组一张超级表、每台设备每组各写一行**（组内只有该组的列）。
     # 各组行数因此一致，读侧才能按 (时间, 设备) 把多组行合成一行。
@@ -435,7 +446,7 @@ class WideWriter:
 
       for chunk in _chunk_blocks(blocks):
         chunks.append((point_group, chunk))
-    return by_device, groups, chunks
+    return by_device, groups, chunks, new_states
 
   def _exec_chunk(self, device_type: str, point_group: str, chunk: list) -> tuple:
     """下发阶段（**工作线程**）：发一条合并 INSERT，失败按「设备级 / 瞬时」分派。

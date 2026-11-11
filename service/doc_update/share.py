@@ -10,7 +10,9 @@
 
 编号剪枝（fail-open）：文件夹名前导数字串与**全部目标编号**都明显不兼容时才跳过
 （如目标是 `1.4.5`、目录是 `2.x`）；`1.4.5` 与 `1.4.5.1` 视为兼容，无数字名字一律下钻。
-宁可多走几页，不可漏匹配。
+**四位年份开头的归档目录（`2026年` / `2026.10`）不参与剪枝** —— 它们是月度文件的容器，
+当成章节编号会被整棵跳过（实测 `1.4.5能源管理报告（能源月报同步）/能源月报/2026年/10月`
+因此判「未找到」）。宁可多走几页，不可漏匹配。
 """
 
 import asyncio
@@ -29,10 +31,16 @@ _MAX_DIRS = 2000       # 单部门访问目录数安全阀
 _MAX_DEPTH = 10
 
 _LEADING_NUMBER = re.compile(r'^(\d+(?:\.\d+)*)')
+_YEAR_FIRST = re.compile(r'^(?:19|20|21)\d{2}(?:$|\.)')
 
 
 def _norm(text) -> str:
   return str(text or '').replace('\u3000', ' ').strip()
+
+
+def _is_period_dir(number: str) -> bool:
+  """四位年份开头的是归档目录（`2026` / `2026.10`），不是章节编号，不参与剪枝。"""
+  return bool(_YEAR_FIRST.match(number))
 
 
 def _compatible(folder_number: str, numbers: tuple[str, ...]) -> bool:
@@ -111,7 +119,8 @@ async def walk(root_id: str, numbers: tuple[str, ...]) -> list[dict]:
     for row in rows:
       if row['is_dir']:
         m = _LEADING_NUMBER.match(row['name'])
-        if m and numbers and not _compatible(m.group(1), numbers):
+        if (m and numbers and not _is_period_dir(m.group(1))
+            and not _compatible(m.group(1), numbers)):
           continue
         await walk_dir(row['fid'], segments + [row['name']], depth + 1)
         continue

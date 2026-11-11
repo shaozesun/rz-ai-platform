@@ -2,6 +2,7 @@
 name: consulting_analysis
 title: 专业分析报告
 description: "Use this skill when the user requests a professional research report or a consulting-grade analysis document — market/industry analysis, competitive analysis, business plans, development plans, improvement proposals, or any structured analytical deliverable. It operates in two phases: (1) generating a structured analysis framework (chapter skeleton, analysis logic, per-chapter data requirements), and (2) producing the final report with narratives, embedded charts and strategic insights. This skill is written in English on purpose — follow it literally."
+when_to_use: 用户要专业调研报告或咨询级分析文档（行业分析、竞品分析、商业计划、发展规划、改进方案）时使用；例：「做一份液冷行业的市场分析报告。」
 category: report
 domain: report
 ---

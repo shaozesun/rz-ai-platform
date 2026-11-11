@@ -23,7 +23,6 @@ import {
   X,
   LogOut,
   Bot,
-  Wrench,
   type LucideIcon,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
@@ -72,7 +71,6 @@ const navGroups: NavGroup[] = [
     label: '智能体',
     items: [
       { href: '/agent-skills', label: '技能中心', icon: Bot, perm: 'ai:agent' },
-      { href: '/agent-tools', label: '工具中心', icon: Wrench, perm: 'ai:agent' },
     ],
   },
   {

@@ -2,6 +2,7 @@
 name: company_profile
 title: 公司背景档案
 description: 公司业务与组织背景档案（含园区/分部体系、关键系统、常用术语）。做调研、规划、方案、报告类任务前先调本技能取背景，避免凭空编造公司战略、组织或预算。
+when_to_use: 做调研、规划、方案或报告前需要公司组织、园区/分部与常用系统背景时使用；例：「写一份 A1 机房改造方案，先看公司园区体系。」
 category: context
 domain: context
 ---

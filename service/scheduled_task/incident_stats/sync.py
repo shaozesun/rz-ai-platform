@@ -525,8 +525,14 @@ async def _card_loop() -> None:
 
 
 async def start_card_refresh() -> None:
-  """启动卡片进展回捞（幂等）：事件统计同步或实时入库任一路启用即可。"""
+  """启动卡片进展回捞（幂等）：事件统计同步或实时入库任一路启用即可。
+
+  `INCIDENT_CARD_REFRESH_MINUTES <= 0` 时不启动：现场进展是「每条新消息」，WS 已实时
+  入库，定点回捞没有收益还会覆盖干净正文（仅原地编辑卡片的园区才需要开启）。
+  """
   global _card_background
+  if int(settings.INCIDENT_CARD_REFRESH_MINUTES or 0) <= 0:
+    return
   if _card_background is not None and not _card_background.done():
     return
   interval = max(60, int(settings.INCIDENT_CARD_REFRESH_MINUTES or 60) * 60)

@@ -2,6 +2,7 @@
 name: alarm_unclosed_order
 title: 告警未关单
 description: 告警未关单：本班已响应、仍未关单的告警工单。用户问「还有哪些单没关 / 交班遗留几单 / 处理中的工单」时按本技能直接查，不要反问口径。
+when_to_use: 用户问「还有哪些单没关 / 交班遗留几单 / 处理中的工单」时使用；例：「这个班还有几单告警工单没关？」
 category: alarm
 domain: alarm
 ---

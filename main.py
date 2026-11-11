@@ -193,6 +193,14 @@ async def lifespan(app: FastAPI):
     except Exception as e:
       logger.warning('静态参考数据预热失败（不影响启动）: %s', e)
 
+  # 技能快照：进程内扫一次 skills/，技能列表与工具目录都读它（不按请求扫盘）。
+  # 放在预热之前 —— 预热里注册 skill 平台时直接命中这份快照。
+  try:
+    from service.query.skills.discover import refresh_skills_cache
+    logger.info('技能快照就绪: %d 条', refresh_skills_cache())
+  except Exception as e:
+    logger.warning('技能快照初始化失败（首个请求会重试）: %s', e)
+
   asyncio.create_task(_warmup_agent())
 
   logger.info('初始化完成, 开始接收请求')

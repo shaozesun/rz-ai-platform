@@ -1,15 +1,13 @@
 """技能中心目录自测（纯 assert，不连库、不写真实技能目录）。
 
 运行：`python -m service.query.skills.tests.test_catalog`
-覆盖：主能力过滤、可见性（公开 + 本人）、来源/可编辑/启用标记、他人技能不可见。
+覆盖：主能力过滤、可见性（公开 + 本人）、来源/可编辑/启用标记、他人技能不可见、
+详情字段（概述 / 使用场景 / 附带文档，随列表一次下发）、进程内快照（不按请求重扫、
+扫描失败沿用上一份）。
 """
 
-import shutil
-import tempfile
-from pathlib import Path
-
 from service.query.base.capability import Capability
-from service.query.skills import catalog, client
+from service.query.skills import catalog, discover
 
 
 def test_main_capabilities() -> None:
@@ -27,8 +25,9 @@ def test_main_capabilities() -> None:
 def test_list_catalog() -> None:
   orig = catalog.discover_skills
   catalog.discover_skills = lambda: [
-    Capability(id='skill.chart', name='图表', description='画图', category='chart',
-               domain='viz', kind='资源', owner=''),
+    Capability(id='skill.chart', name='图表', description='画图。支持多种图型。',
+               when_to_use='要把数据画成图时使用；例：「画个折线图。」',
+               category='chart', domain='viz', kind='资源', owner=''),
     Capability(id='skill.chart.line', name='折线', description='子能力', owner=''),
     Capability(id='skill.mine', name='我的技能', description='自建', category='custom',
                domain='custom', kind='资源', owner='u1'),
@@ -41,10 +40,21 @@ def test_list_catalog() -> None:
     assert 'chart.line' not in names and 'other' not in names
 
     by = {i['name']: i for i in items}
-    assert by['chart']['title'] == '图表' and by['chart']['description'] == '画图'
+    assert by['chart']['title'] == '图表' and by['chart']['description'] == '画图。支持多种图型。'
     assert by['chart']['category'] == 'chart' and by['chart']['domain'] == 'viz'
     assert by['chart']['editable'] is False and by['chart']['enabled'] is True
     assert by['mine']['editable'] is True and by['mine']['enabled'] is False
+
+    # 详情字段随列表一次下发：概述取首句、使用场景取 frontmatter、附带文档聚合子能力
+    assert by['chart']['overview'] == '画图。', by['chart']['overview']
+    assert by['chart']['when_to_use'].startswith('要把数据画成图时使用')
+    assert by['chart']['references'] == [
+      {'type': 'line', 'name': '折线', 'description': '子能力'},
+    ], by['chart']['references']
+    assert 'skill_md' not in by['chart']
+
+    # 自建技能没写 when_to_use → 回退描述剩余句；单句描述则为空串
+    assert by['mine']['when_to_use'] == ''
 
     # 公开技能不受 disabled 集合影响（只对自建技能生效）
     again = {i['name']: i for i in catalog.list_catalog('u1', {'mine', 'chart'})}
@@ -56,48 +66,56 @@ def test_list_catalog() -> None:
     assert anon == {'chart'}, anon
   finally:
     catalog.discover_skills = orig
-  print('  [ok] 列表可见性（公开 + 本人；他人技能不出现；公开不受停用影响）')
+  print('  [ok] 列表可见性 + 详情字段（概述 / 使用场景 / 附带文档，无 SKILL.md 原文）')
 
 
-def test_skill_detail() -> None:
-  tmp = Path(tempfile.mkdtemp())
-  skill_dir = tmp / 'demo'
-  (skill_dir / 'references').mkdir(parents=True)
-  (skill_dir / 'SKILL.md').write_text(
-    '---\nname: demo\ntitle: 演示技能\ndescription: 一句说明\n'
-    'category: demo\ndomain: demo\nkind: 资源\n---\n\n# 正文\n\n步骤…\n',
-    encoding='utf-8',
-  )
-  (skill_dir / 'references' / 'guide.md').write_text(
-    '---\nname: 指南\ndescription: 子文档说明\n---\n\n内容\n', encoding='utf-8',
-  )
-
-  orig = client.resolve_skill_dir
-  client.resolve_skill_dir = lambda name: (skill_dir, 'u1') if name == 'demo' else None
+def test_when_to_use_fallback() -> None:
+  """没写 when_to_use 时回退描述剩余句；单句描述回退为空串。"""
+  orig = catalog.discover_skills
+  catalog.discover_skills = lambda: [
+    Capability(id='skill.multi', name='多句', description='第一句。第二句说明场景。',
+               owner=''),
+    Capability(id='skill.single', name='单句', description='只有一句没有句末标点',
+               owner=''),
+  ]
   try:
-    # 他人技能不可见（越权统一 None → 接口 404，不泄露归属）
-    assert catalog.skill_detail('demo', 'u2') is None
-    assert catalog.skill_detail('nope', 'u1') is None
-
-    out = catalog.skill_detail('demo', 'u1')
-    assert out is not None
-    assert out['name'] == 'demo' and out['title'] == '演示技能'
-    assert out['owner'] == 'u1' and out['editable'] is True
-    assert '# 正文' in out['skill_md']
-    assert out['references'] == [
-      {'type': 'guide', 'name': '指南', 'description': '子文档说明'},
-    ], out['references']
+    by = {i['name']: i for i in catalog.list_catalog('u1', set())}
+    assert by['multi']['overview'] == '第一句。', by['multi']['overview']
+    assert by['multi']['when_to_use'] == '第二句说明场景。', by['multi']['when_to_use']
+    assert by['single']['overview'] == '只有一句没有句末标点'
+    assert by['single']['when_to_use'] == ''
   finally:
-    client.resolve_skill_dir = orig
-    shutil.rmtree(tmp, ignore_errors=True)
-  print('  [ok] 详情可见性（他人 404 / 本人带 SKILL.md 与 references）')
+    catalog.discover_skills = orig
+  print('  [ok] 使用场景回退（描述剩余句；单句为空）')
+
+
+def test_snapshot() -> None:
+  """快照：扫一次后取值不变；扫描失败保留上一份、不清空。"""
+  n1 = discover.refresh_skills_cache()
+  assert len(discover.discover_skills_cached()) == n1
+  assert len(discover.discover_skills_cached()) == n1  # 二次读取不重扫
+
+  orig = discover.discover_skills
+
+  def _boom():
+    raise UnicodeDecodeError('utf-8', b'\xff', 0, 1, 'invalid start byte')
+
+  discover.discover_skills = _boom
+  try:
+    n2 = discover.refresh_skills_cache()
+    assert n2 == n1, (n2, n1)
+    assert len(discover.discover_skills_cached()) == n1
+  finally:
+    discover.discover_skills = orig
+  print('  [ok] 进程内快照（读取不重扫；扫描失败沿用上一份）')
 
 
 def main() -> None:
   print('skills catalog self-test')
   test_main_capabilities()
   test_list_catalog()
-  test_skill_detail()
+  test_when_to_use_fallback()
+  test_snapshot()
   print('全部通过')
 
 

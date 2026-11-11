@@ -5,7 +5,7 @@
 **问题（2026-11-02 排查）**：2026-10-08 起大量 trace 的 name/input/output 为空，
 但 trace 内部的观察数据完好。原因是图执行根 span 挂在一个「只开始不结束」的父 span
 下（OTEL 只在 end() 时导出，那个父 span 永远进不了库），Langfuse 找不到 trace 根，
-就只留了个空壳 trace。代码侧已修（见 docs/problems/langfuse-empty-traces.md），
+就只留了个空壳 trace。代码侧已修（见 docs/problems/agent/langfuse-empty-traces.md），
 但历史记录不会自己变好 —— 本脚本按 Langfuse 官方 ingestion 接口补写。
 
 判据（只处理同时满足的 trace）：

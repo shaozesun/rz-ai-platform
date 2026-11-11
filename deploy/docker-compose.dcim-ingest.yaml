@@ -55,7 +55,7 @@ services:
     volumes:
       # 园区集群清单：挂进来而不是打进镜像，改清单只需重启容器（rsync 后即生效）
       - ./config/dcim-clusters.json:/app/deploy/config/dcim-clusters.json:ro
-    # 对方有 5 个园区的 advertised.listeners 报的是**域名**（实测，见 docs/dcim-kafka-relay-network.md）：
+    # 对方有 5 个园区的 advertised.listeners 报的是**域名**（实测，见 docs/dcim/dcim-kafka-relay-network.md）：
     # 客户端连上 bootstrap 后会被引导到这些域名，容器里解析不了 → 必须映射。
     # **映射到 broker 的 IP（不是中转机）**：我们服务器侧的改道规则是按 broker IP 匹配的，
     # 解析到 IP 后正好命中（`-d 10.4.0.60 --dport 9092 → 中转机:19001`）。

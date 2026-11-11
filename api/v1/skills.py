@@ -16,7 +16,6 @@ from core.rbac import require_permission
 from service.query.skills import catalog, storage
 from service.query.skills.states import (
   get_disabled_skill_names,
-  is_skill_enabled,
   remove_skill_state,
   set_skill_enabled,
 )
@@ -49,21 +48,6 @@ async def list_skills(request: Request):
   user_id = _current_user(request)
   disabled = await get_disabled_skill_names(user_id)
   return {'ok': True, 'data': {'skills': catalog.list_catalog(user_id, disabled)}}
-
-
-@router.get('/{name}')
-@require_permission('ai:agent')
-async def get_skill(name: str, request: Request):
-  """技能详情（SKILL.md 全文 + references 索引）；他人技能 404。"""
-  user_id = _current_user(request)
-  detail = catalog.skill_detail(name, user_id)
-  if detail is None:
-    raise HTTPException(404, '技能不存在或无权限')
-  if detail['owner']:
-    detail['enabled'] = await is_skill_enabled(user_id, name)
-  else:
-    detail['enabled'] = True
-  return {'ok': True, 'data': detail}
 
 
 @router.patch('/{name}/enabled')

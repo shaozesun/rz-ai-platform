@@ -15,7 +15,7 @@
 | `TICKET` | `https://ticket-api.ddbes.com` | 工单服务（.env `MGMT_TICKET_BASE_URL`；2026-10-26 对方整体重做后工单接口都迁到这里，认证同 mgmt `token`+`Deptid`） |
 | `PEN` | `https://api.ddbes.com` | 老 pen 流程服务（.env `MGMT_PEN_BASE_URL`）；工单接口已迁走，`pen_request()` 保留未删但不再被调用 |
 
-> 工单列表/详情（`TICKET` 接口）为组合能力：直接按当前用户 mgmt token 归属人鉴权（路径去掉老的 `/ticket`、`/pen` 前缀）；公司/部门维度，`dc` 部门 id 与 `query_dept_by_name` 返回一致。迁移记录见 `docs/problems/pen-ticket-api-migration.md`。
+> 工单列表/详情（`TICKET` 接口）为组合能力：直接按当前用户 mgmt token 归属人鉴权（路径去掉老的 `/ticket`、`/pen` 前缀）；公司/部门维度，`dc` 部门 id 与 `query_dept_by_name` 返回一致。迁移记录见 `docs/problems/platform/pen-ticket-api-migration.md`。
 
 ## 总览
 
@@ -32,7 +32,7 @@
 > 测点**数值**在 TDengine 宽表（一个设备类型一张超级表、一台设备一张子表、测点做列），
 > 空间/设备/测点的**定义**在 PostgreSQL。PG 没有连 TDengine 的 FDW，跨库 JOIN 做不到 →
 > 只能「PG 定范围 → TDengine 取值 → 应用层合并」两段式（`service/query/dcim_meta/client.py`）。
-> 数据由 Kafka 接入（`service/dcim_ingest/`，见 `docs/dcim-kafka-ingest-design.md`）。开关：`DCIM_ENABLED`。
+> 数据由 Kafka 接入（`service/dcim_ingest/`，见 `docs/dcim/dcim-kafka-ingest-design.md`）。开关：`DCIM_ENABLED`。
 > **时间口径**：dcim_meta 所有返回的时间字段（`ts` / `latest_ts` / `_wstart` / `report_ts` / `alarm_time` / `remove_time` / `updated_at`）
 > 已在数据层渲染为**北京时间**（`YYYY-MM-DD HH:MM:SS`，Asia/Shanghai），调用方直接展示，**不要再做时区换算**。
 > （`DCIM_BASE_URL` / `DCIM_API_TOKEN` / `DCIM_TIMEOUT` / `DCIM_RETRIEVAL_TOP_K` 是遗留配置项，
@@ -67,7 +67,7 @@
 
 ### 能耗（energy）
 
-- 查询 PUE 与能耗统计（`dcim_meta.query_pue`）→ TDengine 独立超级表 `st_pue`（Kafka `ems-real-data-rz` 里**无 `device_id`、有 `building`** 的那类报文；见 `docs/dcim-pue-storage-query.md`）；参数：**cluster**、**park**、**building**、**space**、**time_type**、**metrics**、**start_ms**、**end_ms**、**latest**、**interval**、**agg**、page、page_size。**一栋楼 × 一个时间口径 × 18 个指标**（`pue` = PUE 本身，其余为各项耗电量）。⚠️ `time_type` 默认 `real`（约 10 秒一条），「小时 / 日 / 周 / 月 / 年」是对方按整点或期末推的统计快照，**必须显式传**（如 `hour`）；**不同口径不能互比或相加**。`latest=true` 只看每个「楼宇 × 口径」最新一行（问当前值用它，不需要时间窗）；**非 latest 必须给时间窗**，时段长要带 `interval` 聚合（实时值一天 8,640 行）。返回 `records` + `total` + **`metric_labels`**（列名→中文），`ts`/`_wstart` 已是北京时间，每行带 `space_name`（空间全名）。**只有上游真推了 PUE 的楼宇才有数据**，查回 0 行 ≠ PUE 为 0
+- 查询 PUE 与能耗统计（`dcim_meta.query_pue`）→ TDengine 独立超级表 `st_pue`（Kafka `ems-real-data-rz` 里**无 `device_id`、有 `building`** 的那类报文；见 `docs/dcim/dcim-pue-storage-query.md`）；参数：**cluster**、**park**、**building**、**space**、**time_type**、**metrics**、**start_ms**、**end_ms**、**latest**、**interval**、**agg**、page、page_size。**一栋楼 × 一个时间口径 × 18 个指标**（`pue` = PUE 本身，其余为各项耗电量）。⚠️ `time_type` 默认 `real`（约 10 秒一条），「小时 / 日 / 周 / 月 / 年」是对方按整点或期末推的统计快照，**必须显式传**（如 `hour`）；**不同口径不能互比或相加**。`latest=true` 只看每个「楼宇 × 口径」最新一行（问当前值用它，不需要时间窗）；**非 latest 必须给时间窗**，时段长要带 `interval` 聚合（实时值一天 8,640 行）。返回 `records` + `total` + **`metric_labels`**（列名→中文），`ts`/`_wstart` 已是北京时间，每行带 `space_name`（空间全名）。**只有上游真推了 PUE 的楼宇才有数据**，查回 0 行 ≠ PUE 为 0
 
 ## 综合管理平台（mgmt）
 

@@ -11,7 +11,8 @@
 - `updated`：sha256 与参照快照不同（参照里没有这个 fid 也算新增）
 - `stale`：sha256 与参照快照相同
 - `missing` 未找到：未查询到相关文件（按编号前缀匹配不到）
-- `failed` 下载失败：取不到字节或类型校验不过 —— **不算「未更新」**
+- `failed` 下载失败：取不到字节或类型校验不过 —— **不算「未更新」**；
+  `period_only` 项找到文件却解析不出期号也记这里，`error` 写明原因
 """
 
 from datetime import datetime, timezone
@@ -28,6 +29,8 @@ MODE_BASELINE = 'baseline'
 # 未找到项的说明文案（写快照时用它；读老快照时把旧文案归一成同一句）
 MISSING_TEXT = '未查询到相关文件'
 _LEGACY_MISSING_TEXT = '整树中未找到该编号的文件'
+# `period_only` 项找到文件却解析不出期号：不是「未更新」，要说清原因
+UNPARSED_TEXT = '已找到文件但未能从目录名/文件名解析出期号'
 
 STATUS_LABELS = {
   STATUS_UPDATED: '已更新',
@@ -174,7 +177,11 @@ def _evaluate_depts(latest: dict, previous: dict | None,
       raw = item.get('files') or []
       layout = item.get('layout') or 'flat'
       expected = item.get('expected_period') or ''
+      period_only = bool(item.get('period_only'))
       files = [dict(f) for f in raw]
+      # 找到文件但一个期号都解析不出：判失败并说明，不能含糊成「未更新」
+      no_periods = (period_only and layout == 'period' and bool(files)
+                    and not any(f.get('period') for f in files))
 
       if dept_error:
         status = STATUS_FAILED
@@ -184,6 +191,8 @@ def _evaluate_depts(latest: dict, previous: dict | None,
         latest_period = item.get('latest_period') or ''
       elif layout == 'period':
         status, latest_period = _period_status(files, expected)
+        if no_periods:
+          status = STATUS_FAILED
       else:
         status = _flat_status(files, prev, dept_baseline)
         latest_period = item.get('latest_period') or ''
@@ -193,8 +202,12 @@ def _evaluate_depts(latest: dict, previous: dict | None,
       for f in files:
         if layout == 'period':
           period_value = f.get('period') or ''
-          f_status = STATUS_UPDATED if (period_value and period_value >= expected) \
-            else STATUS_STALE
+          if period_only and not period_value:
+            f_status = STATUS_FAILED
+            f['error'] = f.get('error') or UNPARSED_TEXT
+          else:
+            f_status = STATUS_UPDATED if (period_value and period_value >= expected) \
+              else STATUS_STALE
         else:
           f_status = _file_verdict(f, prev.get(str(f.get('fid') or ''), ''),
                                    dept_baseline, labels)['status']
@@ -222,6 +235,9 @@ def _evaluate_depts(latest: dict, previous: dict | None,
             'changed_at': f.get('last_changed_at'),
           })
 
+      item_error = dept_error or _error_text(item.get('error'))
+      if no_periods and not dept_error:
+        item_error = UNPARSED_TEXT
       items.append({
         'company_id': company_id,
         'company_name': company_name,
@@ -239,7 +255,7 @@ def _evaluate_depts(latest: dict, previous: dict | None,
         'actual_dirs': item.get('actual_dirs') or [],
         'status': status,
         'status_label': labels[status],
-        'error': dept_error or _error_text(item.get('error')),
+        'error': item_error,
         'file_count': len(files),
         'changed_at': changed_at,
         'changed_days_ago': _days_ago(changed_at, now),

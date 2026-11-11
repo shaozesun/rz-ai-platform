@@ -12,7 +12,7 @@ worker 侧用本模块在启动时 `CREATE TABLE IF NOT EXISTS`，免去手工�
 - `dcim_td_stable` / `dcim_td_column`：设备类型 → TDengine 超级表、测点编码 → 列名（映射必须持久化）
 - `dcim_point_level` / `dcim_level_rule`：哪些测点算「重要」（进业务当前态表 + 多档聚合）
 
-配套设计：`docs/dcim-timeseries-storage-design.md`
+配套设计：`docs/dcim/dcim-timeseries-storage-design.md`
 """
 
 SCHEMA_STATEMENTS: tuple[str, ...] = (
@@ -245,7 +245,7 @@ SCHEMA_STATEMENTS: tuple[str, ...] = (
   # `point_group` 是测点分组（g0 沿用 `st_<type>`，g1 起是 `st_<type>_g<n>`）。
   # **为什么拆组**：TDengine 单表列数上限 4,096，`00AG`(4,068 数据列) / `00WG`(4,043)
   # 余量只剩 19~25 列，再冒一个新测点就会 ALTER 失败、整园区入库卡死。容量线与分组规则
-  # 见 `td_schema.GROUP_MAX_COLUMNS` 与 `docs/dcim-timeseries-storage-design.md`。
+  # 见 `td_schema.GROUP_MAX_COLUMNS` 与 `docs/dcim/dcim-timeseries-storage-design.md`。
   # 隐含假设：**不同园区的同一 device_type 测点集合相同**。目前只在廊坊B1M2 验证过
   # 「同类型内设备之间一致」，跨园区还没验 —— 若将来冲突，可改成 (cluster, device_type)。
   '''

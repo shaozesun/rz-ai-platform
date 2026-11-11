@@ -6,11 +6,9 @@ import { Card, CardContent } from '@/components/ui/card';
 import { cn } from '@/lib/utils';
 import {
   deleteSkill,
-  getSkill,
   listSkills,
   setSkillEnabled,
   type AgentSkill,
-  type SkillDetail,
 } from '@/api/skills';
 
 type Tab = 'all' | 'official' | 'mine';
@@ -128,16 +126,18 @@ export function AgentSkillsView({ query, searchSlot }: { query: string; searchSl
   const [error, setError] = useState('');
   const [tab, setTab] = useState<Tab>('all');
   const [detailOpen, setDetailOpen] = useState(false);
-  const [detail, setDetail] = useState<SkillDetail | null>(null);
-  const [detailLoading, setDetailLoading] = useState(false);
+  const [detail, setDetail] = useState<AgentSkill | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
     setError('');
     try {
       setSkills(await listSkills());
-    } catch {
-      setError('技能列表加载失败，请稍后重试');
+    } catch (e) {
+      const status = (e as { response?: { status?: number } }).response?.status;
+      setError(status
+        ? `技能列表加载失败（HTTP ${status}），请稍后重试`
+        : '技能列表加载失败，请检查网络后重试');
     } finally {
       setLoading(false);
     }
@@ -173,18 +173,10 @@ export function AgentSkillsView({ query, searchSlot }: { query: string; searchSl
     }
   };
 
-  const handleOpenDetail = async (skill: AgentSkill) => {
+  /** 详情字段随列表一次下发，点击不再请求接口。 */
+  const handleOpenDetail = (skill: AgentSkill) => {
+    setDetail(skill);
     setDetailOpen(true);
-    setDetail(null);
-    setDetailLoading(true);
-    try {
-      setDetail(await getSkill(skill.name));
-    } catch {
-      setError(`技能「${skill.title}」详情加载失败`);
-      setDetailOpen(false);
-    } finally {
-      setDetailLoading(false);
-    }
   };
 
   const handleDelete = async (skill: AgentSkill) => {
@@ -251,7 +243,7 @@ export function AgentSkillsView({ query, searchSlot }: { query: string; searchSl
             <SkillCard
               key={skill.name}
               skill={skill}
-              onOpenDetail={(s) => void handleOpenDetail(s)}
+              onOpenDetail={handleOpenDetail}
               onToggle={(s) => void handleToggle(s)}
               onDelete={(s) => void handleDelete(s)}
             />
@@ -266,7 +258,7 @@ export function AgentSkillsView({ query, searchSlot }: { query: string; searchSl
             <div className="flex items-start justify-between gap-3 border-b border-border px-5 py-4">
               <div className="min-w-0">
                 <div className="flex items-center gap-2">
-                  <h3 className="truncate text-lg font-semibold">{detailLoading ? '加载中…' : detail?.title}</h3>
+                  <h3 className="truncate text-lg font-semibold">{detail?.title}</h3>
                   {detail && (
                     <Badge variant={detail.owner ? 'primary' : 'outline'} className="shrink-0">
                       {detail.owner ? '自定义' : '公共'}
@@ -290,25 +282,24 @@ export function AgentSkillsView({ query, searchSlot }: { query: string; searchSl
             </div>
 
             <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
-              {detailLoading ? (
-                <div className="flex items-center justify-center py-16">
-                  <Loader2 className="size-6 animate-spin text-muted-foreground" />
-                </div>
-              ) : detail ? (
+              {detail ? (
                 <div className="space-y-4">
-                  {detail.description && (
-                    <p className="text-sm text-muted-foreground">{detail.description}</p>
+                  <div>
+                    <p className="mb-1.5 text-xs font-medium text-muted-foreground">概述</p>
+                    <p className="text-sm text-muted-foreground">
+                      {detail.overview || detail.description || '暂无说明'}
+                    </p>
+                  </div>
+                  {detail.when_to_use && (
+                    <div>
+                      <p className="mb-1.5 text-xs font-medium text-muted-foreground">使用场景</p>
+                      <p className="text-sm text-muted-foreground">{detail.when_to_use}</p>
+                    </div>
                   )}
                   <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
                     <span>分类：{detail.category || '—'}</span>
                     <span>领域：{detail.domain || '—'}</span>
                     <span>类型：{detail.kind || '—'}</span>
-                  </div>
-                  <div>
-                    <p className="mb-1.5 text-xs font-medium text-muted-foreground">SKILL.md</p>
-                    <pre className="max-h-[45vh] overflow-y-auto whitespace-pre-wrap break-words rounded-lg border border-border bg-secondary/40 p-3 font-mono text-xs leading-relaxed">
-                      {detail.skill_md}
-                    </pre>
                   </div>
                   {detail.references.length > 0 && (
                     <div>

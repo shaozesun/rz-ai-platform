@@ -1,7 +1,7 @@
 """工具中心目录自检（纯 assert，不连库、不调外部接口）。
 
 运行：`python -m service.query.tests.test_tool_catalog`
-覆盖：平台分组与可见性（常驻/按需/模式门控）、技能按用户隔离、中文标签、
+覆盖：平台分组与可见性（常驻/按需/模式门控）、技能不出现在工具目录、中文标签、
 内置工具组的开关增删与标题映射。
 """
 
@@ -58,19 +58,19 @@ def test_summary() -> None:
 
 
 def test_platform_groups() -> None:
-  orig_discover = tool_catalog.discover_skills
   orig_browser = tool_catalog._browser_always_names
-  tool_catalog.discover_skills = lambda: _CAPS
   tool_catalog._browser_always_names = lambda: {'browser__navigate'}
   try:
-    groups = {g['key']: g for g in tool_catalog.platform_groups(_CAPS, 'u1')}
+    groups = {g['key']: g for g in tool_catalog.platform_groups(_CAPS)}
   finally:
-    tool_catalog.discover_skills = orig_discover
     tool_catalog._browser_always_names = orig_browser
 
-  assert list(groups) == ['mgmt', 'dcim_meta', 'web', 'browser', 'skill'], list(groups)
+  # 技能只在技能中心展示：`_CAPS` 里保留 skill 能力作为回归样本，必须被整体跳过
+  assert list(groups) == ['mgmt', 'dcim_meta', 'web', 'browser'], list(groups)
+  assert not [n for g in groups.values() for n in (t['name'] for t in g['tools'])
+              if n.startswith('skill__')], '技能不应出现在工具目录'
   assert groups['mgmt']['label'] == '综合管理平台'
-  assert groups['web']['label'] == '联网' and groups['skill']['label'] == '技能'
+  assert groups['web']['label'] == '联网'
 
   mgmt = {t['name']: t for t in groups['mgmt']['tools']}['mgmt__query_my_info']
   assert mgmt['category_label'] == '组织人事' and mgmt['domain_label'] == '人员'
@@ -83,12 +83,6 @@ def test_platform_groups() -> None:
 
   browser = groups['browser']['tools'][0]
   assert browser['visibility'] == 'always'
-
-  # 技能：公开父技能常驻可见、本人自建按需检索；子能力与他人技能不出现
-  skills = {t['name']: t for t in groups['skill']['tools']}
-  assert set(skills) == {'skill__chart', 'skill__mine'}, set(skills)
-  assert skills['skill__chart']['visibility'] == 'always'
-  assert skills['skill__mine']['visibility'] == 'on_demand'
 
 
 def test_builtin_groups() -> None:
@@ -122,7 +116,7 @@ def main() -> None:
   test_summary()
   print('  [ok] 一句话摘要（句号截断/首行/去粗体/超长回退）')
   test_platform_groups()
-  print('  [ok] 平台分组（顺序/标签/可见性/技能隔离）')
+  print('  [ok] 平台分组（顺序/标签/可见性/技能跳过）')
   test_builtin_groups()
   print('  [ok] 内置分组（开关增删/标题映射/常驻可见）')
   print('全部通过')

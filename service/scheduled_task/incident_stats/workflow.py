@@ -116,14 +116,15 @@ async def run_incident_task(task) -> None:
   error, final_text, artifacts = '', '', []
 
   try:
-    # 卡片「进展同步」是原地追加的，出表前补捞一次；多进程同时触发时单飞，
-    # 只让一个真跑、其余等它完成（不会因为「另一个正在刷新」拿到旧正文）
-    try:
-      await sync.refresh_cards_coalesced(
-        hours=settings.INCIDENT_CARD_REFRESH_BUILD_HOURS, max_age_s=300, wait_s=180,
-      )
-    except Exception as e:
-      logger.warning('事件统计表出表前回捞卡片进展失败（按现有正文出表）: %s', e)
+    # 进展是「每条新消息」、WS 已实时入库，默认不补捞（INCIDENT_CARD_REFRESH_MINUTES=0）。
+    # 仅当某园区确实存在原地编辑卡片、把间隔改非 0 时，才在出表前补一次（单飞）。
+    if int(settings.INCIDENT_CARD_REFRESH_MINUTES or 0) > 0:
+      try:
+        await sync.refresh_cards_coalesced(
+          hours=settings.INCIDENT_CARD_REFRESH_BUILD_HOURS, max_age_s=300, wait_s=180,
+        )
+      except Exception as e:
+        logger.warning('事件统计表出表前回捞卡片进展失败（按现有正文出表）: %s', e)
     # Kafka 可能晚于群消息落库：出表前补一次匹配，只补 event_log_id 为空的行
     await sync.match_pending()
     # 只统计**配置的群**：同园区还有测试群/自检合成数据，按 cluster 过滤挡不住。

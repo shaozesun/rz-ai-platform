@@ -37,11 +37,13 @@ def _flat_file(fid, sha, days_ago=5):
   }
 
 
-def _item(seq, number, name, layout, files, latest='', error='', actual_dirs=None):
+def _item(seq, number, name, layout, files, latest='', error='', actual_dirs=None,
+          period_only=False):
   return {
     'seq': seq, 'number': number, 'name': name, 'cadence': '月度', 'note': '',
-    'layout': layout, 'expected_period': EXPECTED, 'latest_period': latest,
-    'actual_dirs': actual_dirs or [], 'files': files, 'error': error,
+    'layout': layout, 'period_only': period_only, 'expected_period': EXPECTED,
+    'latest_period': latest, 'actual_dirs': actual_dirs or [], 'files': files,
+    'error': error,
   }
 
 
@@ -290,6 +292,201 @@ def test_known_numbers_cover_actual_folder_numbers():
   assert share._compatible('8.1.2', numbers)
   assert not share._compatible('8.1.2.1', numbers)
   assert not share._compatible('9.9', numbers)
+
+
+def test_year_folder_not_pruned_and_matched():
+  """四位年份归档目录不参与剪枝；能源月报在 …/能源月报/2026年/10月 下必须能命中。"""
+  from service.doc_update import catalog, fetch, period, share
+
+  assert share._is_period_dir('2026')
+  assert share._is_period_dir('2026.10')
+  assert not share._is_period_dir('1.4')
+  assert not share._is_period_dir('8.1.2')
+  assert not share._is_period_dir('9.9')
+
+  item = next(i for i in catalog.MONTHLY_ITEMS if i.seq == 2)
+  base = {
+    'fid': 'f1', 'topic': '能源报告2026年10月.pptx', 'parent_id': 'dir',
+    'path': '1.规划管理 / 1.4精益化能源管理 / 1.4.5能源管理报告（能源月报同步）'
+            ' / 能源月报 / 2026年 / 10月',
+    'segments': ['1.规划管理', '1.4精益化能源管理',
+                 '1.4.5能源管理报告（能源月报同步）', '能源月报', '2026年', '10月'],
+    'create_time': 0, 'size': 100,
+  }
+  hits = fetch.match_item(item, [base])
+  assert len(hits) == 1, hits
+  assert hits[0]['match_dir'] == '能源月报', hits[0]['match_dir']
+  assert period.detect_layout(hits) == period.LAYOUT_PERIOD
+
+  # 通用别名：目录不带编号写法也能命中
+  bare = dict(base, fid='f2', segments=['能源月报', '2026年', '9月'])
+  assert len(fetch.match_item(item, [bare])) == 1
+
+
+def test_energy_name_period_formats():
+  """能源月报期号常只写在文件名里：覆盖实测到的各部门写法。"""
+  from service.doc_update import period
+
+  cases = {
+    '能源报告【2026年10月总第128期】.pptx': '2026-10',
+    '2026年10月度能源报告.xlsx': '2026-10',
+    '润泽国际信息港A-3能源报告-2026-10.pdf': '2026-10',
+    '廊坊A1能源报告-2026-10月（新版）.pdf': '2026-10',
+    '能源报告（20260930)-9月.pdf': '2026-09',
+    '能源报告【20261031】.pdf': '2026-10',
+    '能源报告【202603】.pdf': '2026-03',
+    '能源报告【202604】.xlsx': '2026-04',
+    '能源报告2018-202604.xlsx': '2026-04',
+    '10、2026年10月能源报告.xlsx': '2026-10',
+    '2026年A18能源报告4.30-4月份.pdf': '2026-04',
+    '2025年A6能源报告1.31-1月份.pdf': '2025-01',
+    '(2026年10月）.pdf': '2026-10',
+    '2026年9月惠州电量数据.pdf': '2026-09',
+  }
+  for name, want in cases.items():
+    got = period.name_period(name)
+    assert got == want, (name, got, want)
+  assert period.name_period('能源报告-2025年.xlsx') == ''
+  assert period.name_period('1、一月') == ''
+  # 纯月份靠目录年份；`A-2 月度` 不能被当成 2 月
+  assert period.name_period('润泽国际信息港 A-2 月度能源报告-10月.xlsx', 2026) == '2026-10'
+  assert period.name_period('月度能源报告-12月.pdf', 2025) == '2025-12'
+
+
+def test_energy_period_of_file_ignores_create_time():
+  """2025 期的文件可能是 2026 年补传的：年份只能取目录，不能取 create_time。"""
+  from datetime import datetime
+
+  from service.doc_update import period
+
+  ts = datetime(2026, 6, 1).timestamp() * 1000
+  f = {'segments': ['1.4.5能源管理报告', '能源月报', '2025年'],
+       'topic': '润泽国际信息港 A-2 月度能源报告-10月.xlsx',
+       'create_time': ts}
+  assert period.period_of_file(f) == '', '默认仍只看目录名'
+  assert period.period_of_file(f, from_name=True) == '2025-10'
+
+  # 目录能解析时以目录为准（比文件名可靠）
+  g = {'segments': ['能源月报', '2026年', '10月'],
+       'topic': '能源报告-09月.pdf', 'create_time': 0}
+  assert period.period_of_file(g, from_name=True) == '2026-10'
+
+
+def test_energy_catalog_period_only():
+  from service.doc_update import catalog
+
+  energy = next(i for i in catalog.MONTHLY_ITEMS if i.seq == 2)
+  assert energy.period_only is True
+  assert all(not i.period_only for i in catalog.MONTHLY_ITEMS if i.seq != 2)
+
+
+def test_segments_year_from_directory_names():
+  from service.doc_update import period
+
+  assert period._segments_year(['1.4.5能源管理报告', '2026年输出物']) == 2026
+  assert period._segments_year(['2026年数据']) == 2026
+  assert period._segments_year(['2026年度']) == 2026
+  assert period._segments_year(['2026']) == 2026
+  assert period._segments_year([]) is None
+
+
+def test_energy_period_only_judged_without_hash():
+  snap = _snap([_dept('d1', 'A1', [
+    _item(2, '1.4.5', '能源月报', 'period',
+          [_period_file('f1', EXPECTED)], latest=EXPECTED, period_only=True),
+  ])])
+  assert _status(evaluate(snap, None), 'A1', 2) == STATUS_UPDATED
+
+  old = _snap([_dept('d1', 'A1', [
+    _item(2, '1.4.5', '能源月报', 'period',
+          [_period_file('f1', '2026-09')], latest='2026-09', period_only=True),
+  ])])
+  assert _status(evaluate(old, None), 'A1', 2) == STATUS_STALE
+
+
+def test_energy_unparsed_files_fail_with_reason():
+  snap = _snap([_dept('d1', 'A1', [
+    _item(2, '1.4.5', '能源月报', 'period',
+          [_period_file('f1', '')], period_only=True),
+  ])])
+  verdict = evaluate(snap, None)
+  item = verdict['items'][0]
+  assert item['status'] == STATUS_FAILED, '不能含糊成「未更新」'
+  assert '解析出期号' in item['error']
+  assert item['files'][0]['status'] == STATUS_FAILED
+
+
+def test_energy_stray_unparsed_file_does_not_flip_item():
+  snap = _snap([_dept('d1', 'A1', [
+    _item(2, '1.4.5', '能源月报', 'period',
+          [_period_file('f1', EXPECTED), _period_file('f2', '')],
+          latest=EXPECTED, period_only=True),
+  ])])
+  verdict = evaluate(snap, None)
+  assert _status(verdict, 'A1', 2) == STATUS_UPDATED
+  by_fid = {f['fid']: f for f in verdict['items'][0]['files']}
+  assert by_fid['f1']['status'] == STATUS_UPDATED
+  assert by_fid['f2']['status'] == STATUS_FAILED
+
+
+def test_plain_period_item_keeps_old_stale_behavior():
+  """其余 24 项不变：无期号的文件仍按「未更新」处理。"""
+  snap = _snap([_dept('d1', 'A1', [
+    _item(2, '1.4.5', '能源月报', 'period',
+          [_period_file('f1', EXPECTED), _period_file('f2', '')]),
+  ])])
+  verdict = evaluate(snap, None)
+  by_fid = {f['fid']: f for f in verdict['items'][0]['files']}
+  assert by_fid['f2']['status'] == STATUS_STALE
+
+
+def test_item19_catalog_aliases():
+  """2.3.2.6 补真实名称别名：无编号目录也要能命中。"""
+  from service.doc_update import catalog
+
+  item19 = next(i for i in catalog.MONTHLY_ITEMS if i.seq == 19)
+  assert '客户IT库房应急卡' in item19.folders
+  assert '客户库房应急卡' in item19.folders
+  assert not [i for i in catalog.MONTHLY_ITEMS if i.seq not in (2, 19) and i.folders], \
+    '本次只给 seq 19 补别名'
+
+
+def test_item19_matches_unnumbered_folder():
+  from service.doc_update import catalog, fetch
+
+  item19 = next(i for i in catalog.MONTHLY_ITEMS if i.seq == 19)
+  a1 = ['廊坊-A1-数据中心运维管理体系', '2.运行维护管理', '2.3值班管理',
+        '2.3.2数据中心监控室管理', '客户IT库房应急卡领取记录表', '2026年', '10月']
+  f = {'fid': 'f1', 'topic': 'IT库房应急卡.pdf', 'parent_id': 'd',
+       'path': ' / '.join(a1), 'segments': a1, 'create_time': 0, 'size': 1}
+  hits = fetch.match_item(item19, [f])
+  assert len(hits) == 1
+  assert hits[0]['match_dir'] == '客户IT库房应急卡领取记录表'
+
+  # A10 形态：无编号目录挂在年份目录下（2026年 不参与编号剪枝）
+  a10 = ['廊坊-A10-数据中心运维管理体系', '2.运行维护管理', '2.3值班管理',
+         '2.3.2数据中心监控室管理', '2026年', '客户IT库房应急卡领取登记表']
+  g = {'fid': 'f2', 'topic': '2026年10月-客户IT库房应急卡领取登记表.pdf',
+       'parent_id': 'd', 'path': ' / '.join(a10), 'segments': a10,
+       'create_time': 0, 'size': 1}
+  hits10 = fetch.match_item(item19, [g])
+  assert len(hits10) == 1
+  assert hits10[0]['match_dir'] == '客户IT库房应急卡领取登记表'
+
+
+def test_item19_not_confused_with_item15():
+  """2.3.2.2 的「应急卡使用登记表」不能被 2.3.2.6 的别名吃进来。"""
+  from service.doc_update import catalog, fetch
+
+  item19 = next(i for i in catalog.MONTHLY_ITEMS if i.seq == 19)
+  item15 = next(i for i in catalog.MONTHLY_ITEMS if i.seq == 15)
+  segs = ['廊坊-A8-数据中心运维管理体系', '2.运行维护管理', '2.3值班管理',
+          '2.3.2数据中心监控室管理', '2.3.2.2润泽科技-廊坊-A8-应急卡使用登记表',
+          '2026年', '10月']
+  f = {'fid': 'f1', 'topic': '10月应急卡使用登记表.pdf', 'parent_id': 'd',
+       'path': ' / '.join(segs), 'segments': segs, 'create_time': 0, 'size': 1}
+  assert fetch.match_item(item19, [f]) == []
+  assert len(fetch.match_item(item15, [f])) == 1
 
 
 def main() -> int:

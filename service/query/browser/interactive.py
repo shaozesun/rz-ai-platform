@@ -34,7 +34,16 @@ _MAX_ELEMENTS = 120
 _NAME_CHARS = 100
 
 _NAVIGATE_NOTE = (
-  '已打开页面。elements 是本页可交互元素，click 时传它的 ref；'
+  '已打开页面。elements 是本页可交互元素，click 时传它的 ref；也可传 text 按可见文字点击。'
+  '内网文档页（共享文档 / 文档管理）按「公司 × 部门」隔离：先点顶部「运维管理」展开左侧栏，'
+  '点「部门：xxx（下拉可切换）」切到目标分部（如 A1分部），再点左侧「共享文档」；'
+  '列表显示「暂无数据」时先怀疑部门没切对，不要点「全部」（那是文件类型筛选）。'
+  '树/脑图页面（节点名可能在 elements 之外）：先 browser__get_text 看层级文字，'
+  '再用 click(text="节点名") 逐级进入，展开器名为「展开：节点名」。'
+  '表格行文件名（如 廊坊-A1-…）也直接 click(text=…) 进入，单击无效改 count=2 双击。'
+  '同名多个时返回 candidates，按 nth 重试（看 where：表格行是进入下一层，面包屑是往上层跳）；'
+  '点不动时改用 count=2 双击或 button="right" 右键，'
+  '再 snapshot 看菜单项。不要用 mgmt 的脑图查询代替页面导航。'
   'blocked:true 的元素是危险操作，禁止点击；'
   '页面异步刷新后 ref 会失效，需重新 snapshot。浏览结束请调用 browser__close。'
 )
@@ -75,12 +84,23 @@ _CAPS: tuple[Capability, ...] = (
     id='browser.click',
     name='点击页面元素',
     description=(
-      '点击最近一次 navigate/snapshot 返回的 [ref]（数字编号），点击后返回新页面的元素编号。'
+      '点击页面元素，点击后返回新页面的元素编号。ref 与 text 二选一：'
+      'ref 用 navigate/snapshot 返回的数字编号；text 用元素可见文字（树/脑图/菜单节点优先用它，'
+      '先 browser__get_text 看准名称）。同名多个时不会猜，会返回 candidates，'
+      '按 nth 选一个重试。点不动或需要菜单/进入目录时，用 count=2 双击或 button=right 右键，'
+      '再 snapshot 看菜单项。点开新标签页会自动切过去（返回 popup:true）。'
       'ref 失效会明确报错，此时应先 browser__snapshot 重新编号再点。'
       'blocked:true 的元素（删除/提交/审批等）被只读策略禁止点击，会返回 blocked 错误，'
       '不要反复重试，请向用户说明需人工完成。'
     ),
-    params={'ref': '元素编号（navigate/snapshot 返回的 ref 数字）'},
+    params={
+      'ref': '可选：元素编号（navigate/snapshot 返回的 ref 数字），与 text 二选一',
+      'text': '可选：元素可见文字，与 ref 二选一；树/脑图/菜单节点优先用它',
+      'nth': '可选：同名元素序号（1 起，取自返回的 candidates）',
+      'button': '可选：left 左键（默认）/ right 右键打开菜单',
+      'count': '可选：1 单击（默认）/ 2 双击（进入目录或详情）',
+    },
+    param_enums={'button': ('left', 'right')},
     category='page',
     domain='explore',
     kind='动作',
@@ -272,11 +292,40 @@ def _artifact_url(thread_id: str, name: str) -> str:
 
 def _shape(action: str, data: dict, thread_id: str) -> dict:
   if action in ('navigate', 'snapshot', 'click'):
+    if action == 'click' and data.get('ambiguous'):
+      candidates = []
+      for i, c in enumerate(data.get('candidates') or []):
+        item = {
+          'nth': i + 1,
+          'tag': str(c.get('tag') or ''),
+          'name': str(c.get('name') or '')[:_NAME_CHARS],
+        }
+        near = [str(n)[:40] for n in (c.get('near') or []) if str(n).strip()]
+        if near:
+          item['near'] = near
+        candidates.append(item)
+      total = int(data.get('total') or len(candidates))
+      return {
+        'ok': True,
+        'clicked': False,
+        'ambiguous': True,
+        'total': total,
+        'candidates': candidates,
+        'note': (
+          f'有 {total} 个文字相同的元素，未点击（不猜）。'
+          '请按 candidates 的 near（邻近节点名）判断是哪一个，再用 nth 重试。'
+        ),
+      }
     out = _page_payload(data)
     if action == 'navigate':
       out['note'] = _NAVIGATE_NOTE
     elif action == 'click':
-      out['note'] = '点击后的页面元素已重新编号（ref 已刷新）。'
+      out['clicked'] = True
+      if data.get('popup'):
+        out['popup'] = True
+        out['note'] = '点击打开了新标签页，会话已切到新页面（elements 属于新页面）。'
+      else:
+        out['note'] = '点击后的页面元素已重新编号（ref 已刷新）。'
     return out
 
   if action == 'get_text':
@@ -402,9 +451,33 @@ async def _run_action(action: str, params: dict, thread_id: str) -> dict:
     _prepare_navigate(body, params)
   elif action == 'click':
     ref = str(params.get('ref') or '').strip()
-    if not ref.isdigit():
-      raise BrowserError('ref 必须是 snapshot/navigate 返回的数字编号')
-    body['ref'] = ref
+    text = str(params.get('text') or '').strip()
+    if bool(ref) == bool(text):
+      raise BrowserError('click 需要 ref 或 text 之一（二选一）')
+    if ref:
+      if not ref.isdigit():
+        raise BrowserError('ref 必须是 snapshot/navigate 返回的数字编号')
+      body['ref'] = ref
+    else:
+      body['text'] = text
+
+    nth = str(params.get('nth') or '').strip()
+    if nth:
+      if not nth.isdigit() or int(nth) < 1:
+        raise BrowserError('nth 必须是从 1 开始的整数（取自 candidates 的序号）')
+      body['nth'] = nth
+
+    button = str(params.get('button') or 'left').strip().lower()
+    if button not in ('left', 'right'):
+      raise BrowserError('button 只能是 left 或 right')
+    body['button'] = button
+
+    count = str(params.get('count') or '1').strip()
+    if count not in ('1', '2'):
+      raise BrowserError('count 只能是 1（单击）或 2（双击）')
+    if button == 'right' and count == '2':
+      raise BrowserError('不支持右键双击：请单独用 button="right" 或 count=2')
+    body['count'] = count
   elif action == 'get_text':
     raw = str(params.get('max_chars') or '').strip()
     if raw:

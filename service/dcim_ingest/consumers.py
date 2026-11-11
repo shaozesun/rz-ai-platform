@@ -1,6 +1,6 @@
 """DCIM 配置数据的 Kafka 消费者（每个 topic 一个线程）。
 
-语义与取舍（详见 docs/dcim-kafka-ingest-design.md 第三节）：
+语义与取舍（详见 docs/dcim/dcim-kafka-ingest-design.md 第三节）：
 - 同一消费组 rz-dcim-ingest，`enable.auto.commit=False`：**写库成功后才提交 offset**（at-least-once）
 - 幂等：当前态按 guid upsert；重复消费不产生重复行
 - 单条解析失败 → 写 dcim_dlq 并继续，不阻塞批次
@@ -162,9 +162,22 @@ class TopicConsumer(threading.Thread):
           break
     logger.info('[%s] 已退出（累计落库 %d 条，DLQ %d 条）', self.label, self.total, self.dlq)
 
+  # 攒批窗口（秒）：0 = 每轮 poll 都 flush。只有实时链路需要攒批（见 RealtimeConsumer）。
+  _flush_window: float = 0.0
+  # 本批 flush 的触发原因（time/rows/poll/stop），只用于落库日志，便于观察窗口是否生效
+  _flush_reason_tag: str = ''
+
+  def _flush_reason(self, n: int, last: float) -> str | None:
+    """这批要不要现在写：None = 继续攒（`last` = 上次 flush 的时刻）。
+
+    默认「有就写」—— 配置类 / 告警类线程语义逐字不变。
+    """
+    return 'poll' if n else None
+
   def _loop(self, repo: DcimRepository, consumer: Consumer) -> None:
     buf: list[tuple[Any, dict[str, Any]]] = []
     last_lag_log = time.time()
+    last_flush = time.time()
 
     while not self._stop_event.is_set():
       msgs = consumer.consume(num_messages=self._batch_size, timeout=1.0)
@@ -191,15 +204,30 @@ class TopicConsumer(threading.Thread):
           self._record_dlq(repo, meta, _safe_text(m.value()), e)
 
       if buf:
-        self._flush(repo, consumer, buf)
+        reason = self._flush_reason(len(buf), last_flush)
+        if reason:
+          self._flush_reason_tag = reason
+          self._flush(repo, consumer, buf)
+          last_flush = time.time()
 
       if time.time() - last_lag_log >= _LAG_LOG_INTERVAL:
         last_lag_log = time.time()
+        # 窗口开启时把「攒了多少、等了多久」打出来，否则看不出攒批是否在生效
+        wait = (f' 缓冲={len(buf)} 等待={time.time() - last_flush:.0f}s'
+                if self._flush_window > 0 else '')
         logger.info(
-          '[%s] lag=%s 累计=%d DLQ=%d%s',
-          self.label, _lag(consumer), self.total, self.dlq, self._progress_extra(),
+          '[%s] lag=%s 累计=%d DLQ=%d%s%s',
+          self.label, _lag(consumer), self.total, self.dlq, self._progress_extra(), wait,
         )
         _beat()   # 心跳：容器 healthcheck 据此判断线程是否还在轮转
+
+    # 退出前把窗口里的剩余样本写掉：不写就只能等重启后重放（白解析一遍）
+    if buf:
+      try:
+        self._flush_reason_tag = 'stop'
+        self._flush(repo, consumer, buf)
+      except Exception as e:  # noqa: BLE001 —— 停机途中写失败不该掩盖退出原因
+        logger.warning('[%s] 退出前补刷失败，这批将由重放补上: %s', self.label, e)
 
   def _flush(self, repo: DcimRepository, consumer: Consumer, buf: list) -> None:
     """写库成功后提交 offset；失败则退避重试（不提交）。"""
@@ -309,6 +337,28 @@ class RealtimeConsumer(TopicConsumer):
   # PUE 报文解析出 0 行（未知编码 / 坏时间戳全被跳过）：与设备空包分开计
   pue_empty = 0
 
+  # ---------------------------------------------------------------------------
+  # 攒批：只有实时链路需要（配置类是「有就写」，攒批对 PG 没有收益，反而推迟定义生效）
+  # ---------------------------------------------------------------------------
+  @property
+  def _flush_window(self) -> float:
+    return float(settings.DCIM_REALTIME_FLUSH_SECONDS)
+
+  def _flush_reason(self, n: int, last: float) -> str | None:
+    """窗口内继续攒；到时间或行数上限才写。
+
+    行数上限只决定**什么时候写**，绝不截断 buf —— 截断会让「攒批」变成「丢数据」。
+    """
+    if n <= 0:
+      return None
+    window = self._flush_window
+    if window <= 0:
+      return 'poll'
+    cap = int(settings.DCIM_REALTIME_FLUSH_MAX_ROWS)
+    if cap > 0 and n >= cap:
+      return 'rows'
+    return 'time' if time.time() - last >= window else None
+
   def _make_store(self):
     from service.dcim_ingest.realtime import RealtimeRepository
     from service.dcim_ingest.repository import DcimRepository
@@ -398,6 +448,8 @@ class RealtimeConsumer(TopicConsumer):
     self._store_for_log = store        # 供 lag 日志读「档案缺失/语句/换名」计数
     devices = [s for s in buf if not isinstance(s, PueSample)]
     pues = [s for s in buf if isinstance(s, PueSample)]
+    # 本批下发了几条语句 —— 攒批的收益全看这个比值（行/语句），不看总量看不出效果
+    st0 = int(getattr(store, 'statements', 0)) + int(getattr(store, 'pue_statements', 0))
     pue_rows = 0
     for attempt in range(1, _DB_MAX_RETRY + 1):
       try:
@@ -413,14 +465,20 @@ class RealtimeConsumer(TopicConsumer):
         time.sleep(2 * attempt)
     consumer.commit(asynchronous=False)
     self.total += len(buf)
+    st1 = int(getattr(store, 'statements', 0)) + int(getattr(store, 'pue_statements', 0))
+    statements = max(0, st1 - st0)
+    ratio = (f' 行/语句={len(buf) / statements:.1f}' if statements else '')
+    if self._flush_window > 0:
+      ratio += f' 触发={self._flush_reason_tag or "poll"}'
     if pues:
       logger.info(
-        '[%s] 落库 %d 行（设备×时刻）+ PUE %d 行 用时 %.2fs（累计 %d）',
-        self.label, len(devices), pue_rows, time.time() - t0, self.total,
+        '[%s] 落库 %d 行（设备×时刻）+ PUE %d 行 语句=%d%s 用时 %.2fs（累计 %d）',
+        self.label, len(devices), pue_rows, statements, ratio,
+        time.time() - t0, self.total,
       )
     else:
       logger.info(
-        '[%s] 落库 %d 行（设备×时刻）用时 %.2fs（累计 %d）',
-        self.label, len(devices), time.time() - t0, self.total,
+        '[%s] 落库 %d 行（设备×时刻）语句=%d%s 用时 %.2fs（累计 %d）',
+        self.label, len(devices), statements, ratio, time.time() - t0, self.total,
       )
     buf.clear()

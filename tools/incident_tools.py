@@ -564,7 +564,6 @@ async def incident_progress(
   start: str = '',
   end: str = '',
   parks: str = '',
-  refresh: bool = True,
   config: RunnableConfig = None,
 ) -> str:
   """查询**单个事件**的完整进展记录（卡片里追加的「进展同步1..N」时间线 + 事件结束结论）。
@@ -587,7 +586,6 @@ async def incident_progress(
     start: 起始日期 `YYYY-MM-DD`（含当天）或 `YYYY-MM-DD HH:MM`，与 end 配对；与 date 互斥。
     end: 结束日期，精度与 start 一致；留空 = start 起 7 天。
     parks: 园区名，逗号分隔（如「廊坊」）；留空 = 所有已配置园区群。
-    refresh: 是否先补捞飞书卡片的最新正文（默认 true，只对近 24h 的卡片有效）。
   """
   try:
     start_s, end_s, window_label = _event_window(date, start, end)
@@ -602,9 +600,7 @@ async def incident_progress(
     return _err('未配置园区群（INCIDENT_FEISHU_PARK_CHATS 为空），无法确定查哪个园区；'
                 '请先让机器人进群并在部署配置里登记。')
 
-  from service.scheduled_task.incident_stats import (
-    detail, feishu as feishu_mod, sync as sync_mod,
-  )
+  from service.scheduled_task.incident_stats import detail, feishu as feishu_mod
 
   try:
     chats = await feishu_mod.resolve_park_chats()
@@ -622,16 +618,7 @@ async def incident_progress(
                   '（群名未匹配或机器人未进群），无法查询。')
     logger.warning('[Incident] 跳过未配置群的园区: %s', skipped)
 
-  refresh_error = ''
-  if refresh:
-    try:
-      # 卡片进展是原地追加的，查之前补捞一次；多进程同时触发时单飞
-      await sync_mod.refresh_cards_coalesced(
-        hours=settings.INCIDENT_CARD_REFRESH_BUILD_HOURS, max_age_s=300, wait_s=180)
-    except Exception as e:
-      refresh_error = f'{type(e).__name__}: {str(e)[:200]}'
-      logger.warning('[Incident] 进展查询补捞卡片失败（按库内正文继续）: %s', e)
-
+  # 进展是「每条新消息」由 WS 实时入库（1~2s），库里就是完整正文，查询不调飞书
   def _collect() -> list[dict]:
     events: list[dict] = []
     for park in park_list:
@@ -653,8 +640,6 @@ async def incident_progress(
     'events': len(events),
     'query': query,
   }
-  if refresh_error:
-    result['refresh_error'] = refresh_error
   if skipped:
     result['skipped_parks'] = skipped
 

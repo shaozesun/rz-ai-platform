@@ -118,8 +118,10 @@ def ensure_user_skill_editable(user_id: str, name: str) -> None:
     raise ValueError('技能不存在或无权限')
 
 
-# 允许的 frontmatter key（对齐现有 SKILL.md：name/title/description/category/domain/kind）
-_ALLOWED_FRONTMATTER_KEYS = frozenset({'name', 'title', 'description', 'category', 'domain', 'kind'})
+# 允许的 frontmatter key（对齐现有 SKILL.md：name/title/description/when_to_use/category/domain/kind）
+_ALLOWED_FRONTMATTER_KEYS = frozenset({
+  'name', 'title', 'description', 'when_to_use', 'category', 'domain', 'kind',
+})
 
 
 def validate_skill_markdown_content(name: str, content: str) -> None:
@@ -136,7 +138,10 @@ def validate_skill_markdown_content(name: str, content: str) -> None:
     raise ValueError('SKILL.md 正文不能为空')
   unknown = set(metadata) - _ALLOWED_FRONTMATTER_KEYS
   if unknown:
-    raise ValueError(f'frontmatter 含未知字段：{", ".join(sorted(unknown))}（允许 name/title/description/category/domain/kind）')
+    raise ValueError(
+      f'frontmatter 含未知字段：{", ".join(sorted(unknown))}'
+      '（允许 name/title/description/when_to_use/category/domain/kind）'
+    )
 
   meta_name = str(metadata.get('name') or '')
   if meta_name != name:

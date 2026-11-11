@@ -1,7 +1,8 @@
-"""技能中心目录 —— 列表 / 详情的只读层（不写盘、不触发 agent 重建）。
+"""技能中心目录 —— 列表（含详情字段）的只读层（不写盘、不触发 agent 重建）。
 
-数据源直接扫 `skills/` 目录（`discover_skills()`），**不依赖平台是否已注册**：
-技能中心页面可能在首次 Agent 构建之前被打开，走全局注册表会漏技能。
+数据源是 `skills/` 目录的**进程内快照**（`discover_skills_cached()`，启动时建立、
+写盘/删除经 `reload_skills()` 刷新），**不依赖平台是否已注册**：技能中心页面可能在
+首次 Agent 构建之前被打开，走全局注册表会漏技能；也不按请求扫盘（目录抖动会 500）。
 
 可见性口径：
 - 公开技能（owner=''）所有人可见、只读（不可停用，共享图按用户重建的代价不值）；
@@ -11,11 +12,46 @@
 import logging
 
 from service.query.base.capability import Capability
-from service.query.skills import client
-from service.query.skills.discover import discover_skills
-from service.query.skills.frontmatter import split_skill_markdown
+# 别名保持模块级符号名不变：测试 monkeypatch 的是 `catalog.discover_skills`
+from service.query.skills.discover import discover_skills_cached as discover_skills
 
 logger = logging.getLogger(__name__)
+
+_SENTENCE_END = '。！？!?'
+
+
+def _first_sentence(text: str) -> str:
+  """取首句（按句末标点切，保留标点）；没有句末标点返回整段。"""
+  s = (text or '').strip()
+  for i, ch in enumerate(s):
+    if ch in _SENTENCE_END:
+      return s[:i + 1]
+  return s
+
+
+def _rest_sentences(text: str) -> str:
+  """首句之后的剩余文本；只有一句（或无句末标点）返回空串。"""
+  s = (text or '').strip()
+  for i, ch in enumerate(s):
+    if ch in _SENTENCE_END:
+      return s[i + 1:].strip()
+  return ''
+
+
+def _references_by_skill(caps: list[Capability]) -> dict[tuple[str, str], list[dict]]:
+  """从快照里的 references 子能力（`skill.<name>.<stem>`）聚合附带文档索引。"""
+  index: dict[tuple[str, str], list[dict]] = {}
+  for cap in caps:
+    parts = cap.id.split('.')
+    if len(parts) != 3 or parts[0] != 'skill':
+      continue
+    key = (cap.owner or '', parts[1])
+    index.setdefault(key, []).append({
+      'type': parts[2],
+      'name': cap.name,
+      'description': cap.description,
+    })
+  return index
 
 
 def main_capabilities(caps: list[Capability]) -> list[Capability]:
@@ -24,17 +60,23 @@ def main_capabilities(caps: list[Capability]) -> list[Capability]:
 
 
 def list_catalog(user_id: str, disabled: set[str]) -> list[dict]:
-  """列出当前用户可见的技能：公开技能 + 本人自建技能（他人技能不出现）。
+  """列出当前用户可见的技能（含详情字段）：公开技能 + 本人自建技能（他人不出现）。
+
+  取数走进程内快照，不扫盘；概述 / 使用场景 / 附带文档全部由快照里的能力元数据推导，
+  前端打开详情不再发请求。
 
   Args:
     user_id: 当前用户 id（未登录为空串）。
     disabled: 当前用户已停用的技能名集合（只对自建技能生效）。
 
   Returns:
-    每项 {name, title, description, category, domain, kind, owner, editable, enabled}。
+    每项 {name, title, description, category, domain, kind, owner, editable, enabled,
+         overview, when_to_use, references}。
   """
+  caps = discover_skills()
+  refs_by_skill = _references_by_skill(caps)
   items: list[dict] = []
-  for cap in main_capabilities(discover_skills()):
+  for cap in main_capabilities(caps):
     owner = cap.owner or ''
     if owner and owner != (user_id or ''):
       continue
@@ -49,39 +91,8 @@ def list_catalog(user_id: str, disabled: set[str]) -> list[dict]:
       'owner': owner,
       'editable': bool(owner),
       'enabled': owner == '' or name not in disabled,
+      'overview': _first_sentence(cap.description),
+      'when_to_use': cap.when_to_use or _rest_sentences(cap.description),
+      'references': refs_by_skill.get((owner, name), []),
     })
   return items
-
-
-def skill_detail(name: str, user_id: str) -> dict | None:
-  """技能详情（SKILL.md 全文 + references 索引）。
-
-  不存在、或技能归属他人 → 返回 None（接口层映射 404，不泄露归属）。
-  """
-  resolved = client.resolve_skill_dir(name)
-  if resolved is None:
-    return None
-  skill_dir, owner = resolved
-  if owner and owner != (user_id or ''):
-    return None
-  try:
-    skill_md = (skill_dir / 'SKILL.md').read_text(encoding='utf-8')
-  except OSError as e:
-    logger.warning('读取技能失败 %s: %s', name, e)
-    return None
-
-  parsed = split_skill_markdown(skill_md)
-  meta = parsed[0] if parsed is not None else {}
-  category = str(meta.get('category') or '')
-  return {
-    'name': name,
-    'title': str(meta.get('title') or name),
-    'description': str(meta.get('description') or ''),
-    'category': category,
-    'domain': str(meta.get('domain') or category),
-    'kind': str(meta.get('kind') or '资源'),
-    'owner': owner,
-    'editable': bool(owner),
-    'skill_md': skill_md,
-    'references': client._references_index(skill_dir),
-  }

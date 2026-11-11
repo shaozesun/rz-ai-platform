@@ -13,6 +13,12 @@ export interface AgentSkill {
   /** 自建技能可停用/删除；官方内置只读 */
   editable: boolean;
   enabled: boolean;
+  /** 概述：description 首句 */
+  overview: string;
+  /** 使用场景：frontmatter 的 when_to_use，缺失时回退 description 后续句 */
+  when_to_use: string;
+  /** 附带文档（references/ 下的 md） */
+  references: SkillReference[];
 }
 
 export interface SkillReference {
@@ -20,12 +26,6 @@ export interface SkillReference {
   type: string;
   name: string;
   description: string;
-}
-
-export interface SkillDetail extends AgentSkill {
-  /** SKILL.md 原文 */
-  skill_md: string;
-  references: SkillReference[];
 }
 
 async function unwrap<T>(resp: { data: { data: T } }): Promise<T> {
@@ -36,11 +36,6 @@ export async function listSkills(): Promise<AgentSkill[]> {
   const resp = await client.get('/skills');
   const data = await unwrap<{ skills: AgentSkill[] }>(resp);
   return data.skills ?? [];
-}
-
-export async function getSkill(name: string): Promise<SkillDetail> {
-  const resp = await client.get(`/skills/${encodeURIComponent(name)}`);
-  return unwrap<SkillDetail>(resp);
 }
 
 export async function setSkillEnabled(

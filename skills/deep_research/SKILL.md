@@ -2,6 +2,7 @@
 name: deep_research
 title: 联网调研
 description: 联网调研模式专用的多角度联网检索方法论与引用规范。该模式下才放开 web__search / web__fetch；需要外部公开信息的研究型任务先调本技能，取检索策略、证据质量标准、引用格式与常见错误清单。
+when_to_use: 联网调研模式下需要外部公开信息、检索策略与引用规范时使用；例：「调研一下液冷技术的行业现状。」
 category: research
 domain: research
 ---

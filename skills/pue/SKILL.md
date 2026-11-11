@@ -2,6 +2,7 @@
 name: pue
 title: PUE 与能耗查询
 description: 查 PUE 与能耗统计（按园区/楼宇/时间口径）。用户问「现在 PUE 多少 / 某楼 PUE 趋势 / IT 与制冷耗电量对比 / 这个月耗电量」时用 dcim_meta 的 PUE 查询能力，不要反问口径。
+when_to_use: 用户问「现在 PUE 多少 / 某楼 PUE 趋势 / IT 与制冷耗电量对比 / 这个月耗电量」时使用；例：「A1 这个月的 PUE 走势怎么样？」
 category: energy
 domain: pue
 ---

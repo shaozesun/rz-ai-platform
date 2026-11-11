@@ -7,7 +7,7 @@
 
 这层就是把那个「两段式」封装掉，**不让 Agent 自己拼两个库的查询**。
 
-设计依据：`docs/dcim-timeseries-storage-design.md` §8。
+设计依据：`docs/dcim/dcim-timeseries-storage-design.md` §8。
 """
 
 import logging

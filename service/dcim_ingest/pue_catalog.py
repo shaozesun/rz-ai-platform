@@ -1,7 +1,7 @@
 """PUE / 能耗统计报文的字段目录（纯数据，无 IO）。
 
 口径来自对方《PUE_attribute》表（108 个属性 = **18 个指标后缀 × 6 个时间口径**），
-报文形态与存储方案见 `docs/dcim-pue-storage-query.md`。
+报文形态与存储方案见 `docs/dcim/dcim-pue-storage-query.md`。
 
 **编码格式**：`PUE_<时间口径>_<指标后缀>`，如 `PUE_Real_IT_Value` / `PUE_Hour_Total_Value`。
 ⚠️ 指标后缀本身含下划线（`IT_Value` / `Total_Value` / `NoPower_Value`），**不能按 `_` 切分** ——

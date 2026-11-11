@@ -7,6 +7,7 @@
 交互会话：navigate → snapshot → click → get_text → screenshot → close，失效 ref 与无会话报错；
 录屏：navigate → record → 会话保持 → close，关键帧/视频分段降级与无会话报错；
 通用能力：cursor:pointer 的纯 div 菜单可被识别/点击、iframe 内元素进快照且正文可读；
+树/脑图节点（jmnode）进快照、展开器命名、按文字点击/同名候选/右键/双击/新标签页接管；
 登录判定：旧界面残影不被当成已登录（等静默后复查）、目标地址不是登录页时快速报 login_page。
 """
 
@@ -42,6 +43,8 @@ FIXTURE = """
     <option value="A部">A部</option>
     <option value="B部">B部</option>
   </select>
+  <!-- 部门切换用例：综合管理平台的「公司/部门」是无 role 的整段下拉 -->
+  <div class="company-and-dept-label" style="cursor:pointer">部门：<br>A部</div>
   <input id="kw" placeholder="关键字">
   <button id="go" onclick="filterRows()">查询</button>
   <a id="detail" href="#" onclick="showDetail(); return false;">详情</a>
@@ -55,6 +58,26 @@ FIXTURE = """
   <button id="del" onclick="document.getElementById('menu-result').innerText='已删除'">删除记录</button>
   <button id="save">保存</button>
   <input id="upload" type="file">
+  <!-- 树/脑图用例：jsMind 的 jmnode 没有 cursor:pointer/role/onclick，只能靠选择器命中；
+       展开器是裸 + / -，快照里必须换成「展开：节点名」 -->
+  <div id="mindmap">
+    <jmnode nodeid="n1" onclick="document.getElementById('mind-result').innerText='进入 1.规划管理'">1.规划管理</jmnode>
+    <jmexpander nodeid="n1" style="cursor:pointer">-</jmexpander>
+    <jmnode nodeid="n2" onclick="document.getElementById('mind-result').innerText='进入 1.4精益化能源管理'">1.4精益化能源管理</jmnode>
+    <jmexpander nodeid="n2" style="cursor:pointer">+</jmexpander>
+    <jmnode nodeid="n3" onclick="document.getElementById('mind-result').innerText='进入 2026-1'">2026</jmnode>
+    <jmnode nodeid="n4" onclick="document.getElementById('mind-result').innerText='进入 2026-2'">2026</jmnode>
+  </div>
+  <div id="mind-result">未进入</div>
+  <!-- 双击 / 右键 / 新标签页用例 -->
+  <div id="dbl" style="cursor:pointer" ondblclick="document.getElementById('dbl-result').innerText='已双击'">双击进入</div>
+  <div id="dbl-result">未双击</div>
+  <div id="ctx" style="cursor:pointer" oncontextmenu="event.preventDefault(); document.getElementById('ctx-menu').style.display='block'">右键我</div>
+  <div id="ctx-menu" style="display:none">右键菜单项</div>
+  <button id="popup" onclick="window.open('/popup', '_blank')">弹出页</button>
+  <!-- 同名跨区域用例：面包屑（导航）与表格行里出现同名文字，候选需标出所在区域 -->
+  <nav><span>2025</span></nav>
+  <table id="dup"><tbody><tr><td><span>2025</span></td></tr></tbody></table>
   <table id="grid">
     <thead><tr><th>姓名</th><th>部门</th></tr></thead>
     <tbody>
@@ -82,6 +105,12 @@ FIXTURE = """
     });
   </script>
 </body></html>
+"""
+
+POPUP_HTML = """
+<!doctype html>
+<html><head><meta charset="utf-8"><title>弹窗页</title></head>
+<body><p>弹窗正文</p></body></html>
 """
 
 RECIPE = {
@@ -249,7 +278,12 @@ def test_unknown_param() -> None:
 
 class _FixtureHandler(BaseHTTPRequestHandler):
   def do_GET(self):  # noqa: N802
-    body = (ANIM_HTML if self.path.startswith('/anim') else FIXTURE).encode('utf-8')
+    if self.path.startswith('/popup'):
+      body = POPUP_HTML.encode('utf-8')
+    elif self.path.startswith('/anim'):
+      body = ANIM_HTML.encode('utf-8')
+    else:
+      body = FIXTURE.encode('utf-8')
     self.send_response(200)
     self.send_header('Content-Type', 'text/html; charset=utf-8')
     self.send_header('Content-Length', str(len(body)))
@@ -323,6 +357,75 @@ async def _session_flow(url: str) -> None:
   after_menu = await _session_action({'action': 'get_text', 'session_id': sid, 'max_chars': '4000'})
   assert '菜单已点击' in after_menu['text'], after_menu['text']
 
+  # 树/脑图：jmnode 必须进快照；展开器名带节点名，不再输出裸 + / -
+  _ref_of(nav['elements'], '1.规划管理')
+  _ref_of(nav['elements'], '1.4精益化能源管理')
+  names = [str(el.get('name') or '') for el in nav['elements']]
+  assert '展开：1.4精益化能源管理' in names, names
+  assert '收起：1.规划管理' in names, names
+  assert '+' not in names and '-' not in names, names
+
+  # 公司/部门下拉：名字折叠换行并带「（下拉可切换）」，否则模型认不出它是选择器
+  dept_label = next((el for el in nav['elements'] if str(el.get('name') or '').startswith('部门：')), None)
+  assert dept_label, names
+  assert dept_label['name'] == '部门： A部（下拉可切换）', dept_label
+  # 模型会照抄快照名字来点；「（下拉可切换）」只是提示、不在元素文本里，必须能剥掉再匹配
+  dept_clicked = await _session_action(
+    {'action': 'click', 'session_id': sid, 'text': dept_label['name']},
+  )
+  assert dept_clicked['ok'] is True and dept_clicked.get('clicked') is True, dept_clicked
+
+  # 按文字点击（树节点没有稳定 ref 时的主要路径）
+  entered = await _session_action(
+    {'action': 'click', 'session_id': sid, 'text': '1.规划管理'},
+  )
+  assert entered['ok'] is True and entered.get('clicked') is True, entered
+  after_tree = await _session_action({'action': 'get_text', 'session_id': sid, 'max_chars': '4000'})
+  assert '进入 1.规划管理' in after_tree['text'], after_tree['text']
+
+  # 同名多个：不点击，返回候选与邻近节点名；按 nth 选第二个
+  ambiguous = await _session_action(
+    {'action': 'click', 'session_id': sid, 'text': '2026'},
+  )
+  assert ambiguous['ok'] is True and ambiguous['clicked'] is False, ambiguous
+  assert ambiguous['ambiguous'] is True and ambiguous['total'] == 2, ambiguous
+  assert len(ambiguous['candidates']) == 2, ambiguous
+  still = await _session_action({'action': 'get_text', 'session_id': sid, 'max_chars': '4000'})
+  assert '进入 2026' not in still['text'], still['text']
+
+  # 同名跨区域：候选带「所在区域」，否则模型分不清面包屑（往上层跳）与表格行（进入下一层）
+  zones = await _session_action({'action': 'click', 'session_id': sid, 'text': '2025'})
+  assert zones['ok'] is True and zones['ambiguous'] is True and zones['total'] == 2, zones
+  where = sorted(str(c.get('where') or '') for c in zones['candidates'])
+  assert where == ['导航', '表格行'], zones
+
+  second = await _session_action(
+    {'action': 'click', 'session_id': sid, 'text': '2026', 'nth': '2'},
+  )
+  assert second['ok'] is True and second.get('clicked') is True, second
+  after_second = await _session_action({'action': 'get_text', 'session_id': sid, 'max_chars': '4000'})
+  assert '进入 2026-2' in after_second['text'], after_second['text']
+
+  bad_nth = await _session_action(
+    {'action': 'click', 'session_id': sid, 'text': '2026', 'nth': '5'},
+  )
+  assert bad_nth['ok'] is False and bad_nth['stage'] == 'click', bad_nth
+
+  # 右键打开菜单 / 双击进入
+  right = await _session_action(
+    {'action': 'click', 'session_id': sid, 'text': '右键我', 'button': 'right'},
+  )
+  assert right['ok'] is True, right
+  menu_text = await _session_action({'action': 'get_text', 'session_id': sid, 'max_chars': '4000'})
+  assert '右键菜单项' in menu_text['text'], menu_text['text']
+
+  dbl = await _session_action(
+    {'action': 'click', 'session_id': sid, 'text': '双击进入', 'count': '2'},
+  )
+  assert dbl['ok'] is True, dbl
+  dbl_text = await _session_action({'action': 'get_text', 'session_id': sid, 'max_chars': '4000'})
+  assert '已双击' in dbl_text['text'], dbl_text['text']
+
   shot = await _session_action({'action': 'screenshot', 'session_id': sid, 'full_page': 'false'})
   assert shot['ok'] is True, shot
   image = base64.b64decode(shot['image_b64'])
@@ -332,6 +435,15 @@ async def _session_flow(url: str) -> None:
   # 失效 ref：明确报 click，要求重新 snapshot
   stale = await _session_action({'action': 'click', 'session_id': sid, 'ref': '9999'})
   assert stale['ok'] is False and stale['stage'] == 'click', stale
+
+  # 点开新标签页：会话必须切到新页面，否则后续一直停在旧页
+  pop = await _session_action({'action': 'click', 'session_id': sid, 'text': '弹出页'})
+  assert pop['ok'] is True and pop.get('popup') is True, pop
+  assert pop['url'].endswith('/popup'), pop
+  popup_text = await _session_action(
+    {'action': 'get_text', 'session_id': sid, 'max_chars': '4000'},
+  )
+  assert '弹窗正文' in popup_text['text'], popup_text['text']
 
   closed = await _session_action({'action': 'close', 'session_id': sid})
   assert closed == {'ok': True, 'closed': True}, closed

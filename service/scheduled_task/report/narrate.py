@@ -1200,7 +1200,7 @@ def _validate_section(data: dict, chart_keys: list[str], allowed: set,
       # 点名的机构若不在本章载荷里，**只记日志、不丢句**。2026-10-30 复核发现这道闸的
       # 起因事件本身就是误杀（`B1M4分部`/`技术保障部` 都是数据里的真实部门，只是没进
       # 前 12 行表），而它在本轮 24 份报告里删掉了 55 句真部门论述 —— 见
-      # docs/problems/report-invented-org-names.md「十」。
+      # docs/problems/report/report-invented-org-names.md「十」。
       if allowed_orgs is not None:
         invented = name_guard.violations(text, allowed_orgs)
         if invented:
@@ -1364,7 +1364,7 @@ async def narrate(stats: dict, details: dict, spec, *, retries: int = 2) -> dict
   act_val = _validate(await _call(_action_system(weekly), act_payload, retries=retries,
                                   label='行动计划'))
   # 白名单只用于**日志审计**：命中也不删条目（同 `_validate_section` 的口径，
-  # 撤闸原因见 docs/problems/report-invented-org-names.md「十」）
+  # 撤闸原因见 docs/problems/report/report-invented-org-names.md「十」）
   act_orgs = name_guard.allowed_from_payload(act_payload)
   # 综合评价与行动计划吃各章要点原文，同样在这里做术语归一
   out['总体评价'] = _normalize_terms(act_val['总体评价'])

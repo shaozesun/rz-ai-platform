@@ -14,7 +14,7 @@ pip install -r requirements.txt
 # 本地已有则复用、缓存写入必须是 pymongo UpdateOne
 python -m service.infrared_quality.tests.test_infrared_quality
 
-# 页面截图自检（纯 assert，不连网、不启浏览器）：
+# 页面操作自检（纯 assert，不连网、不启浏览器）：
 # recipes = 配方参数/主机白名单/截图原子发布；interactive = 交互 6 工具/会话 id/导航校验/返回整形
 python -m service.query.browser.tests.test_recipes
 python -m service.query.browser.tests.test_interactive
@@ -143,7 +143,7 @@ service/query/bootstrap.py register_enabled_platforms()
 
 **分析出图 / 报告（见「数据分析沙箱」节）：** `analysis_load` 物化全量数据 → `analysis_exec` 沙箱跑 pandas 聚合 → 返回 `chart_data` 组装 `<chart>` 标签（前端 ChartRenderer.tsx 本地渲染，不出内网）；产物文件回传 `artifacts`，组装 `<file url name>` 标签供下载。用户要「看板/大屏」时走 **HTML 看板**路径：`analysis_write_file` 写自包含 `.html`（数据内联 + echarts）→ `analysis_exec(file=...)` → `<file>` 标签 → 前端 `ArtifactPanel.tsx`/`HtmlPreview.tsx` sandbox iframe 本地预览（echarts 打包内联，不出内网）。
 
-### 平台能力（综合管理 / 安防 / 联网 / 页面截图 / 技能）
+### 平台能力（综合管理 / 安防 / 联网 / 页面操作 / 技能）
 
 统一检索层 `service/query/base/`（`platform.py` Platform 注册、`capability.py` Capability、`tools_factory.py` 工具生成、`retriever.py` 检索、`manifest.py` 分类清单、`intent_bindings.py` 绑定表）。每个平台一套 `capabilities.py`（能力声明）+ `endpoints.py`（EndpointSpec 接口声明）+ `client.py`（通用调用器）三件套，params 用 snake_case、经 `param_map` 映射为接口 camelCase。
 
@@ -154,13 +154,13 @@ service/query/bootstrap.py register_enabled_platforms()
 | mgmt 综合管理平台 | 38 条 | `MGMT_ENABLED` | 人员(org)/巡检(inspection)/维护(maintenance)/设备(device)/文档(document)/工单(work_order)/配置(config) 分类，如按姓名查人、设备台账、设备维护计划、设备类型树、巡检项模板、红外温度检测、巡检工单、待办工单、变更工单、故障/问题/事件工单详情、配置管理、任务列表、标准规范等 |
 | security 安防平台 | 0 条 | `SECURITY_ENABLED` | 占位空元组，接口文档到位后登记 |
 | web 联网 | 2 条 | `WEB_ENABLED`（默认关） | `web__search`（自建 SearXNG 检索）/ `web__fetch`（抓取公网网页）。**模式门控**：只在「联网调研」模式（`task_mode='research'`）或输入栏「联网搜索」开关（`web_search=true`）下可见，其他情况不进分类清单/不进 planner 词汇表/不进 tool_search 检索目录 |
-| browser 页面截图 | 按已校准配方注册 + 交互模式 7 条 | `BROWSER_ENABLED` / `BROWSER_EXPLORE_ENABLED`（默认关） | 按声明式配方进入内网系统页面、设参数筛选后截图，并返回页面表格与正文；交互模式另提供 navigate/snapshot/click/get_text/screenshot/record/close 逐步操作（record 在当前页面录固定时长，交付关键帧 + 可选 webm；危险按钮在快照标 blocked、点击被拒）。执行在独立 Playwright 旁路容器（`deploy/browser/`），后端只持有配方，会话在容器内按 thread_id 派生 id 共享（多 worker 可命中同一会话）。截图走会话产物链路内联显示。**模板配方 `enabled=False`，未校准前不注册能力**；要精确数据请用对应平台的数据查询，不要用截图替代。详见 `docs/browser-capture.md` |
+| browser 页面操作 | 按已校准配方注册 + 交互模式 7 条 | `BROWSER_ENABLED` / `BROWSER_EXPLORE_ENABLED`（默认关） | 按声明式配方进入内网系统页面、设参数筛选后截图，并返回页面表格与正文；交互模式另提供 navigate/snapshot/click/get_text/screenshot/record/close 逐步操作（record 在当前页面录固定时长，交付关键帧 + 可选 webm；危险按钮在快照标 blocked、点击被拒）。执行在独立 Playwright 旁路容器（`deploy/browser/`），后端只持有配方，会话在容器内按 thread_id 派生 id 共享（多 worker 可命中同一会话）。截图走会话产物链路内联显示。**模板配方 `enabled=False`，未校准前不注册能力**；要精确数据请用对应平台的数据查询，不要用截图替代。详见 `docs/features/browser-capture.md` |
 - **联网调研模式（research）/ 联网搜索开关** — 能力范围：仅 `web.search`/`web.fetch`（搜索走自建 SearXNG，`WEB_SEARCH_BASE_URL`；抓取只允许公网 http/https）。门控三层（缺一不可）：① 构建期 `MODE_GATED_PLATFORMS` 排除出 `<available-tools>` 与意图绑定表；② `build_deferred_setup(extra_hidden=...)` 让它不进 `tool_search` 检索目录、schema 默认隐藏、硬调被拦；③ `orchestrator.build_initial_state` 预 promote 才可见（`task_mode='research'` 或 `web_search=true` 任一即放开）。SSRF：`service/query/web/url_safety.py`（`not is_global or is_multicast`，含 CGNAT 100.64/10）+ **重定向逐跳复校验**（`follow_redirects=False`）。审计：每次检索/抓取 fire-and-forget 落 `web_queries`（query/url 原文 + 来源域名），出方向不做管控，审计是唯一追溯手段。事实污染：`MODE_INSTRUCTIONS['research']` 要求外部来源就地 `[citation:标题](URL)` + 文末 Sources 段，并强制「内外分开陈述、冲突以内部数据为准」；`citations` 已进不可信内容 denylist。**只放开工具、不注入规范**是开关与任务模式的分界（刻意解绑）
-| skill 技能平台 | analysis 1+0（怎么算：聚合形状/pandas 写法/交互表格整理）、chart 1+26（怎么画：选型+字段规范）、html_dashboard 1+1、skill_creator 1+0、deep_research 1+0（联网调研方法论，配合联网调研模式）、company_profile 1+0（公司背景档案，按需加载，不常驻；元规则 11 引导）、consulting_analysis 1+2（专业分析报告方法论：Phase1 分析框架 + Phase2 成文，含数据真实性协议） （另有用户自建技能动态增减） | 无开关常驻 | `skills/` 目录自动发现（SKILL.md + references），零代码接入新技能；用户自建技能存 `skills/users/<uid>/`，按用户隔离 |
+| skill 技能平台 | analysis 1+0（怎么算：聚合形状/pandas 写法/交互表格整理）、chart 1+26（怎么画：选型+字段规范）、html_dashboard 1+1、skill_creator 1+0、deep_research 1+0（联网调研方法论，配合联网调研模式）、company_profile 1+0（公司背景档案，按需加载，不常驻；元规则 11 引导）、consulting_analysis 1+2（专业分析报告方法论：Phase1 分析框架 + Phase2 成文，含数据真实性协议） （另有用户自建技能动态增减） | 无开关常驻 | `skills/` 目录自动发现（SKILL.md + references），零代码接入新技能；用户自建技能存 `skills/users/<uid>/`，按用户隔离。技能中心列表读**进程内技能快照**（启动时建立，写盘/删除经 `reload_skills()` 刷新，不按请求扫盘；多 worker 下其余进程重启后跟上）；详情展示概述 + 使用场景（frontmatter `when_to_use`，缺失回退描述后续句）+ 分类/领域/类型 + 附带文档，**不展示 SKILL.md 原文**，详情字段随列表一次下发、点击不再请求接口 |
 
 - 默认开关全 False，Agent 只保留知识检索/时间/通知基础工具
 - **用户自建技能（复刻 DeerFlow skill-creator）**：`skill_manage` 工具（受 `ai:agent` 门控）让用户对话创建/查看/修改技能，按用户隔离存 `skills/users/<uid>/<name>/`（公开技能在 `skills/<name>/`）；技能名全局唯一，写盘过静态+LLM 语义安全扫描（`AGENT_SKILL_LLM_SCAN`，fail-closed）。`skill_creator` 技能引导访谈→起草→创建。热加载：写盘后 `bump_skills_version()` → 下一条消息触发 agent 重建。用户技能不进 `<available-tools>`/路由词汇表，按需 tool_search 命中。**部署注意：`skills/users/` 是运行期写入，Docker 需挂 volume，否则容器重建丢技能**
-- **页面截图平台（browser）** — 与数据查询**刻意分开**：截图解决「页面长什么样」，精确数据仍走 mgmt/dcim_meta。执行器是独立 `browser` 容器（`deploy/browser/app.py`，Playwright + storageState），后端只发声明式配方（`service/query/browser/recipes.py`：路径 + `{参数}` + steps + ready + extract）；生产 `uvicorn --workers 4` 下不能用进程内有状态会话，故交互浏览（`BROWSER_EXPLORE_ENABLED`，7 个工具 navigate/snapshot/click/get_text/screenshot/record/close）的会话也放在该容器内，按 `thread_id` 派生 id 共享、不暴露给模型，超 `BROWSER_MAX_SESSIONS` 按最近使用淘汰、空闲 `BROWSER_SESSION_IDLE_SECONDS` 回收，超时不关会话。截图落 `{会话目录}/browser/`，**原子发布不覆盖**（O_EXCL + 硬链接 + inode 校验），返回 `<file>` 由 `FileCard` 内联（截图/关键帧走图片内联，webm 走 blob → `<video>`）。`record` 在当前页面录固定时长（5~120s，全局只允许一路），交付关键帧 + 可选 webm（CDP `Page.startScreencast` + ffmpeg 合成，旁路镜像需装 ffmpeg）。**点击黑名单**：快照给命中危险词（删除/提交/审批等）的元素标 `blocked`、`click` 直接拒绝，词表 `BROWSER_CLICK_DENYLIST` 整体覆盖内置激进表。登录走服务账号登录配方或 `deploy/scripts/browser_login.py` 手动 storageState；配方必须先用 `deploy/scripts/browser_probe.py` 探查真实页面后校准，未校准配方 `enabled=False` 不注册。开关/部署/失败 stage 见 `docs/browser-capture.md`
+- **页面操作平台（browser）** — 与数据查询**刻意分开**：打开 / 操作内网页面（截图只是其中一种输出），精确数据仍走 mgmt/dcim_meta。执行器是独立 `browser` 容器（`deploy/browser/app.py`，Playwright + storageState），后端只发声明式配方（`service/query/browser/recipes.py`：路径 + `{参数}` + steps + ready + extract）；生产 `uvicorn --workers 4` 下不能用进程内有状态会话，故交互浏览（`BROWSER_EXPLORE_ENABLED`，7 个工具 navigate/snapshot/click/get_text/screenshot/record/close）的会话也放在该容器内，按 `thread_id` 派生 id 共享、不暴露给模型，超 `BROWSER_MAX_SESSIONS` 按最近使用淘汰、空闲 `BROWSER_SESSION_IDLE_SECONDS` 回收，超时不关会话。截图落 `{会话目录}/browser/`，**原子发布不覆盖**（O_EXCL + 硬链接 + inode 校验），返回 `<file>` 由 `FileCard` 内联（截图/关键帧走图片内联，webm 走 blob → `<video>`）。`record` 在当前页面录固定时长（5~120s，全局只允许一路），交付关键帧 + 可选 webm（CDP `Page.startScreencast` + ffmpeg 合成，旁路镜像需装 ffmpeg）。**点击黑名单**：快照给命中危险词（删除/提交/审批等）的元素标 `blocked`、`click` 直接拒绝，词表 `BROWSER_CLICK_DENYLIST` 整体覆盖内置激进表。登录走服务账号登录配方或 `deploy/scripts/browser_login.py` 手动 storageState；配方必须先用 `deploy/scripts/browser_probe.py` 探查真实页面后校准，未校准配方 `enabled=False` 不注册。开关/部署/失败 stage 见 `docs/features/browser-capture.md`
 - mgmt 能力详情见 `service/query/mgmt/capabilities.py` 顶部 docstring；EndpointSpec 字段（method/path/param_map/defaults/default_params/result_path/page_meta/value_map 等）见 `service/query/mgmt/endpoints.py`
 - 已实测接口的坑：URL 路径含 "get"（如 `/equipment/get/dept`）实际是 **POST**（GET 返 405）；path 占位符参数必须必填（defaults 只兜底 query/body 参数）；MyBatis-Plus 分页信封 `records/total/current/pages/size` 用 `page_style='page_size_alt'`
 - **不可信内容防护** — `core/agent/untrusted_content.py`（照搬 DeerFlow `neutralize_untrusted_tags`）：平台返回在包「不可信数据」边界**之前**做两件事——转义框架/注入标签（`<durable_context_data>`/`<system>`/`<prompt>` 等 13 个，只转 `<>` 不转 `&`/引号）、把数据里伪造的边界标记（`【数据结束】`/`[历史对话摘要]`）惰性化为 `（…）`。普通 HTML/XML（`<div>`/`温度<10℃`）原样通过。边界常量唯一定义在该模块（`tools_factory` 导入）。`verify_denylist_coverage()` 扫 `core/agent`+`service/agent`+`service/query`+`tools` 里成对的框架块标签，报出未分类的（防「加了新框架块却忘了封锁」的漂移）。**多通道**：`@sanitizing` 装饰器已接飞书消息（`tools/feishu_tools.py`，外部可写）、上传文件（`tools/upload_tools.py`）、历史归档回读（`tools/history_tools.py`）——放在 `@tool` 之下（先净化再由 @tool 包装）
@@ -289,7 +289,7 @@ LLM 需要做全量/统计/聚合/报告时，数据先物化到沙箱（原始�
 - 飞书 IM 机器人（`LARK_ENABLED`）— `service/feishu/`，长连接订阅 → Agent 复用
 - 微信 IM 机器人（`WECHAT_ENABLED`，个人微信 iLink/ClawBot）— `service/wechat/`：HTTP/JSON 长轮询（`POST /ilink/bot/getupdates`，hold ≈35s）→ Agent 复用。**协议约束**：不能编辑已发消息、也无打字态（无流式，累计到终稿一次发）、不能主动推（须回带 `context_token`）、游标单消费（必须选主 `rz:wechat:leader`）、**不能读微信群消息**（仅私聊 p2p）。`errcode -14` = bot_token 过期。**接入（扫码拿凭据，运维一次性动作）走命令行脚本 `deploy/scripts/wechat_login.py`**：调 iLink 取码（GET `get_bot_qrcode`/`get_qrcode_status`）→ 二维码存 `wechat_qrcode.png` → 手机扫码 → 凭据落盘 `WECHAT_STATE_FILE` → 重启后端装载。绑定/产物端点见 `api/v1/wechat.py`
 - 通道公共件（`service/channels/`）— 飞书/微信共用的通道无关逻辑：`connect_code.py`（一次性绑定码）、`artifact_token.py`（签名下载 token）、`leader.py`（`LeaderLock` 选主）、`file_tags.py`（标签降级）、`agent_stream.py`（SSE 消费）。飞书侧为薄封装（签名不变，零回归）
-- 工单服务（`ticket-api.ddbes.com`，`MGMT_TICKET_BASE_URL`，mgmt 能力延伸，非新平台）— 待办/变更/故障/问题/事件工单后端。**2026-10-26 对方整体重做**：路径去掉 `/ticket`、`/pen` 前缀（`/wiporder/*`、`/pending/list/v1`、`/company/user/{uid}`），认证换成 mgmt 同一套 `token` + `Deptid`（`http.ticket_request()`，401 清缓存重登一次），入参与信封不变，`type` 必填（老代码默认 `type:1`）。老 host 与 `pen_request()` 保留未删但不再被调用。变更工单按公司（`POST /wiporder/ticketlist/modify`，companyId 认 kingdee 格式，跨公司经 `mgmt.query_company_list`（`/authority/userrole/v1/current/company`）映射；已是 kingdee 的入参直接透传，不查映射）；各类工单详情 `GET /wiporder/query/breakdown/{id}` / `/wiporder/question/{id}` / `/wiporder/event/{id}`（id 取列表返回的 id，端点按工单类型区分）；我的待办 `/pending/list/v1` 直接按 mgmt token 归属人查，不再换发人员 token。迁移记录见 `docs/problems/pen-ticket-api-migration.md`
+- 工单服务（`ticket-api.ddbes.com`，`MGMT_TICKET_BASE_URL`，mgmt 能力延伸，非新平台）— 待办/变更/故障/问题/事件工单后端。**2026-10-26 对方整体重做**：路径去掉 `/ticket`、`/pen` 前缀（`/wiporder/*`、`/pending/list/v1`、`/company/user/{uid}`），认证换成 mgmt 同一套 `token` + `Deptid`（`http.ticket_request()`，401 清缓存重登一次），入参与信封不变，`type` 必填（老代码默认 `type:1`）。老 host 与 `pen_request()` 保留未删但不再被调用。变更工单按公司（`POST /wiporder/ticketlist/modify`，companyId 认 kingdee 格式，跨公司经 `mgmt.query_company_list`（`/authority/userrole/v1/current/company`）映射；已是 kingdee 的入参直接透传，不查映射）；各类工单详情 `GET /wiporder/query/breakdown/{id}` / `/wiporder/question/{id}` / `/wiporder/event/{id}`（id 取列表返回的 id，端点按工单类型区分）；我的待办 `/pending/list/v1` 直接按 mgmt token 归属人查，不再换发人员 token。迁移记录见 `docs/problems/platform/pen-ticket-api-migration.md`
 - **红外巡检图片质量检测（`INFRARED_QUALITY_ENABLED`，默认关）** — `service/infrared_quality/`，卡片 +
   整屏看板挂在**不合规检查页**。判定不用 VLM，调外部 Gradio 原始 REST（upload → call → SSE
   `event: complete`，不引 `gradio_client`；**Gradio 6 起文件入参须是带 `meta._type` 的 `FileData`
@@ -310,7 +310,7 @@ LLM 需要做全量/统计/聚合/报告时，数据先物化到沙箱（原始�
   **判定 fail-closed**：sharp→合格、borderline→待复核、defocused→不合格，其余（uncertain/未知/空/
   下载失败/推理异常）一律「检测失败」。**只认新英文标签**（2026-11-10 接口改版）：旧中文输出属未识别，
   缓存命中的旧任务勾「重新推理」重跑即可（原「36 张图 0 合格」的模型侧问题按实测已不复现，
-  见 `docs/problems/infrared-quality-no-clear-label.md`）。降级：预检
+  见 `docs/problems/platform/infrared-quality-no-clear-label.md`）。降级：预检
   （`GET /config`）不可达→整轮 failed；单任务详情失败→该任务 failed **且保留上次明细**；连续 3 批推理失败→
   剩余「检测服务中断」、任务 partial。存储：一任务一文档（自带 rows，重检整条覆盖）+ 批次索引 + 预测缓存
   （**只存模型原始标签**；存量旧中文标签会判未识别，勾「重新推理」重跑覆盖；写入必须用
@@ -319,7 +319,7 @@ LLM 需要做全量/统计/聚合/报告时，数据先物化到沙箱（原始�
   `GET /scheduled-tasks/infrared-quality/tasks`、`POST .../check`、`GET .../records`、
   `GET .../image`。本机 dry-run
   `python -m service.infrared_quality.cli --dept A1 --company 廊坊`、单图复测 `--predict <file>`、
-  自检 `python -m service.infrared_quality.tests.test_infrared_quality`（24 项）。详见 `docs/infrared-quality-check.md`
+  自检 `python -m service.infrared_quality.tests.test_infrared_quality`（24 项）。详见 `docs/features/infrared-quality-check.md`
 - skills — 纯本地文档能力（`skills/` 目录），无外部 API 依赖；用户自建技能运行期写入 `skills/users/`
 - Coze Studio — 独立 Go 服务，后台 API 代理调用 (配置了但 `service/coze_proxy/` 未实现)
 - LLM — OpenAI 兼容 API，视觉模型默认 `qwen3.5-vl`，对话模型默认 `qwen3.5`

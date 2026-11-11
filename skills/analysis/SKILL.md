@@ -2,6 +2,7 @@
 name: analysis
 title: 数据分析
 description: 数据分析技能，覆盖分布、占比、对比、趋势与交叉分析。对已物化到沙箱的数据集做聚合时调用本技能，返回「分析目的 → 数据形状 → pandas 写法」对照与交互表格视图整理要求。
+when_to_use: 已物化到沙箱的数据集要做分布、占比、对比、趋势或交叉聚合时使用；例：「按部门和级别交叉统计这批故障单。」
 category: analysis
 domain: analysis
 ---

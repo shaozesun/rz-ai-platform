@@ -200,7 +200,7 @@ class Settings(BaseSettings):
   # TTS
   TTS_PROVIDER: str = 'qwen'  # openai / qwen
   TTS_API_URL: str = 'http://localhost:8000'
-  # 上游 TTS 已换 vLLM-Omni 后端（单请求 ≈0.6s、并发上限 64，见 docs/tts-vllm-omni-deploy-manual.md）；
+  # 上游 TTS 已换 vLLM-Omni 后端（单请求 ≈0.6s、并发上限 64，见 docs/operations/tts-vllm-omni-deploy-manual.md）；
   # 生产 --workers 4，进程内信号量限不住全局，故用 Redis 跨进程配额（见 service/video/pipeline.py）
   TTS_MAX_CONCURRENCY: int = 64
   TTS_LOCAL_CONCURRENCY: int = 64  # 单进程在飞上限，防几十页一次性堆成几十个等待者
@@ -445,7 +445,7 @@ class Settings(BaseSettings):
   DCIM_RETRIEVAL_TOP_K: int = 8        # discover 检索返回的能力条数上限
 
   # ==================== DCIM Kafka 接入（阶段一：空间/设备/点位配置数据） ====================
-  # 见 docs/dcim-kafka-ingest-design.md；broker 与三个 topic 由 DCIM 提供，我方只消费。
+  # 见 docs/dcim/dcim-kafka-ingest-design.md；broker 与三个 topic 由 DCIM 提供，我方只消费。
   # 对方是**每个园区一个独立集群**（13 个），清单在 DCIM_CLUSTERS_FILE 指向的 JSON 里；
   # KAFKA_BOOTSTRAP_SERVERS 仅供本地单集群测试，生产不再使用。
   DCIM_KAFKA_ENABLED: bool = False      # worker 总开关，默认关闭
@@ -517,11 +517,13 @@ class Settings(BaseSettings):
   INCIDENT_EXTRACT_LLM_ENABLED: bool = True
   INCIDENT_EXTRACT_LLM_MAX_PER_ROUND: int = 20  # 每轮最多调几次（串行，防烧钱）
   INCIDENT_EXTRACT_LLM_TIMEOUT: int = 15
-  # 卡片通报「进展同步」原地追加：飞书没有消息更新事件、增量游标也回不到老消息，
-  # 只能定点 `im.v1.message.get` 回捞窗口内的 interactive 消息，正文变了才回写。
-  INCIDENT_CARD_REFRESH_MINUTES: int = 60       # 回捞间隔（每小时一轮）
+  # 现场实测「进展同步」是**每条新消息**（不同 message_id、正文累积），由 WS 实时入库
+  # （1~2s），不存在原地编辑卡片。下方定点 `im.v1.message.get` 回捞默认关闭（0）：
+  # 它只刷新已知 message_id，发现不了漏收消息，还会把干净正文覆盖成 lark_md 版本。
+  # 仅当某个园区确实存在原地编辑卡片时，才把间隔改成非 0 开启。
+  INCIDENT_CARD_REFRESH_MINUTES: int = 0        # 回捞间隔（0 = 关闭）
   INCIDENT_CARD_REFRESH_HOURS: int = 72         # 回看窗口（拉满飞书 message.get 保留期）
-  INCIDENT_CARD_REFRESH_BUILD_HOURS: int = 24   # 出表前补捞窗口（覆盖两个班次足够）
+  INCIDENT_CARD_REFRESH_BUILD_HOURS: int = 24   # 出表前补捞窗口（已不再用于查询路径）
 
   # ==================== 运营监控中心告警不合规检查（班次 xlsx） ====================
   # 早 09:00 查前一晚班（昨日 17:30 ~ 今日 08:30）、晚 18:00 查当日白班（08:30 ~ 17:30），
@@ -571,6 +573,17 @@ class Settings(BaseSettings):
   # 实测串行下发时客户端只有 ~1 条在途、服务端平均并发仅 2.38，而 taosd 只用 3.9/16 核、
   # 55% CPU 空闲 —— 并发下发是当前吞吐的主要杠杆（不改任何写入语义）。
   DCIM_WRITE_CONCURRENCY: int = 4
+  # 实时写入的**攒批窗口（秒）**：0 = 每轮 poll 就 flush（既有行为，默认）。
+  # >0 时把窗口内的样本攒在一起再写，**写成功后仍统一 commit**（at-least-once 不变）。
+  # 目的：TDengine 的成本单位是「一条语句触达多少个 vgroup」，而每批 47 行已覆盖约 11 个；
+  # 只要每台设备仍是 1 行，攒大批的收益只有 1.2~1.4×（2026-11-03 的 batch 实验即如此）。
+  # 拉到 20s 后同一设备的多个采样会落进**同一张子表的多个 VALUES 行**，
+  # vgroup 触点/行才从 ~0.23 降到 ~0.07（预期 1.8~2.5×）。
+  # 代价：落库延迟最多一个窗口、内存随窗口线性增长（见下一项兜底）。
+  DCIM_REALTIME_FLUSH_SECONDS: float = 0.0
+  # 攒批缓冲的**行数上限**（仅窗口 >0 时生效）：写入变慢时先触发 flush，防内存无界增长。
+  # 实测每行 ≈3KB，30000 行 ≈90MB/线程（廊坊A 8 条实时线程）。
+  DCIM_REALTIME_FLUSH_MAX_ROWS: int = 30000
   # 写入宽表时的「零阶保持」最长间隔（秒）——见 `dcim_ingest/wide_writer.py::merge_values`。
   # 对方的即时推送只带刚采到的测点（实测 15% 的行缺 ht_temp），所以写入时把上一个值带过来补齐；
   # 但**超过这个间隔就不补、如实留空**：设备离线一小时被补成一条直线会**掩盖故障**。
@@ -586,7 +599,7 @@ class Settings(BaseSettings):
   TAOS_USER: str = 'root'
   TAOS_PASSWORD: str = ''
   TAOS_DB: str = 'dcim'                        # 建在 TDengine 里的库名
-  # ⚠️ 下面是**建库参数**，只在第一次建库时生效（设计见 docs/dcim-timeseries-storage-design.md §5/§6）。
+  # ⚠️ 下面是**建库参数**，只在第一次建库时生效（设计见 docs/dcim/dcim-timeseries-storage-design.md §5/§6）。
   # **可改性各不相同**（2026-10-07 按官方 DDL 参考更正；此处此前笼统写成"三个都不可改"，不准确）：
   #   - `VGROUPS` ❌ **建后不可改**（至少不可减少）→ 建库前**必须**按「实分给 VM 的 vCPU 数」定好
   #     （⚠️ **不是宿主总核数** —— 共享机器上照宿主核数推会翻倍，2026-10-09 踩过）
@@ -607,7 +620,7 @@ class Settings(BaseSettings):
   #    4,000 列宽表下这是写侧 CPU 的主因 —— 关掉后 124.3 → 22.0 µs/行（−82%），
   #    生产写入 7,718 → 15k~26k 行/s、读侧无退化。调 COMP 无用，别再当压缩问题处理。
   #    要恢复缓存：`ALTER DATABASE dcim CACHEMODEL 'last_row'`（在线、可逆）。
-  #    见 docs/problems/tdengine-write-cost-probe.md
+  #    见 docs/problems/dcim/tdengine-write-cost-probe.md
   TAOS_CACHEMODEL: str = 'none'
   # ⚠️ 下面四项本可以靠 TDengine 默认值，**显式写死是为了换版本不漂**——此前它们只出现在
   # 设计文档的示例 DDL 里，从没落到代码，实测"恰好等于默认值"而已。

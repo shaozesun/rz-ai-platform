@@ -2,6 +2,7 @@
 name: event_alarm_link
 title: 事件单告警关联
 description: 查询事件工单关联的 DCIM 告警（先查判定表、缺失才补判）。用户问「这张单关联到哪条告警 / 事件单告警关联 / 告警值 / 阈值」时，调用 event_alarm_link 工具，不要自己复算。
+when_to_use: 用户问「这张单关联到哪条告警 / 事件单告警关联 / 告警值 / 阈值」时使用；例：「把昨天的事件单和动环告警对一下。」
 category: analysis
 domain: report
 ---

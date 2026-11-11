@@ -2,6 +2,7 @@
 name: incident_report
 title: 数据中心事件统计表
 description: 查询数据中心事件与单个事件的进展全记录（飞书园区群通报 → 告警/工单关联）。用户问「事件统计表 / 通报 / 进展全记录」时，调用 incident_report 或 incident_progress 工具取数，不要自己复算统计。
+when_to_use: 用户问「事件统计表 / 通报 / 进展全记录」时使用；例：「出一下昨天晚班的事件统计表。」或「这个事件从头到尾的进展是什么？」
 category: analysis
 domain: report
 ---
@@ -70,8 +71,8 @@ domain: report
 ## 单个事件的进展全记录
 
 用户问「**某个事件**的进展全记录 / 完整进展 / 处置时间线 / 后来怎么处理的」时，用
-`incident_progress(query, date, start, end, parks, refresh)`，**不要**用 `incident_report`
-出整张统计表代替。
+`incident_progress(query, date, start, end, parks)`，**不要**用 `incident_report`
+出整张统计表代替（进展由 WS 实时入库，服务端直接读库，不需要先回捞飞书）。
 
 - **窗口是自然日**（不是班次）：`date=YYYY-MM-DD` 查该日整天；不传 = 今天；
   区间用 `start`/`end`（规则同 `incident_report`，end 留空 = start 起 7 天）。

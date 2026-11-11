@@ -2,6 +2,7 @@
 name: html_dashboard
 title: HTML 看板
 description: 生成自包含 HTML 看板/仪表盘/驾驶舱/大屏（echarts 图表，数据内联，前端右侧面板本地预览）。当用户明确要求「看板 / 驾驶舱 / 大屏 / HTML 报表 / 可视化面板 / dashboard」时调用本技能，返回模板与规范，按 analysis_write_file 流程产出 <file name=*.html> 产物。
+when_to_use: 用户明确要「看板 / 驾驶舱 / 大屏 / HTML 报表 / 可视化面板 / dashboard」时使用；例：「把这份数据做成运维驾驶舱大屏。」
 category: dashboard
 domain: dashboard
 ---

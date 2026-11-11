@@ -33,7 +33,7 @@ try:
 except ImportError:      # 沙箱：名字已随 common 源码注入，无需 import
   pass
 
-# 专业编码（依据 docs/dcim/工单列表接口字段映射确认清单.md 与 ticket_codes.py）
+# 专业编码（依据 docs/integrations/field-mapping/工单列表接口字段映射确认清单.md 与 ticket_codes.py）
 SPECIALTY_LABEL = {1: '供配电', 2: '制冷', 4: '智能化', 8: '其他'}
 
 # 验收时长分箱（分钟）：**固定边界**，跨期可比；最后一个区间吃掉所有上溢

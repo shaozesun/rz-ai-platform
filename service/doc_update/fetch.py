@@ -348,14 +348,14 @@ async def take_snapshot(
   }
 
 
-def _period_record(f: dict) -> dict:
+def _period_record(f: dict, from_name: bool = False) -> dict:
   """按期提交型的文件记录：只带位置信息，不下载不哈希。"""
   return {
     'fid': f['fid'],
     'file_name': f['topic'],
     'path': f['path'],
     'match_dir': f.get('match_dir') or '',
-    'period': period.period_of_file(f),
+    'period': period.period_of_file(f, from_name),
     'size': f.get('size'),
     'download_size': 0,
     'sha256': '',
@@ -398,6 +398,9 @@ async def take_dept_snapshot(
   判据按目录形态分两种（`period.detect_layout` 自动判定）：
   - `period` 按期提交型：只看本期应到月份里有没有文件，**不下载、不哈希**；
   - `flat` 原地更新型：下载算 sha256，与上一期快照比。
+
+  `period_only` 项（能源月报）**强制**按期判定：各部门路径不同，多数期号只写在
+  文件名里，故期号允许从文件名解析，且**永不下载**。
 
   部门清单取固定配置 + 注册表缓存（`depts.resolve_departments`，缓存齐了不联网），
   传 `dept_names` / `companies` 时只跑指定部门/公司。单个部门/文件失败只记 `error`，
@@ -457,12 +460,14 @@ async def take_dept_snapshot(
     for item in scope:
       done += 1
       matched = match_item(item, files) if files else []
-      layout = period.detect_layout(matched)
-      latest = period.pick_latest_period(matched)
+      from_name = bool(getattr(item, 'period_only', False))
+      # `period_only` 项一律按「按期提交型」判（不下载、不算哈希），期号允许看文件名
+      layout = period.LAYOUT_PERIOD if from_name else period.detect_layout(matched)
+      latest = period.pick_latest_period(matched, from_name=from_name)
       records: list[dict] = []
       if not dept_error:
         if layout == period.LAYOUT_PERIOD:
-          records = [_period_record(f) for f in matched]
+          records = [_period_record(f, from_name) for f in matched]
         else:
           for f in matched:
             if budget <= 0:
@@ -487,6 +492,7 @@ async def take_dept_snapshot(
         'cadence': item.cadence,
         'note': item.note,
         'layout': layout,
+        'period_only': from_name,
         'expected_period': expected,
         'latest_period': latest,
         'actual_dirs': actual_dirs,

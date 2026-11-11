@@ -15,7 +15,6 @@ import AuthCenterPage from './pages/AuthCenterPage';
 import ScheduledTasksPage from './pages/ScheduledTasksPage';
 import AnalysisReportsPage from './pages/AnalysisReportsPage';
 import AgentSkillsPage from './pages/AgentSkillsPage';
-import AgentToolsPage from './pages/AgentToolsPage';
 import CompliancePage from './pages/CompliancePage';
 import SettingsPage from './pages/SettingsPage';
 import AdminLayout from './pages/admin/AdminLayout';
@@ -67,9 +66,7 @@ export default function App() {
         <Route path="/agent-skills" element={
           <ProtectedRoute requirePerm="ai:agent"><AgentSkillsPage /></ProtectedRoute>
         } />
-        <Route path="/agent-tools" element={
-          <ProtectedRoute requirePerm="ai:agent"><AgentToolsPage /></ProtectedRoute>
-        } />
+        <Route path="/agent-tools" element={<Navigate to="/agent-skills" replace />} />
         <Route path="/agent" element={<Navigate to="/agent-skills" replace />} />
         <Route path="/compliance" element={
           <ProtectedRoute requirePerm="ai:agent"><CompliancePage /></ProtectedRoute>

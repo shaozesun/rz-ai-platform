@@ -1,9 +1,8 @@
 """工具中心目录 —— 只读聚合「智能体当前能调用的全部工具」。
 
 两类来源：
-1. **平台能力**：已注册平台（mgmt / dcim_meta / web / browser / skill）的能力，
-   按注册序分平台成组；技能单独走 `discover_skills()`（页面可能在首次 Agent 构建前
-   打开，全局注册表会漏技能），且按用户隔离（他人自建技能不出现）。
+1. **平台能力**：已注册平台（mgmt / dcim_meta / web / browser）的能力，按注册序分平台成组；
+   技能平台直接跳过 —— 技能统一由技能中心（`/api/v1/skills`）展示，这里不重复列。
 2. **代码内置工具**：声明式表 `_BUILTIN_GROUPS`，运行时按 `(module, attr[, factory])`
    动态取 `.name` / `.description`。
 
@@ -28,8 +27,6 @@ from service.query.base.manifest import (
 )
 from service.query.base.platform import is_mode_gated
 from service.query.base.tools_factory import capability_to_tool_name
-from service.query.skills.catalog import main_capabilities
-from service.query.skills.discover import discover_skills
 
 logger = logging.getLogger(__name__)
 
@@ -221,62 +218,39 @@ def _visibility(cap, browser_always: set[str]) -> str:
   return 'on_demand'
 
 
-def _skills_group(user_id: str) -> dict | None:
-  """技能组：公开技能（常驻可见）+ 本人自建技能（按需检索），他人技能不出现。"""
-  tools: list[dict] = []
-  for cap in main_capabilities(discover_skills()):
-    owner = cap.owner or ''
-    if owner and owner != user_id:
-      continue
-    # 公开父技能在构建时常驻可见（skill__chart 等），自建技能走 tool_search
-    tools.append(_cap_item(cap, 'always' if not owner else 'on_demand'))
-  if not tools:
-    return None
-  return {
-    'key': 'skill',
-    'label': platform_display_name('skill'),
-    'description': platform_definition('skill'),
-    'tools': tools,
-  }
-
-
-def platform_groups(caps: list, user_id: str = '') -> list[dict]:
+def platform_groups(caps: list) -> list[dict]:
   """平台能力分组（纯函数，便于单测）。
 
   Args:
     caps: 全部已注册能力（`all_capabilities()` 的返回值）。
-    user_id: 当前用户，用于过滤他人自建技能。
 
   Returns:
-    每组 `{key, label, description, tools}`；技能组按注册位置插入，空平台跳过。
+    每组 `{key, label, description, tools}`；技能平台与空平台跳过。
   """
-  uid = user_id or ''
   browser_always = _browser_always_names()
 
   order: list[str] = []
   buckets: dict[str, list] = {}
   for cap in caps:
     platform = cap.id.split('.', 1)[0]
+    # 技能只在技能中心展示，工具目录不重复列（技能能力仍在全局注册表里）
+    if platform == 'skill':
+      continue
     if platform not in buckets:
       buckets[platform] = []
       order.append(platform)
-    if platform != 'skill':
-      buckets[platform].append(cap)
+    buckets[platform].append(cap)
 
   groups: list[dict] = []
   for platform in order:
-    if platform == 'skill':
-      group = _skills_group(uid)
-      if group:
-        groups.append(group)
-      continue
     tools = [_cap_item(cap, _visibility(cap, browser_always)) for cap in buckets[platform]]
     if not tools:
       continue
     groups.append({
       'key': platform,
       'label': platform_display_name(platform),
-      'description': platform_definition(platform),
+      # 定义原文是给模型看的（带 ** 强调），页面按纯文本渲染，去掉标记以免显示字面星号
+      'description': platform_definition(platform).replace('**', ''),
       'tools': tools,
     })
   return groups
@@ -330,8 +304,8 @@ def builtin_groups() -> list[dict]:
   return groups
 
 
-def build_groups(user_id: str = '') -> list[dict]:
-  """工具中心数据源：平台分组（含技能）→ 内置分组。
+def build_groups() -> list[dict]:
+  """工具中心数据源：平台分组（不含技能）→ 内置分组。
 
   注册表为空时才调 `register_enabled_platforms()`：`register_platform()` 会
   `reset_index()` 清空检索向量缓存，每请求都调会让下一次 tool_search 重建索引。
@@ -341,4 +315,4 @@ def build_groups(user_id: str = '') -> list[dict]:
   if not registered_platforms():
     from service.query.bootstrap import register_enabled_platforms
     register_enabled_platforms()
-  return platform_groups(all_capabilities(), user_id) + builtin_groups()
+  return platform_groups(all_capabilities()) + builtin_groups()

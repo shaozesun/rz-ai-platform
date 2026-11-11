@@ -2,6 +2,7 @@
 name: doc_update_check
 title: 文档更新检查
 description: 检查各公司每个 A 部门（固定清单）的 25 条月度文档本月是否更新。用户问「某部门某文档更新了吗 / 这个月文件更新了吗」时调用 doc_update_check，不要自己算日期或改时间字段。
+when_to_use: 用户问「某部门某文档本月更新了吗 / 这个月文件更新了吗」时使用；例：「廊坊 A1 的能源月报这个月更新了吗？」
 category: analysis
 domain: compliance
 ---
